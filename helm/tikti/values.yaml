@@ -10,6 +10,13 @@ imagePullSecrets: []
 
 replicaCount: 1
 
+command:
+  - "/app/tikti"
+
+args:
+  - "-f"
+  - "/app/etc/tikti.yaml"
+
 serviceAccount:
   create: true
   name: ""

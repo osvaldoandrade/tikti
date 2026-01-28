@@ -346,7 +346,7 @@ Response:
 }
 ```
 
-### GET /v1/tenants/{tenantId}
+### GET /v1/tenants/id/{tenantId}
 
 Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 

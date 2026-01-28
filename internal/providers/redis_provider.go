@@ -54,31 +54,44 @@ func buildRedisOptions(cfg *config.Config) (*redis.Options, error) {
 		return opts, nil
 	}
 
-	host := firstNonEmpty(strings.TrimSpace(os.Getenv("REDIS_HOST")), cleanPlaceholder(cfg.RedisHost))
-	if host == "" {
-		if addrHost, _ := hostPortFromAddr(cleanPlaceholder(cfg.RedisAddr)); addrHost != "" {
-			host = addrHost
-		}
-	}
-	if host == "" {
-		host = defaultRedisHost
-	}
+	addr := cleanPlaceholder(cfg.RedisAddr)
+	host := strings.TrimSpace(os.Getenv("REDIS_HOST"))
+	port := 0
 
-	port := cfg.RedisPort
-	if envPort := strings.TrimSpace(os.Getenv("REDIS_PORT")); envPort != "" {
-		parsed, err := strconv.Atoi(envPort)
-		if err != nil {
-			return nil, fmt.Errorf("invalid REDIS_PORT: %w", err)
+	if host != "" {
+		if envPort := strings.TrimSpace(os.Getenv("REDIS_PORT")); envPort != "" {
+			parsed, err := strconv.Atoi(envPort)
+			if err != nil {
+				return nil, fmt.Errorf("invalid REDIS_PORT: %w", err)
+			}
+			port = parsed
 		}
-		port = parsed
-	}
-	if port == 0 {
-		if _, addrPort := hostPortFromAddr(cleanPlaceholder(cfg.RedisAddr)); addrPort != 0 {
-			port = addrPort
+		if port == 0 {
+			port = cfg.RedisPort
 		}
-	}
-	if port == 0 {
-		port = defaultRedisPort
+		if port == 0 {
+			port = defaultRedisPort
+		}
+	} else if addr != "" {
+		addrHost, addrPort := hostPortFromAddr(addr)
+		if addrHost != "" {
+			host = addrHost
+		} else {
+			host = addr
+		}
+		port = addrPort
+		if port == 0 {
+			port = cfg.RedisPort
+		}
+		if port == 0 {
+			port = defaultRedisPort
+		}
+	} else {
+		host = firstNonEmpty(cleanPlaceholder(cfg.RedisHost), defaultRedisHost)
+		port = cfg.RedisPort
+		if port == 0 {
+			port = defaultRedisPort
+		}
 	}
 
 	db := cfg.RedisDB

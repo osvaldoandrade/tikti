@@ -474,7 +474,7 @@ func tenantCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if id == "" {
 				return errors.New("tenant id required")
 			}
-			resp, err := doJSON(http.MethodGet, prof.BaseURL+"/v1/tenants/"+id+"?key="+prof.ApiKey, prof.IdToken, nil)
+			resp, err := doJSON(http.MethodGet, prof.BaseURL+"/v1/tenants/id/"+id+"?key="+prof.ApiKey, prof.IdToken, nil)
 			if err != nil {
 				return err
 			}

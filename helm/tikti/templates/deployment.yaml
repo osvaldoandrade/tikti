@@ -32,6 +32,14 @@ spec:
         - name: tikti
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.command }}
+          command:
+{{ toYaml . | indent 12 }}
+          {{- end }}
+          {{- with .Values.args }}
+          args:
+{{ toYaml . | indent 12 }}
+          {{- end }}
           {{- with .Values.securityContext }}
           securityContext:
 {{ toYaml . | indent 12 }}

@@ -39,7 +39,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		protected.POST("/accounts/resetPassword", controllers.NewOobResetController(userService, cfg).Handle)
 
 		protected.POST("/tenants", tenantCtrl.Create)
-		protected.GET("/tenants/:id", tenantCtrl.Get)
+		protected.GET("/tenants/id/:id", tenantCtrl.Get)
 		protected.POST("/tenants/:tenantId/users", memberCtrl.Create)
 		protected.POST("/tenants/:tenantId/users/remove", memberCtrl.Remove)
 		protected.POST("/tenants/:tenantId/roles", roleCtrl.Create)
