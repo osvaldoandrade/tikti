@@ -23,6 +23,7 @@ go.work.sum
 
 vendor/
 test_tikti.go
+test_tikti.py
 .idea
 # env file
 .env
