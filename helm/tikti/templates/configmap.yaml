@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tikti.fullname" . }}-config
+  labels:
+{{ include "tikti.labels" . | indent 4 }}
+data:
+  tikti.yaml: |
+    port: {{ .Values.config.port }}
+    redisAddr: {{ .Values.config.redisAddr | quote }}
+    redisDb: {{ .Values.config.redisDb }}
+    redisPassword: {{- if .Values.secrets.enabled }} "${REDIS_PASSWORD}"{{- else }} {{ .Values.config.redisPassword | quote }}{{- end }}
+    jwtSecret: {{- if .Values.secrets.enabled }} "${JWT_SECRET}"{{- else }} {{ .Values.config.jwtSecret | quote }}{{- end }}
+    apiKey: {{- if .Values.secrets.enabled }} "${API_KEY}"{{- else }} {{ .Values.config.apiKey | quote }}{{- end }}
+    issuerBaseUrl: {{ .Values.config.issuerBaseUrl | quote }}
+    defaultAudience: {{ .Values.config.defaultAudience | quote }}
+    jwksPrivateKey: {{- if .Values.secrets.enabled }} "${JWKS_PRIVATE_KEY}"{{- else }} {{ .Values.config.jwksPrivateKey | quote }}{{- end }}
+    jwksKeyId: {{ .Values.config.jwksKeyId | quote }}

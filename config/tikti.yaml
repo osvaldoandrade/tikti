@@ -1,0 +1,10 @@
+port: 8080
+redisAddr: ${REDIS_ADDR}
+redisDb: 0
+redisPassword: ${REDIS_PASSWORD}
+jwtSecret: ${JWT_SECRET}
+apiKey: ${API_KEY}
+issuerBaseUrl: ${ISSUER_BASE_URL}
+defaultAudience: ${DEFAULT_AUDIENCE}
+jwksPrivateKey: ${JWKS_PRIVATE_KEY}
+jwksKeyId: ${JWKS_KEY_ID}

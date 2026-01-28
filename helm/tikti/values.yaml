@@ -1,0 +1,65 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ghcr.io/osvaldoandrade/tikti
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: ""
+
+podAnnotations: {}
+podSecurityContext: {}
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: "traefik"
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: "web,websecure"
+  hosts:
+    - host: tikti.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+extraEnv: []
+extraEnvFrom: []
+extraVolumes: []
+extraVolumeMounts: []
+
+config:
+  port: 8080
+  redisAddr: "redis:6379"
+  redisDb: 0
+  redisPassword: ""
+  jwtSecret: ""
+  apiKey: ""
+  issuerBaseUrl: ""
+  defaultAudience: "tikti"
+  jwksPrivateKey: ""
+  jwksKeyId: "tikti-local-1"
+
+secrets:
+  enabled: true
+  jwtSecret: ""
+  apiKey: ""
+  redisPassword: ""
+  jwksPrivateKey: ""
