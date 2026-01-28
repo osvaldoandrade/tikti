@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TIKTI | Auth & Authz Provider</title>
+    <meta name="description" content="Identity provider for microservices and workers. Native Multi-tenancy, RS256 Token Exchange, and Deterministic API.">
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        display: ['Space Grotesk', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        brand: {
+                            bg: '#050505',       // Pitch black
+                            surface: '#0A0A0A',  // Very dark grey
+                            border: '#333333',   // Subtle border
+                            primary: '#8B5CF6',  // Violet 500
+                            secondary: '#F59E0B',// Amber 500
+                            success: '#10B981',  // Emerald 500
+                            error: '#EF4444',    // Red 500
+                            text: '#E5E5E5',     // Light grey
+                            muted: '#737373'     // Darker grey
+                        }
+                    },
+                    backgroundImage: {
+                        'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
+                        'hero-glow': 'conic-gradient(from 90deg at 50% 50%, #000000 0%, #1e1b4b 50%, #000000 100%)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background-color: #050505;
+            color: #E5E5E5;
+        }
+        
+        /* Custom Utilities */
+        .glass-panel {
+            background: rgba(10, 10, 10, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid #333;
+        }
+
+        .code-block {
+            background: #000000;
+            border: 1px solid #333;
+        }
+
+        .glow-text {
+            text-shadow: 0 0 15px rgba(139, 92, 246, 0.5);
+        }
+
+        .feature-card:hover {
+            border-color: #8B5CF6;
+            box-shadow: 0 4px 20px -5px rgba(139, 92, 246, 0.3);
+        }
+        
+        /* Terminal Cursor Blink */
+        .blink {
+            animation: blinker 1s linear infinite;
+        }
+        @keyframes blinker {
+            50% { opacity: 0; }
+        }
+
+        details > summary {
+            list-style: none;
+        }
+        details > summary::-webkit-details-marker {
+            display: none;
+        }
+    </style>
+</head>
+<body class="antialiased selection:bg-brand-primary selection:text-white font-mono">
+
+    <!-- Navigation -->
+    <nav class="fixed top-0 w-full z-50 border-b border-brand-border bg-brand-bg/90 backdrop-blur-md">
+        <div class="container mx-auto px-6 h-16 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+                <span class="font-display font-bold text-xl tracking-tight text-white hover:text-brand-primary transition-colors cursor-pointer uppercase">
+                    <span class="text-brand-primary">>_</span> TIKTI
+                </span>
+            </div>
+            
+            <div class="hidden md:flex items-center gap-8 text-xs font-bold uppercase tracking-widest text-brand-muted">
+                <a href="#features" class="hover:text-white transition-colors">[Specs]</a>
+                <a href="#cli" class="hover:text-white transition-colors">[CLI]</a>
+                <a href="#security" class="hover:text-white transition-colors">[Security]</a>
+                <a href="#integration" class="hover:text-white transition-colors">[API]</a>
+            </div>
+
+            <div class="flex items-center gap-4">
+                <a href="#" class="text-brand-muted hover:text-white transition-colors">
+                    <i class="fa-brands fa-github text-lg"></i>
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header class="relative pt-32 pb-20 lg:pt-48 lg:pb-32 overflow-hidden">
+        <div class="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[600px] bg-gradient-radial from-brand-primary/5 to-transparent opacity-40 pointer-events-none"></div>
+        
+        <div class="container mx-auto px-6 relative z-10">
+            <div class="max-w-4xl mx-auto text-left md:text-center">
+                
+                <h1 class="text-4xl md:text-6xl font-display font-bold leading-none mb-6 text-white tracking-tight">
+                    Authentication & <br>
+                    <span class="text-brand-primary glow-text">Authorization</span> Protocols.
+                </h1>
+                
+                <p class="text-lg text-brand-muted max-w-2xl mx-auto mb-10 font-sans">
+                    Deterministic identity for distributed systems. <br class="hidden md:block">
+                    Strict Multi-tenancy. RS256 Exchange. KVRocks Persistence.
+                </p>
+
+                <div class="flex flex-col sm:flex-row items-center justify-center gap-4">
+                    <a href="#cli" class="w-full sm:w-auto px-8 py-3 bg-white text-black font-bold text-sm uppercase tracking-wide hover:bg-gray-200 transition-colors flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-terminal text-xs"></i> Install CLI
+                    </a>
+                    
+                    <a href="#helm" class="w-full sm:w-auto px-8 py-3 bg-brand-surface border border-brand-border text-brand-text font-bold text-sm uppercase tracking-wide hover:border-brand-primary hover:text-white transition-colors flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-server text-xs"></i> Deploy Helm
+                    </a>
+
+                    <a href="#" class="w-full sm:w-auto px-8 py-3 border border-transparent text-brand-muted font-bold text-sm uppercase tracking-wide hover:text-white transition-colors">
+                        Read Specs
+                    </a>
+                </div>
+
+                <!-- Tech Stack Badges -->
+                <div class="mt-16 flex flex-wrap justify-center gap-4 font-mono text-xs opacity-70">
+                    <span class="px-2 py-1 bg-brand-surface border border-brand-border text-brand-muted">
+                        OIDC-LIKE
+                    </span>
+                    <span class="px-2 py-1 bg-brand-surface border border-brand-border text-brand-muted">
+                        RS256/HS256
+                    </span>
+                    <span class="px-2 py-1 bg-brand-surface border border-brand-border text-brand-muted">
+                        KVROCKS (SSD)
+                    </span>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Features Section -->
+    <section id="features" class="py-24 border-y border-brand-border bg-[#020202]">
+        <div class="container mx-auto px-6">
+            <div class="grid md:grid-cols-3 gap-8">
+                <!-- Feature 1 -->
+                <div class="glass-panel p-6 feature-card transition-all duration-200">
+                    <div class="text-violet-500 mb-4 font-bold text-lg uppercase tracking-wider">
+                        // 01 Multi-Tenancy
+                    </div>
+                    <h3 class="text-xl font-bold mb-2 text-white font-display">Strict Isolation</h3>
+                    <p class="text-brand-muted text-sm leading-relaxed font-sans">
+                        Context-aware tokens. No access token is issued without a valid <code>tid</code> (Tenant ID) and verified membership. Prevents horizontal privilege escalation by design.
+                    </p>
+                </div>
+
+                <!-- Feature 2 -->
+                <div class="glass-panel p-6 feature-card transition-all duration-200">
+                    <div class="text-amber-500 mb-4 font-bold text-lg uppercase tracking-wider">
+                        // 02 Token Exchange
+                    </div>
+                    <h3 class="text-xl font-bold mb-2 text-white font-display">Identity Swapping</h3>
+                    <p class="text-brand-muted text-sm leading-relaxed font-sans">
+                        Exchange high-friction Identity Tokens (HS256) for service-scoped Access Tokens (RS256). Ideal for autonomous agents requiring specific scopes.
+                    </p>
+                </div>
+
+                <!-- Feature 3 -->
+                <div class="glass-panel p-6 feature-card transition-all duration-200">
+                    <div class="text-emerald-500 mb-4 font-bold text-lg uppercase tracking-wider">
+                        // 03 Verification
+                    </div>
+                    <h3 class="text-xl font-bold mb-2 text-white font-display">Cryptographic Audit</h3>
+                    <p class="text-brand-muted text-sm leading-relaxed font-sans">
+                        Public <code>JWKS</code> endpoints allow offline validation by any resource server. Zero shared secrets between microservices.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture / Flow Section -->
+    <section id="security" class="py-24 relative overflow-hidden">
+        <div class="container mx-auto px-6">
+            <div class="text-center mb-16">
+                <h2 class="text-2xl md:text-3xl font-display font-bold mb-2 uppercase tracking-tight">Identity Lifecycle</h2>
+                <div class="h-1 w-20 bg-brand-primary mx-auto"></div>
+            </div>
+
+            <div class="relative max-w-5xl mx-auto">
+                <!-- Connector Line -->
+                <div class="hidden md:block absolute top-1/2 left-0 w-full h-[1px] bg-brand-border -z-10"></div>
+                
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-6 font-mono text-xs">
+                    <!-- Step 1 -->
+                    <div class="glass-panel p-6 relative group border-t-2 border-brand-muted hover:border-brand-primary transition-colors">
+                        <div class="text-center">
+                            <div class="mb-3 text-brand-muted font-bold">STEP 01</div>
+                            <h4 class="font-bold text-white mb-2 text-sm uppercase">Authenticate</h4>
+                            <p class="text-brand-muted">Input: Credentials<br>Output: <code>idToken</code> (HS256)</p>
+                        </div>
+                    </div>
+                    <!-- Step 2 -->
+                    <div class="glass-panel p-6 relative group border-t-2 border-brand-muted hover:border-brand-secondary transition-colors">
+                        <div class="text-center">
+                            <div class="mb-3 text-brand-muted font-bold">STEP 02</div>
+                            <h4 class="font-bold text-white mb-2 text-sm uppercase">Exchange</h4>
+                            <p class="text-brand-muted">Input: <code>idToken</code> + Ctx<br>Output: Access Token</p>
+                        </div>
+                    </div>
+                    <!-- Step 3 -->
+                    <div class="glass-panel p-6 relative group border-t-2 border-brand-muted hover:border-brand-primary transition-colors">
+                        <div class="text-center">
+                            <div class="mb-3 text-brand-muted font-bold">STEP 03</div>
+                            <h4 class="font-bold text-white mb-2 text-sm uppercase">Issue</h4>
+                            <p class="text-brand-muted">Mint: RS256 JWT<br>Claims: <code>aud</code>, <code>scope</code></p>
+                        </div>
+                    </div>
+                    <!-- Step 4 -->
+                    <div class="glass-panel p-6 relative group border-t-2 border-brand-muted hover:border-brand-success transition-colors">
+                        <div class="text-center">
+                            <div class="mb-3 text-brand-muted font-bold">STEP 04</div>
+                            <h4 class="font-bold text-white mb-2 text-sm uppercase">Access</h4>
+                            <p class="text-brand-muted">Verify: JWKS Signature<br>Result: Allow/Deny</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Developer Experience Section (CLI/API) -->
+    <section id="integration" class="py-24 bg-[#020202]">
+        <div class="container mx-auto px-6">
+            <div class="grid lg:grid-cols-2 gap-12 items-start">
+                
+                <div>
+                    <h2 class="text-3xl font-display font-bold mb-6 text-white uppercase tracking-tight">Headless Operations</h2>
+                    <p class="text-brand-muted mb-8 leading-relaxed font-sans text-sm">
+                        TIKTI is built for automation. No UI required. Manage tenants, rotate keys, and provision workers entirely via CLI or API.
+                    </p>
+
+                    <div class="space-y-6 font-mono text-sm">
+                        <div class="flex items-start gap-4">
+                            <span class="text-brand-primary mt-1">>></span>
+                            <div>
+                                <h4 class="font-bold text-white uppercase">CLI First</h4>
+                                <p class="text-xs text-brand-muted mt-1">Full control over tenant lifecycle from your terminal.</p>
+                            </div>
+                        </div>
+                        <div class="flex items-start gap-4">
+                            <span class="text-brand-secondary mt-1">>></span>
+                            <div>
+                                <h4 class="font-bold text-white uppercase">Standard REST</h4>
+                                <p class="text-xs text-brand-muted mt-1">Predictable endpoints. JSON payloads. No surprises.</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Interactive Tabs -->
+                <div class="border border-brand-border bg-black shadow-2xl">
+                    <div class="flex border-b border-brand-border bg-brand-surface">
+                        <button id="btn-cli" onclick="switchTab('cli')" class="px-6 py-3 text-xs font-bold text-white bg-black border-t-2 border-brand-primary tracking-wider transition-all">CLI</button>
+                        <button id="btn-api" onclick="switchTab('api')" class="px-6 py-3 text-xs font-bold text-brand-muted hover:text-white hover:bg-black/50 tracking-wider transition-all">API</button>
+                        <button id="btn-jwks" onclick="switchTab('jwks')" class="px-6 py-3 text-xs font-bold text-brand-muted hover:text-white hover:bg-black/50 tracking-wider transition-all">JWKS</button>
+                    </div>
+                    
+                    <!-- CLI Content -->
+                    <div id="content-cli" class="p-6 bg-black font-mono text-xs overflow-x-auto h-[320px] text-brand-text">
+<pre><code class="language-bash"><span class="text-brand-muted"># 1. Initialize session</span>
+<span class="text-brand-primary">$</span> tikti init --host https://api.tikti.io
+<span class="text-brand-primary">$</span> tikti auth login --user root@corp.sys
+
+<span class="text-brand-success">✔ Session active.</span>
+
+<span class="text-brand-muted"># 2. Provision Tenant</span>
+<span class="text-brand-primary">$</span> tikti tenant create --slug codecompany
+
+<span class="text-brand-muted"># 3. Exchange Token (Worker Flow)</span>
+<span class="text-brand-primary">$</span> tikti token exchange \
+    --aud backend-worker \
+    --scope "jobs:read jobs:write" \
+    --tenant codecompany \
+    --sub worker-01
+
+<span class="text-brand-success">✔ Access Token (RS256) minted.</span>
+<span class="text-brand-muted">eyJhbGciOiJSUzI1NiIsImtpZCI6InRpa3RpLTIwMjY...</span><span class="blink">_</span></code></pre>
+                    </div>
+
+                    <!-- API Content -->
+                    <div id="content-api" class="p-6 bg-black font-mono text-xs overflow-x-auto h-[320px] text-brand-text hidden">
+<pre><code class="language-json"><span class="text-brand-muted">// POST /v1/accounts/token/exchange</span>
+<span class="text-brand-secondary">{
+  "idToken": "<span class="text-brand-muted">eyJ... (HS256)</span>",
+  "audience": "backend-worker",
+  "tenantId": "tenant-1",
+  "subject": "worker-1",
+  
+  <span class="text-brand-muted">// Scopes</span>
+  "scopes": [
+    "jobs:read",
+    "jobs:write"
+  ],
+  
+  <span class="text-brand-muted">// Custom Claims</span>
+  "eventTypes": [
+    "video_processing"
+  ],
+  "ttlSeconds": 3600
+}</span></code></pre>
+                    </div>
+
+                    <!-- JWKS Content -->
+                    <div id="content-jwks" class="p-6 bg-black font-mono text-xs overflow-x-auto h-[320px] text-brand-text hidden">
+<pre><code class="language-json"><span class="text-brand-muted">// GET /.well-known/jwks.json</span>
+<span class="text-brand-primary">{
+  "keys": [
+    {
+      "kty": "RSA",
+      "kid": "tikti-2026-01",
+      "use": "sig",
+      "alg": "RS256",
+      "n": "rvt82...",
+      "e": "AQAB"
+    }
+  ]
+}</span>
+
+<span class="text-brand-muted"># Cache-Control: public, max-age=300</span>
+<span class="text-brand-muted"># Verifiable by any standard JWT library.</span></code></pre>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- FAQ Section -->
+    <section id="faq" class="py-24 relative overflow-hidden border-t border-brand-border">
+        <div class="container mx-auto px-6">
+            <div class="text-center mb-16">
+                <h2 class="text-2xl font-display font-bold mb-2 uppercase tracking-tight">System Specifications & FAQ</h2>
+                <div class="h-1 w-10 bg-brand-muted mx-auto"></div>
+            </div>
+
+            <div class="max-w-4xl mx-auto space-y-4">
+                
+                <!-- Q1 -->
+                <details class="group bg-brand-surface border border-brand-border">
+                    <summary class="flex justify-between items-center font-bold cursor-pointer list-none p-5 text-white text-sm uppercase tracking-wide hover:bg-brand-border/50 transition-colors">
+                        <span>Why separate Identity Tokens from Access Tokens?</span>
+                        <span class="transition group-open:rotate-180"><i class="fa-solid fa-chevron-down text-brand-primary"></i></span>
+                    </summary>
+                    <div class="text-brand-muted text-sm leading-relaxed px-5 pb-5 pt-0 border-t border-brand-border font-sans mt-4">
+                        <p class="mb-2"><strong>The Tradeoff:</strong> Monolithic identity providers force you to choose between performance (symmetric keys) and security (asymmetric keys). HS256 is fast but requires sharing secrets. RS256 is secure for distributed systems but computationally heavier for high-frequency logins.</p>
+                        <p><strong>The TIKTI Approach:</strong> We use HS256 for the initial <code>Identity Token</code> (internal session) to maintain millisecond latency during login. We then exchange this for a scoped <code>Access Token</code> (RS256) for downstream services. This allows Resource Servers to validate tokens offline using cached JWKS without ever possessing a secret key.</p>
+                    </div>
+                </details>
+
+                <!-- Q2 -->
+                <details class="group bg-brand-surface border border-brand-border">
+                    <summary class="flex justify-between items-center font-bold cursor-pointer list-none p-5 text-white text-sm uppercase tracking-wide hover:bg-brand-border/50 transition-colors">
+                        <span>How does TIKTI handle high-throughput persistence without massive RAM?</span>
+                        <span class="transition group-open:rotate-180"><i class="fa-solid fa-chevron-down text-brand-primary"></i></span>
+                    </summary>
+                    <div class="text-brand-muted text-sm leading-relaxed px-5 pb-5 pt-0 border-t border-brand-border font-sans mt-4">
+                        <p class="mb-2">TIKTI is designed for scenarios where O(1) lookups are non-negotiable. Relational databases introduce latency with complex joins, while pure Redis is limited by expensive RAM.</p>
+                        <p><strong>Solution:</strong> We use <strong>KVRocks</strong>. It implements the Redis protocol but stores data on NVMe SSDs via RocksDB. This allows TIKTI to store millions of user sessions with a minimal RAM footprint while maintaining sub-millisecond access times and full durability.</p>
+                    </div>
+                </details>
+
+                <!-- Q3 -->
+                <details class="group bg-brand-surface border border-brand-border">
+                    <summary class="flex justify-between items-center font-bold cursor-pointer list-none p-5 text-white text-sm uppercase tracking-wide hover:bg-brand-border/50 transition-colors">
+                        <span>How do I deploy this to production?</span>
+                        <span class="transition group-open:rotate-180"><i class="fa-solid fa-chevron-down text-brand-primary"></i></span>
+                    </summary>
+                    <div class="text-brand-muted text-sm leading-relaxed px-5 pb-5 pt-0 border-t border-brand-border font-sans mt-4">
+                        <p class="mb-2">TIKTI is Cloud Native by design. The application tier is stateless and scales horizontally via standard Kubernetes HPA.</p>
+                        <p>We provide a standard Helm chart that provisions the TIKTI deployment, the KVRocks StatefulSet (with persistent volume claims), and exposes the JWKS endpoint via Ingress. Run <code>helm install tikti ./charts/tikti</code> to deploy a fully HA cluster.</p>
+                    </div>
+                </details>
+
+                <!-- Q4 -->
+                <details class="group bg-brand-surface border border-brand-border">
+                    <summary class="flex justify-between items-center font-bold cursor-pointer list-none p-5 text-white text-sm uppercase tracking-wide hover:bg-brand-border/50 transition-colors">
+                        <span>Does TIKTI lock me into a proprietary SDK?</span>
+                        <span class="transition group-open:rotate-180"><i class="fa-solid fa-chevron-down text-brand-primary"></i></span>
+                    </summary>
+                    <div class="text-brand-muted text-sm leading-relaxed px-5 pb-5 pt-0 border-t border-brand-border font-sans mt-4">
+                        <p>No. TIKTI implements a pragmatic subset of OIDC/OAuth2 standards tailored for service-to-service communication.</p>
+                        <p>It uses standard JWTs with compliant claims (`iss`, `sub`, `aud`, `exp`, `iat`). Any library compatible with RS256 signing and JWKS discovery (e.g., `node-jsonwebtoken`, Go's `jwt-go`, Python's `PyJWT`) works out of the box.</p>
+                    </div>
+                </details>
+
+                 <!-- Q5 -->
+                 <details class="group bg-brand-surface border border-brand-border">
+                    <summary class="flex justify-between items-center font-bold cursor-pointer list-none p-5 text-white text-sm uppercase tracking-wide hover:bg-brand-border/50 transition-colors">
+                        <span>How do I trace authentication failures in a distributed system?</span>
+                        <span class="transition group-open:rotate-180"><i class="fa-solid fa-chevron-down text-brand-primary"></i></span>
+                    </summary>
+                    <div class="text-brand-muted text-sm leading-relaxed px-5 pb-5 pt-0 border-t border-brand-border font-sans mt-4">
+                        <p>Observability is built-in. Every decision is logged structurally.</p>
+                        <p>TIKTI emits JSON logs for Auth Failures (incorrect passwords, invalid signatures), Token Exchanges, and Tenant Operations. These logs include the <code>correlationId</code>, <code>tenantId</code>, and <code>actorId</code>, making them ready for ingestion by SIEMs like Splunk or Datadog for immediate root-cause analysis.</p>
+                    </div>
+                </details>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="border-t border-brand-border bg-[#000000] py-12 font-mono text-xs">
+        <div class="container mx-auto px-6">
+            <div class="grid md:grid-cols-4 gap-8 mb-12">
+                <div class="col-span-2">
+                    <div class="flex items-center gap-2 mb-4">
+                        <span class="font-bold text-lg text-white tracking-widest">TIKTI</span>
+                    </div>
+                    <p class="text-brand-muted max-w-sm">
+                        Deterministic identity service. <br>
+                        Authentication and Authorization for the Age of Agents.
+                    </p>
+                </div>
+                
+                <div>
+                    <h5 class="font-bold text-white mb-4 uppercase tracking-widest">Docs</h5>
+                    <ul class="space-y-2 text-brand-muted">
+                        <li><a href="#" class="hover:text-brand-primary hover:underline">API Spec</a></li>
+                        <li><a href="#" class="hover:text-brand-primary hover:underline">CLI Manual</a></li>
+                    </ul>
+                </div>
+                
+                <div>
+                    <h5 class="font-bold text-white mb-4 uppercase tracking-widest">System</h5>
+                    <ul class="space-y-2 text-brand-muted">
+                        <li><a href="#" class="hover:text-brand-primary hover:underline">GitHub</a></li>
+                        <li><a href="#" class="hover:text-brand-primary hover:underline">Status</a></li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="border-t border-brand-border pt-8 flex flex-col md:flex-row justify-between items-center gap-4 text-brand-muted">
+                <p>&copy; 2026 TIKTI Project. NO RIGHTS RESERVED.</p>
+                <div class="flex gap-4">
+                    <span>v0.6.0</span>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Tab Logic -->
+    <script>
+        function switchTab(tabName) {
+            const tabs = ['cli', 'api', 'jwks'];
+            
+            tabs.forEach(t => {
+                const btn = document.getElementById(`btn-${t}`);
+                const content = document.getElementById(`content-${t}`);
+                
+                if (t === tabName) {
+                    content.classList.remove('hidden');
+                    btn.className = 'px-6 py-3 text-xs font-bold text-white bg-black border-t-2 border-brand-primary tracking-wider transition-all';
+                } else {
+                    content.classList.add('hidden');
+                    btn.className = 'px-6 py-3 text-xs font-bold text-brand-muted hover:text-white hover:bg-black/50 tracking-wider transition-all';
+                }
+            });
+        }
+    </script>
+</body>
+</html>
