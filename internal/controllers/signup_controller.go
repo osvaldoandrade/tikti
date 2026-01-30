@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -37,6 +38,9 @@ func (ctrl *signUpController) Handle(c *gin.Context) {
 	if idToken == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authentication"})
 		return
+	}
+	if strings.HasPrefix(strings.ToLower(idToken), "bearer ") {
+		idToken = strings.TrimSpace(idToken[7:])
 	}
 	claims, err := utils.ParseToken(idToken, ctrl.cfg.JwtSecret)
 	if err != nil {
