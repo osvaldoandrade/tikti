@@ -45,7 +45,14 @@ func (ctrl *oobSendController) Handle(c *gin.Context) {
 	})
 	result := <-ch
 	if err, ok := result.(error); ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		switch err {
+		case domain.ErrInvalidArgument:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case domain.ErrNotFound:
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
 		return
 	}
 	c.JSON(http.StatusOK, result)
@@ -63,7 +70,14 @@ func (ctrl *oobResetController) Handle(c *gin.Context) {
 	})
 	result := <-ch
 	if err, ok := result.(error); ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		switch err {
+		case domain.ErrInvalidArgument:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case domain.ErrNotFound:
+			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"kind": "identitytoolkit#SetAccountPasswordResponse"})

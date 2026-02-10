@@ -114,6 +114,8 @@ A client is a token consumer with an audience identifier.
 }
 ```
 
+The OOB `type` binds a code to a specific flow. Supported types are `PASSWORD_RESET` and `EMAIL_SIGNIN`.
+
 ## Redis key layout
 
 The target layout avoids full scans and enables O(1) lookups. Keys use explicit prefixes and tenant IDs to enforce isolation. For high cardinality data (users, memberships), a two‑step lookup is used to avoid storing large indexes within a single hash.
@@ -138,8 +140,9 @@ HSET clients:{tenantId} {clientId} {ClientJson}
 # API keys
 HSET apiKeys:{tenantId} {apiKeyId} {ApiKeyJson}
 
-# OOB codes
-HSET oobs:{tenantId} {code} {OobJson}
+# OOB codes (one-time)
+HSET oob:{code} email {email} reqType {type} expiresAt {unix}
+EXPIRE oob:{code} 900
 ```
 
 This layout enforces tenant scoping by key and avoids inter‑tenant data access without explicit tenant ID. It supports fast membership checks and role resolution with a small number of hash lookups.

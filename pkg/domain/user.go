@@ -59,6 +59,13 @@ type SignInReq struct {
 	ReturnSecureToken bool   `json:"returnSecureToken"`
 }
 
+// SignInWithOobCodeReq authenticates a user using an out-of-band code sent via email.
+type SignInWithOobCodeReq struct {
+	Email             string `json:"email"`
+	OobCode           string `json:"oobCode"`
+	ReturnSecureToken bool   `json:"returnSecureToken"`
+}
+
 // SignInResp mirrors Firebase's response with token, identifiers and expiration.
 type SignInResp struct {
 	IdToken   string `json:"idToken"`
@@ -135,7 +142,7 @@ type RevokeResp struct {
 	RevokedAt    string `json:"revokedAt"`
 }
 
-// SendOobReq requests an out-of-band email for password resets or verification.
+// SendOobReq requests an out-of-band code for password resets or email sign-in flows.
 type SendOobReq struct {
 	RequestType string `json:"requestType"`
 	Email       string `json:"email"`
@@ -146,6 +153,15 @@ type SendOobResp struct {
 	Kind    string `json:"kind"`
 	Email   string `json:"email"`
 	OobCode string `json:"oobCode"`
+}
+
+// SendOobTenantResp returns an out-of-band code for workflows that orchestrate delivery externally.
+type SendOobTenantResp struct {
+	Kind        string `json:"kind"`
+	Email       string `json:"email"`
+	RequestType string `json:"requestType"`
+	ExpiresIn   int    `json:"expiresIn"`
+	OobCode     string `json:"oobCode"`
 }
 
 // ResetPwdReq carries the OOB code and new password for password reset flows.

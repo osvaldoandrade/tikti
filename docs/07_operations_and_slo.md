@@ -15,6 +15,8 @@ Tikti must load configuration from a YAML file and allow environment overrides. 
 
 Environment overrides must be supported for each field so that secrets can be delivered through a secret manager. The process must refuse to start if `issuerBaseUrl` or `jwksPrivateKey` is missing when RS256 is enabled.
 
+Tikti does not own email delivery. OOB codes are generated and persisted by Tikti, while delivery is orchestrated externally (for example, by a Cadence workflow that calls Tikti and then calls the Notifications Service).
+
 ## Health endpoints
 
 Tikti must expose two health endpoints.
@@ -31,6 +33,7 @@ Authentication endpoints are a primary target for brute‑force attacks. Default
 Recommended defaults:
 
 - `signIn` / `signInWithPassword`: 5 requests per minute per IP, 5 per minute per email.
+- `signInWithOobCode`: 10 requests per minute per IP, 10 per minute per email.
 - `token/exchange`: 5 requests per minute per user id.
 - `lookup`: 60 requests per minute per API key.
 - OOB endpoints: 3 requests per hour per email.

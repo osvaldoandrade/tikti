@@ -23,6 +23,7 @@ import (
 type UserService interface {
 	SignUp(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error)
 	SignIn(ctx context.Context, req domain.SignInReq) (*domain.SignInResp, error)
+	SignInWithOobCode(ctx context.Context, req domain.SignInWithOobCodeReq) (*domain.SignInResp, error)
 	Lookup(ctx context.Context, req domain.LookupReq) (*domain.LookupResp, error)
 	TokenExchange(ctx context.Context, req domain.TokenExchangeReq) (*domain.TokenExchangeResp, error)
 	JWKS(ctx context.Context) (map[string]any, error)
@@ -32,6 +33,7 @@ type UserService interface {
 	UpdateUser(ctx context.Context, req domain.UpdateReq) (*domain.UpdateResp, error)
 	DeleteUser(ctx context.Context, req domain.DeleteReq) error
 	SendOob(ctx context.Context, req domain.SendOobReq) (*domain.SendOobResp, error)
+	SendOobForTenant(ctx context.Context, tenantID string, req domain.SendOobReq) (*domain.SendOobTenantResp, error)
 	ResetPassword(ctx context.Context, req domain.ResetPwdReq) error
 	GetAllUsers(ctx context.Context) ([]*domain.User, error)
 }
@@ -120,17 +122,7 @@ func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain
 	if e := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(req.Password)); e != nil {
 		return nil, domain.ErrInvalidCreds
 	}
-	claims := jwt.MapClaims{
-		"userId": u.Id,
-		"email":  u.Email,
-		"role":   u.Role,
-		"iss":    s.issuerBaseURL,
-		"aud":    s.defaultAudience,
-		"exp":    time.Now().Add(time.Hour).Unix(),
-		"iat":    time.Now().Unix(),
-	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	signed, e2 := tok.SignedString([]byte(s.jwtSecret))
+	signed, expiresIn, e2 := s.issueIDToken(u)
 	if e2 != nil {
 		return nil, e2
 	}
@@ -138,7 +130,43 @@ func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain
 		IdToken:   signed,
 		Email:     u.Email,
 		LocalId:   u.Id,
-		ExpiresIn: 3600,
+		ExpiresIn: expiresIn,
+	}, nil
+}
+
+// SignInWithOobCode authenticates the user using a one-time code delivered via email.
+func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWithOobCodeReq) (*domain.SignInResp, error) {
+	email := strings.TrimSpace(req.Email)
+	code := strings.TrimSpace(req.OobCode)
+	if email == "" || code == "" {
+		return nil, domain.ErrInvalidArgument
+	}
+
+	oobEmail, err := s.repo.ConsumeOobCode(ctx, code, "EMAIL_SIGNIN")
+	if err != nil {
+		return nil, err
+	}
+	if !strings.EqualFold(oobEmail, email) {
+		return nil, domain.ErrInvalidOob
+	}
+
+	u, findErr := s.repo.FindByEmail(ctx, oobEmail)
+	if findErr != nil || u == nil {
+		return nil, domain.ErrInvalidCreds
+	}
+	if u.Status == domain.UserStatusSuspended {
+		return nil, domain.ErrInvalidCreds
+	}
+
+	signed, expiresIn, tokenErr := s.issueIDToken(u)
+	if tokenErr != nil {
+		return nil, tokenErr
+	}
+	return &domain.SignInResp{
+		IdToken:   signed,
+		Email:     u.Email,
+		LocalId:   u.Id,
+		ExpiresIn: expiresIn,
 	}, nil
 }
 
@@ -563,24 +591,130 @@ func (s *userService) DeleteUser(ctx context.Context, req domain.DeleteReq) erro
 
 // SendOob generates a one-time code and stores payload metadata for subsequent resets.
 func (s *userService) SendOob(ctx context.Context, req domain.SendOobReq) (*domain.SendOobResp, error) {
-	u, e := s.repo.FindByEmail(ctx, req.Email)
-	if e != nil || u == nil {
+	reqType := strings.TrimSpace(strings.ToUpper(req.RequestType))
+	switch reqType {
+	case "PASSWORD_RESET", "EMAIL_SIGNIN":
+	default:
+		return nil, domain.ErrInvalidArgument
+	}
+
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		return nil, domain.ErrInvalidArgument
+	}
+
+	u, e := s.repo.FindByEmail(ctx, email)
+	if e != nil || u == nil || u.Status == domain.UserStatusSuspended {
+		if reqType == "EMAIL_SIGNIN" {
+			// Anti-enumeration: always return success for email sign-in requests.
+			return &domain.SendOobResp{
+				Kind:    "identitytoolkit#GetOobConfirmationCodeResponse",
+				Email:   email,
+				OobCode: uuid.NewString(),
+			}, nil
+		}
 		return nil, domain.ErrNotFound
 	}
 	code := uuid.NewString()
-	if err := s.repo.SaveOobCode(ctx, code, req.Email, req.RequestType); err != nil {
+	if err := s.repo.SaveOobCode(ctx, code, email, reqType); err != nil {
 		return nil, err
 	}
 	return &domain.SendOobResp{
 		Kind:    "identitytoolkit#GetOobConfirmationCodeResponse",
-		Email:   req.Email,
+		Email:   email,
 		OobCode: code,
+	}, nil
+}
+
+func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req domain.SendOobReq) (*domain.SendOobTenantResp, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return nil, domain.ErrInvalidTenant
+	}
+
+	reqType := strings.TrimSpace(strings.ToUpper(req.RequestType))
+	switch reqType {
+	case "PASSWORD_RESET", "EMAIL_SIGNIN":
+	default:
+		return nil, domain.ErrInvalidArgument
+	}
+
+	email := strings.TrimSpace(req.Email)
+	if email == "" {
+		return nil, domain.ErrInvalidArgument
+	}
+
+	u, e := s.repo.FindByEmail(ctx, email)
+	if e != nil {
+		return nil, e
+	}
+	if reqType == "PASSWORD_RESET" {
+		if u == nil || u.Status == domain.UserStatusSuspended {
+			return nil, domain.ErrNotFound
+		}
+	} else {
+		// EMAIL_SIGNIN: allow onboarding by creating the user record when missing.
+		if u == nil {
+			role := domain.RoleCompanyEmployee
+			rawPassword := uuid.NewString()
+			hash, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
+			if err != nil {
+				return nil, err
+			}
+			u = &domain.User{
+				Id:        uuid.NewString(),
+				Email:     email,
+				Password:  string(hash),
+				Role:      role,
+				Status:    domain.UserStatusActive,
+				CompanyId: &tenantID,
+				CreatedAt: time.Now(),
+			}
+			if err := s.repo.CreateUser(ctx, u); err != nil {
+				return nil, err
+			}
+			if s.membershipRepo != nil {
+				_ = s.membershipRepo.Create(ctx, &domain.Membership{
+					Id:        uuid.NewString(),
+					TenantId:  tenantID,
+					UserId:    u.Id,
+					Roles:     []string{string(role)},
+					CreatedAt: time.Now(),
+				})
+			}
+		}
+		if u.Status == domain.UserStatusSuspended {
+			return nil, domain.ErrInvalidCreds
+		}
+		// If multi-tenant membership is enabled, require the user to be scoped to this tenant.
+		if s.membershipRepo != nil {
+			if m, _ := s.membershipRepo.Get(ctx, tenantID, u.Id); m == nil {
+				if u.CompanyId == nil || *u.CompanyId != tenantID {
+					return nil, domain.ErrInvalidTenant
+				}
+			}
+		} else if u.CompanyId != nil && *u.CompanyId != "" && *u.CompanyId != tenantID {
+			return nil, domain.ErrInvalidTenant
+		}
+	}
+
+	code := uuid.NewString()
+	if err := s.repo.SaveOobCode(ctx, code, email, reqType); err != nil {
+		return nil, err
+	}
+
+	return &domain.SendOobTenantResp{
+		Kind:        "tikti#SendOobResponse",
+		Email:       email,
+		RequestType: reqType,
+		ExpiresIn:   900,
+		OobCode:     code,
 	}, nil
 }
 
 // ResetPassword exchanges an OOB code for the stored email and updates the password hash.
 func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq) error {
-	email, e := s.repo.GetEmailByOobCode(ctx, req.OobCode)
+	email, e := s.repo.ConsumeOobCode(ctx, req.OobCode, "PASSWORD_RESET")
 	if e != nil {
 		return domain.ErrInvalidOob
 	}
@@ -593,10 +727,31 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 	if e3 := s.repo.UpdateUser(ctx, u); e3 != nil {
 		return e3
 	}
-	return s.repo.DeleteOobCode(ctx, req.OobCode)
+	return nil
 }
 
 // GetAllUsers retrieves every stored user without filtering, mainly for administrative use.
 func (s *userService) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 	return s.repo.GetAllUsers(ctx)
+}
+
+func (s *userService) issueIDToken(u *domain.User) (string, int, error) {
+	if u == nil {
+		return "", 0, domain.ErrInvalidArgument
+	}
+	claims := jwt.MapClaims{
+		"userId": u.Id,
+		"email":  u.Email,
+		"role":   u.Role,
+		"iss":    s.issuerBaseURL,
+		"aud":    s.defaultAudience,
+		"exp":    time.Now().Add(time.Hour).Unix(),
+		"iat":    time.Now().Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	signed, err := tok.SignedString([]byte(s.jwtSecret))
+	if err != nil {
+		return "", 0, err
+	}
+	return signed, 3600, nil
 }

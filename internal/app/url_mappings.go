@@ -16,6 +16,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	v1.POST("/accounts/signUp", controllers.NewSignUpController(userService, cfg).Handle)
 	signInCtrl := controllers.NewSignInController(userService, cfg)
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
+	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
 	v1.GET("/.well-known/jwks.json", controllers.NewJWKSController(userService).Handle)
 
 	protected := v1.Group("/")
@@ -37,6 +38,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		protected.POST("/accounts/delete", controllers.NewDeleteController(userService, cfg).Handle)
 		protected.POST("/accounts/sendOobCode", controllers.NewOobSendController(userService, cfg).Handle)
 		protected.POST("/accounts/resetPassword", controllers.NewOobResetController(userService, cfg).Handle)
+		protected.POST("/tenants/:tenantId/oob/send", controllers.NewOobDispatchController(userService).Handle)
 
 		protected.POST("/tenants", tenantCtrl.Create)
 		protected.GET("/tenants/id/:id", tenantCtrl.Get)

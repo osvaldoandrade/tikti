@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -18,8 +20,7 @@ type UserRepository interface {
 	SetStatus(ctx context.Context, email string, status domain.UserStatus) (*domain.User, error)
 	IncrementTokenVersion(ctx context.Context, email string) (int, *domain.User, error)
 	SaveOobCode(ctx context.Context, code, email, reqType string) error
-	GetEmailByOobCode(ctx context.Context, code string) (string, error)
-	DeleteOobCode(ctx context.Context, code string) error
+	ConsumeOobCode(ctx context.Context, code string, expectedReqType string) (string, error)
 	GetAllUsers(ctx context.Context) ([]*domain.User, error)
 }
 
@@ -32,12 +33,40 @@ const (
 	usersHashV2      = "users_v2"
 	legacyUsersHash  = "users"
 	userByEmailKeyNS = "userByEmail:"
+	legacyOobHash    = "oobs"
+	oobKeyPrefix     = "oob:"
 )
 
 // NewRedisRepo instantiates a repository using the provided Redis client.
 func NewRedisRepo(rdb *redis.Client) UserRepository {
 	return &redisRepo{client: rdb}
 }
+
+var consumeOobCodeScript = redis.NewScript(`
+local reqType = redis.call("HGET", KEYS[1], "reqType")
+if not reqType or reqType == false then
+  return ""
+end
+if reqType ~= ARGV[1] then
+  return ""
+end
+local exp = redis.call("HGET", KEYS[1], "expiresAt")
+if exp and exp ~= false then
+  local now = tonumber(ARGV[2])
+  local expNum = tonumber(exp)
+  if now and expNum and expNum < now then
+    redis.call("DEL", KEYS[1])
+    return ""
+  end
+end
+local email = redis.call("HGET", KEYS[1], "email")
+if not email or email == false then
+  redis.call("DEL", KEYS[1])
+  return ""
+end
+redis.call("DEL", KEYS[1])
+return email
+`)
 
 // CreateUser serializes and stores a user document under the users hash.
 func (r *redisRepo) CreateUser(ctx context.Context, user *domain.User) error {
@@ -184,45 +213,46 @@ func (r *redisRepo) IncrementTokenVersion(ctx context.Context, email string) (in
 
 // SaveOobCode stores a time-bounded payload keyed by the generated OOB code.
 func (r *redisRepo) SaveOobCode(ctx context.Context, code, email, reqType string) error {
-	payload := map[string]interface{}{
+	code = strings.TrimSpace(code)
+	email = strings.TrimSpace(email)
+	reqType = strings.TrimSpace(reqType)
+	if code == "" || email == "" || reqType == "" {
+		return domain.ErrInvalidArgument
+	}
+
+	key := oobKey(code)
+	expiresAt := time.Now().Add(15 * time.Minute).Unix()
+
+	if err := r.client.HSet(ctx, key, map[string]interface{}{
 		"email":     email,
 		"reqType":   reqType,
-		"expiresAt": time.Now().Add(15 * time.Minute).Unix(),
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
+		"expiresAt": expiresAt,
+	}).Err(); err != nil {
 		return err
 	}
-	return r.client.HSet(ctx, "oobs", code, data).Err()
+	return r.client.Expire(ctx, key, 15*time.Minute).Err()
 }
 
-// GetEmailByOobCode reads the OOB hash, validates expiration and returns the associated email.
-func (r *redisRepo) GetEmailByOobCode(ctx context.Context, code string) (string, error) {
-	val, err := r.client.HGet(ctx, "oobs", code).Result()
-	if err == redis.Nil {
+// ConsumeOobCode validates and atomically consumes an OOB code of the expected type, returning its email.
+func (r *redisRepo) ConsumeOobCode(ctx context.Context, code string, expectedReqType string) (string, error) {
+	code = strings.TrimSpace(code)
+	expectedReqType = strings.TrimSpace(expectedReqType)
+	if code == "" || expectedReqType == "" {
 		return "", domain.ErrInvalidOob
 	}
+
+	key := oobKey(code)
+	now := strconv.FormatInt(time.Now().Unix(), 10)
+	result, err := consumeOobCodeScript.Run(ctx, r.client, []string{key}, expectedReqType, now).Result()
 	if err != nil {
 		return "", err
 	}
-	if val == "" {
-		return "", domain.ErrInvalidOob
+	if email := coerceString(result); email != "" {
+		return email, nil
 	}
-	var payload map[string]interface{}
-	if e := json.Unmarshal([]byte(val), &payload); e != nil {
-		return "", e
-	}
-	exp, _ := payload["expiresAt"].(float64)
-	if float64(time.Now().Unix()) > exp {
-		return "", domain.ErrInvalidOob
-	}
-	em, _ := payload["email"].(string)
-	return em, nil
-}
 
-// DeleteOobCode removes the stored OOB record once consumed.
-func (r *redisRepo) DeleteOobCode(ctx context.Context, code string) error {
-	return r.client.HDel(ctx, "oobs", code).Err()
+	// Fallback for legacy codes stored in the global hash ("oobs") for a short post-deploy window.
+	return r.consumeLegacyOobCode(ctx, code, expectedReqType)
 }
 
 // GetAllUsers returns all stored users without filtering, primarily for diagnostics.
@@ -258,4 +288,59 @@ func (r *redisRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 		users = append(users, &u)
 	}
 	return users, nil
+}
+
+func oobKey(code string) string {
+	return oobKeyPrefix + code
+}
+
+func coerceString(v interface{}) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case []byte:
+		return string(t)
+	default:
+		return ""
+	}
+}
+
+type legacyOobPayload struct {
+	Email     string `json:"email"`
+	ReqType   string `json:"reqType"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+func (r *redisRepo) consumeLegacyOobCode(ctx context.Context, code string, expectedReqType string) (string, error) {
+	val, err := r.client.HGet(ctx, legacyOobHash, code).Result()
+	if err == redis.Nil {
+		return "", domain.ErrInvalidOob
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(val) == "" {
+		return "", domain.ErrInvalidOob
+	}
+
+	var payload legacyOobPayload
+	if e := json.Unmarshal([]byte(val), &payload); e != nil {
+		return "", e
+	}
+	if payload.ExpiresAt > 0 && time.Now().Unix() > payload.ExpiresAt {
+		_ = r.client.HDel(ctx, legacyOobHash, code).Err()
+		return "", domain.ErrInvalidOob
+	}
+	if strings.TrimSpace(payload.ReqType) != expectedReqType {
+		// Do not delete on type mismatch so the code can still be consumed by the correct endpoint.
+		return "", domain.ErrInvalidOob
+	}
+	if strings.TrimSpace(payload.Email) == "" {
+		_ = r.client.HDel(ctx, legacyOobHash, code).Err()
+		return "", domain.ErrInvalidOob
+	}
+	if err := r.client.HDel(ctx, legacyOobHash, code).Err(); err != nil {
+		return "", err
+	}
+	return payload.Email, nil
 }

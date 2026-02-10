@@ -128,3 +128,12 @@ The integration must treat token exchange as an authorization boundary. Failure 
 - Event types not allowed: 403.
 
 These errors must be deterministic and must be logged with tenantId and subject.
+
+## OOB email delivery (out of scope)
+
+OOB email delivery is orchestrated outside of codeQ. The recommended approach is to use a workflow engine (for example, Cadence) to:
+
+1) call Tikti to generate and persist an OOB code (`POST /v1/tenants/{tenantId}/oob/send?key=API_KEY`), and then
+2) call the Notifications Service to send the email containing the code.
+
+This keeps Tikti focused on identity/token policy and keeps email delivery concerns outside the identity boundary.
