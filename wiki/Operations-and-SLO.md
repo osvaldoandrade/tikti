@@ -1,6 +1,3 @@
-> Canonical source: [`docs/07_operations_and_slo.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/07_operations_and_slo.md)
-> Synced on: 2026-02-12
-
 # Operations and SLO
 
 This document defines operational expectations for Tikti in production. It covers configuration, health behavior, rate limits, logging, auditing, and SLO targets. The requirements here are normative because they influence security and stability.

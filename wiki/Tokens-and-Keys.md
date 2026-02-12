@@ -1,6 +1,3 @@
-> Canonical source: [`docs/03_tokens_and_keys.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/03_tokens_and_keys.md)
-> Synced on: 2026-02-12
-
 # Tokens and Keys
 
 This document defines the token taxonomy, claim semantics, signing algorithms, JWKS publishing, and verification rules. It is written to support interoperable validation by external resource servers such as codeQ. The token model is intentionally explicit; a token is valid only when all required claims are present and validated against configuration and policy.

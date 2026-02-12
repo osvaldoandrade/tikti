@@ -1,6 +1,3 @@
-> Canonical source: [`docs/04_api_spec.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/04_api_spec.md)
-> Synced on: 2026-02-12
-
 # API Specification
 
 This document specifies the HTTP contract for Tikti. It describes endpoint behavior, payloads, validation rules, and error semantics. All endpoints accept and return JSON with UTF‑8 encoding. The base URL is environment‑specific but the path structure is stable. In this document, the base URL is `https://api.storifly.ai`.

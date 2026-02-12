@@ -1,6 +1,3 @@
-> Canonical source: [`docs/11_unit_test_execution_backlog.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/11_unit_test_execution_backlog.md)
-> Synced on: 2026-02-12
-
 # Unit Test Execution Backlog
 
 ## Objective

@@ -1,6 +1,3 @@
-> Canonical source: [`docs/10_unit_test_functional_matrix.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/10_unit_test_functional_matrix.md)
-> Synced on: 2026-02-12
-
 # Unit Test Functional Matrix
 
 ## Objective

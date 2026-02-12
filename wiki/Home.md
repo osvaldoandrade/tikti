@@ -48,7 +48,3 @@ This wiki is organized in the same docs-first style used by large engineering do
 - [CLI Reference](CLI-Reference)
 - [Unit Test Functional Matrix](Unit-Test-Functional-Matrix)
 - [Unit Test Execution Backlog](Unit-Test-Execution-Backlog)
-
-## Source of Truth
-
-The canonical technical specs live in [`docs/`](https://github.com/osvaldoandrade/tikti/tree/main/docs) in the main repository. This wiki mirrors those specs and adds navigation for operational use.

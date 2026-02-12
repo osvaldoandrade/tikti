@@ -1,6 +1,3 @@
-> Canonical source: [`docs/01_overview.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/01_overview.md)
-> Synced on: 2026-02-12
-
 # Overview
 
 This document defines the high‑level specification for Tikti, the identity service responsible for authentication and authorization across multiple tenants and resource servers. The text is normative: unless stated otherwise, statements use “must” to indicate required behavior and “should” to indicate strong recommendations. The goal is to be precise enough that two independent implementations converge on the same behavior.

@@ -1,6 +1,3 @@
-> Canonical source: [`docs/02_architecture_and_data_model.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/02_architecture_and_data_model.md)
-> Synced on: 2026-02-12
-
 # Architecture and Data Model
 
 This document specifies Tikti’s architecture and data model with enough precision to drive storage design, API behavior, and authorization logic. It includes data structures, key layout, and algorithmic complexity where decisions depend on scale. The target design assumes Redis as the primary store, but the model is storage‑agnostic and can be implemented over any key‑value database with hash primitives.

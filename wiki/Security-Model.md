@@ -1,6 +1,6 @@
 # Security Model
 
-This page centralizes Tikti security decisions from the canonical specs.
+This page centralizes Tikti security decisions.
 
 ## Identity and Access Tokens
 

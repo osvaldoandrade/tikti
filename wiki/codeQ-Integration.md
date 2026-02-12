@@ -1,6 +1,3 @@
-> Canonical source: [`docs/06_codeq_integration.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/06_codeq_integration.md)
-> Synced on: 2026-02-12
-
 # codeQ Integration
 
 This document specifies the Tikti requirements that enable codeQ producer and worker authentication. The goal is to make the integration deterministic, auditable, and secure, while preserving compatibility with existing codeQ flows that rely on token lookup.

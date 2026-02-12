@@ -1,6 +1,3 @@
-> Canonical source: [`docs/09_cli_spec.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/09_cli_spec.md)
-> Synced on: 2026-02-12
-
 # CLI Reference
 
 This document specifies the Tikti command‑line interface. The CLI is a thin client that exercises the HTTP API and provides deterministic automation for operators, CI, and local development. The CLI must be feature‑complete for tenant administration, token exchange, and validation workflows required by codeQ and other resource servers. The design favors explicit configuration, reproducible outputs, and secure token handling.

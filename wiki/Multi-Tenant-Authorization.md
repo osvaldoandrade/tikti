@@ -1,6 +1,3 @@
-> Canonical source: [`docs/05_multi_tenant_authorization.md`](https://github.com/osvaldoandrade/tikti/blob/main/docs/05_multi_tenant_authorization.md)
-> Synced on: 2026-02-12
-
 # Multi-Tenant Authorization
 
 This document specifies how Tikti evaluates authorization in a multi‑tenant environment. The intent is to define a deterministic policy that can be implemented without ambiguity and that remains stable across releases. The algorithm is expressed in prose and in pseudocode; complexity is included where it impacts design.
