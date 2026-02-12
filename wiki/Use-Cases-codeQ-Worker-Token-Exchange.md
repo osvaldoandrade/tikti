@@ -23,6 +23,25 @@ Issue an RS256 access token for codeQ worker operations.
 5. Worker presents token to codeQ endpoints.
 6. codeQ validates token signature and claims against JWKS and policy.
 
+### Sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant T as Tikti API
+    participant J as Tikti JWKS
+    participant Q as codeQ API
+
+    C->>T: POST /v1/accounts/token/exchange?key=API_KEY
+    T->>T: Validate idToken, membership, scopes, audience
+    T-->>C: RS256 access token (aud/scope/tid/eventTypes)
+    C->>Q: Request with Bearer access token
+    Q->>J: GET /.well-known/jwks.json (cache/fetch)
+    J-->>Q: Public keys (kid)
+    Q->>Q: Validate signature + claims
+    Q-->>C: Authorized response
+```
+
 ## Expected outcomes
 
 - Token is accepted only for matching audience and permitted scopes.

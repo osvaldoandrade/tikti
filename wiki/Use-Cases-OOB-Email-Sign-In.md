@@ -26,6 +26,29 @@ Authenticate a user via a one-time code sent to email.
 7. Tikti validates code, expiry, single-use, and request type match.
 8. Tikti returns authentication token payload.
 
+### Sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant U as End User
+    participant F as Client App
+    participant T as Tikti API
+    participant W as Notification Worker
+    participant E as Email Provider
+
+    U->>F: Enter email and click authenticate
+    F->>T: POST /v1/accounts/sendOobCode?key=API_KEY
+    T->>T: Ensure user exists / generate OOB / persist state
+    T->>W: Dispatch OOB delivery task
+    W->>E: Send OOB token email
+    E-->>U: Deliver token
+    U->>F: Enter OOB token
+    F->>T: POST /v1/accounts/signInWithOobCode
+    T->>T: Validate code, expiry, single-use, requestType
+    T-->>F: Auth token payload
+    F-->>U: Authenticated session
+```
+
 ## Expected outcomes
 
 - New user can authenticate without password bootstrap.

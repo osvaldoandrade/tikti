@@ -22,6 +22,29 @@ Validate Tikti-issued access tokens in downstream APIs.
 6. Tenant claim (`tid`) is used to enforce tenant isolation.
 7. Request is accepted only if all checks pass.
 
+### Sequence diagram
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant R as Resource Server
+    participant J as Tikti JWKS
+
+    C->>R: API request with Bearer token
+    R->>R: Parse header and resolve kid
+    alt JWKS key not cached
+        R->>J: GET /.well-known/jwks.json
+        J-->>R: JWKS keys
+    end
+    R->>R: Validate RS256 signature
+    R->>R: Validate iss/aud/exp/scope/tid
+    alt Valid token and claims
+        R-->>C: 2xx authorized response
+    else Invalid token or claims
+        R-->>C: 401/403 denied response
+    end
+```
+
 ## Expected outcomes
 
 - Invalid or forged tokens are rejected deterministically.
