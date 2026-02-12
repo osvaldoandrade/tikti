@@ -10,13 +10,13 @@ This page consolidates compatibility and rollout guarantees.
 
 ## Rollout Strategy
 
-Use the staged plan in [Migration and Implementation Plan](Migration-and-Implementation-Plan):
+Use this rollout sequence:
 
-1. Hardening and issuer normalization.
-2. RS256 signing and JWKS.
-3. Multi-tenant domain and authorization.
-4. Token exchange and integration validation.
-5. Verification and monitored rollout.
+1. Validate API compatibility and token contract stability in pre-production.
+2. Deploy JWKS and RS256 token validation paths with monitoring enabled.
+3. Enable multi-tenant authorization checks and audit trail enforcement.
+4. Roll out token exchange and codeQ integration flows.
+5. Verify SLO, error budget impact, and rollback readiness before full rollout.
 
 ## Release Checklist
 

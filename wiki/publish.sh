@@ -11,18 +11,19 @@ TMP_DIR="$(mktemp -d)"
 cleanup() { rm -rf "$TMP_DIR"; }
 trap cleanup EXIT
 
-cp -R wiki/* "$TMP_DIR"/
-find "$TMP_DIR" -name 'publish.sh' -delete
-
-cd "$TMP_DIR"
-git init >/dev/null
-git checkout -b master >/dev/null
-git add .
-git commit -m "docs: publish tikti wiki" >/dev/null
-
 if git ls-remote "$WIKI_URL" >/dev/null 2>&1; then
-  git remote add origin "$WIKI_URL"
-  git push -u origin master
+  git clone "$WIKI_URL" "$TMP_DIR/wiki" >/dev/null
+  rsync -a --delete --exclude '.git' --exclude 'publish.sh' wiki/ "$TMP_DIR/wiki/"
+
+  cd "$TMP_DIR/wiki"
+  git add -A
+  if git diff --cached --quiet; then
+    echo "No wiki changes to publish."
+    exit 0
+  fi
+
+  git commit -m "docs: publish tikti wiki" >/dev/null
+  git push origin master
 else
   echo "Wiki repository is not available: $WIKI_URL"
   echo "Enable wiki in repository settings and create first page in UI if required, then run again."

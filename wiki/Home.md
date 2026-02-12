@@ -14,25 +14,40 @@ This wiki is organized in the same docs-first style used by large engineering do
 
 ## Documentation Map
 
-- Foundations
-  - [Get Started](Get-Started)
-  - [Overview](Overview)
-  - [Architecture and Data Model](Architecture-and-Data-Model)
-  - [Security Model](Security-Model)
-- Core Contracts
-  - [Tokens and Keys](Tokens-and-Keys)
-  - [API Specification](API-Specification)
-  - [Multi-Tenant Authorization](Multi-Tenant-Authorization)
-  - [codeQ Integration](codeQ-Integration)
-- Operations
-  - [Operations and SLO](Operations-and-SLO)
-  - [Troubleshooting](Troubleshooting)
-  - [Migration and Implementation Plan](Migration-and-Implementation-Plan)
-  - [Release and Compatibility](Release-and-Compatibility)
-- Tooling and Validation
-  - [CLI Specification](CLI-Specification)
-  - [Unit Test Functional Matrix](Unit-Test-Functional-Matrix)
-  - [Unit Test Execution Backlog](Unit-Test-Execution-Backlog)
+### Foundations
+
+- [Get Started](Get-Started)
+- [Overview](Overview)
+- [Architecture and Data Model](Architecture-and-Data-Model)
+- [Security Model](Security-Model)
+
+### Core Contracts
+
+- [Tokens and Keys](Tokens-and-Keys)
+- [API Specification](API-Specification)
+- [Multi-Tenant Authorization](Multi-Tenant-Authorization)
+- [codeQ Integration](codeQ-Integration)
+
+### Use Cases
+
+- [Use Cases](Use-Cases)
+- [Use Case: OOB Email Sign-In](Use-Cases-OOB-Email-Sign-In)
+- [Use Case: Password Sign-In](Use-Cases-Password-Sign-In)
+- [Use Case: codeQ Worker Token Exchange](Use-Cases-codeQ-Worker-Token-Exchange)
+- [Use Case: Tenant Admin Lifecycle](Use-Cases-Tenant-Admin-Lifecycle)
+- [Use Case: Resource Server Token Validation](Use-Cases-Resource-Server-Token-Validation)
+
+### Operations
+
+- [Operations and SLO](Operations-and-SLO)
+- [Troubleshooting](Troubleshooting)
+- [Release and Compatibility](Release-and-Compatibility)
+
+### Tooling and Validation
+
+- [CLI Reference](CLI-Reference)
+- [Unit Test Functional Matrix](Unit-Test-Functional-Matrix)
+- [Unit Test Execution Backlog](Unit-Test-Execution-Backlog)
 
 ## Source of Truth
 
