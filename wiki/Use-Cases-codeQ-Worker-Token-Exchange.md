@@ -1,4 +1,4 @@
-# Use Case: codeQ Worker Token Exchange
+# codeQ Worker Token Exchange
 
 Issue an RS256 access token for codeQ worker operations.
 

@@ -1,4 +1,4 @@
-# Use Case: OOB Email Sign-In
+# OOB Email Sign-In
 
 Authenticate a user via a one-time code sent to email.
 

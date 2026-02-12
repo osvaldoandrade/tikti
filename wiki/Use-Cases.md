@@ -10,11 +10,11 @@ This section defines concrete end-to-end scenarios for Tikti. Each use case maps
 
 ## Core use cases
 
-1. [Use Case: OOB Email Sign-In](Use-Cases-OOB-Email-Sign-In)
-2. [Use Case: Password Sign-In](Use-Cases-Password-Sign-In)
-3. [Use Case: codeQ Worker Token Exchange](Use-Cases-codeQ-Worker-Token-Exchange)
-4. [Use Case: Tenant Admin Lifecycle](Use-Cases-Tenant-Admin-Lifecycle)
-5. [Use Case: Resource Server Token Validation](Use-Cases-Resource-Server-Token-Validation)
+1. [OOB Email Sign-In](Use-Cases-OOB-Email-Sign-In)
+2. [Password Sign-In](Use-Cases-Password-Sign-In)
+3. [codeQ Worker Token Exchange](Use-Cases-codeQ-Worker-Token-Exchange)
+4. [Tenant Admin Lifecycle](Use-Cases-Tenant-Admin-Lifecycle)
+5. [Resource Server Token Validation](Use-Cases-Resource-Server-Token-Validation)
 
 ## Traceability map
 

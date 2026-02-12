@@ -1,4 +1,4 @@
-# Use Case: Tenant Admin Lifecycle
+# Tenant Admin Lifecycle
 
 Manage tenant resources and memberships through admin operations.
 

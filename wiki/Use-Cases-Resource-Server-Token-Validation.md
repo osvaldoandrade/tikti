@@ -1,4 +1,4 @@
-# Use Case: Resource Server Token Validation
+# Resource Server Token Validation
 
 Validate Tikti-issued access tokens in downstream APIs.
 

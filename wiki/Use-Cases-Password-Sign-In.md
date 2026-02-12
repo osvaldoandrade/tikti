@@ -1,4 +1,4 @@
-# Use Case: Password Sign-In
+# Password Sign-In
 
 Authenticate an existing user with email and password.
 

@@ -1,7 +1,6 @@
 # Tikti Docs
 
 ## Start Here
-- [Home](Home)
 - [Get Started](Get-Started)
 - [Overview](Overview)
 
@@ -17,11 +16,11 @@
 
 ## Use Cases
 - [Use Cases](Use-Cases)
-- [Use Case: OOB Email Sign-In](Use-Cases-OOB-Email-Sign-In)
-- [Use Case: Password Sign-In](Use-Cases-Password-Sign-In)
-- [Use Case: codeQ Worker Token Exchange](Use-Cases-codeQ-Worker-Token-Exchange)
-- [Use Case: Tenant Admin Lifecycle](Use-Cases-Tenant-Admin-Lifecycle)
-- [Use Case: Resource Server Token Validation](Use-Cases-Resource-Server-Token-Validation)
+- [OOB Email Sign-In](Use-Cases-OOB-Email-Sign-In)
+- [Password Sign-In](Use-Cases-Password-Sign-In)
+- [codeQ Worker Token Exchange](Use-Cases-codeQ-Worker-Token-Exchange)
+- [Tenant Admin Lifecycle](Use-Cases-Tenant-Admin-Lifecycle)
+- [Resource Server Token Validation](Use-Cases-Resource-Server-Token-Validation)
 
 ## Operations
 - [Operations and SLO](Operations-and-SLO)
