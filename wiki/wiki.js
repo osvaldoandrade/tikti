@@ -57,8 +57,16 @@ const navEl = document.getElementById("nav");
 const contentEl = document.getElementById("content");
 const searchEl = document.getElementById("search");
 const currentPageEl = document.getElementById("current-page");
-
 const ALL_PAGE_SLUGS = NAV.flatMap((group) => group.pages.map((p) => p[1]));
+
+let mermaidConfigured = false;
+
+marked.setOptions({
+  gfm: true,
+  breaks: false,
+  mangle: false,
+  headerIds: true,
+});
 
 function getPageFromUrl() {
   const page = new URLSearchParams(window.location.search).get("page");
@@ -89,12 +97,10 @@ function escapeHtml(value) {
 
 function rewriteInternalLinks() {
   const anchors = contentEl.querySelectorAll("a[href]");
-  for (const a of anchors) {
-    const href = a.getAttribute("href") || "";
-    if (!href) {
-      continue;
-    }
+  for (const anchor of anchors) {
+    const href = anchor.getAttribute("href") || "";
     if (
+      !href ||
       href.startsWith("http://") ||
       href.startsWith("https://") ||
       href.startsWith("mailto:") ||
@@ -103,11 +109,13 @@ function rewriteInternalLinks() {
     ) {
       continue;
     }
+
     const clean = href.replace(/^\.\//, "").replace(/\.md$/, "").replace(/\/$/, "");
     if (!ALL_PAGE_SLUGS.includes(clean)) {
       continue;
     }
-    a.setAttribute("href", `?page=${encodeURIComponent(clean)}`);
+
+    anchor.setAttribute("href", `?page=${encodeURIComponent(clean)}`);
   }
 }
 
@@ -116,11 +124,11 @@ function renderNavigation(activePage, filterText = "") {
   navEl.innerHTML = "";
 
   for (const group of NAV) {
-    const filteredPages = group.pages.filter((entry) => {
+    const filteredPages = group.pages.filter(([label]) => {
       if (!normalizedFilter) {
         return true;
       }
-      return entry[0].toLowerCase().includes(normalizedFilter);
+      return label.toLowerCase().includes(normalizedFilter);
     });
 
     if (!filteredPages.length) {
@@ -153,10 +161,58 @@ function renderNavigation(activePage, filterText = "") {
   }
 }
 
-function prepareMarkdown(markdownText) {
-  return markdownText.replace(/```mermaid\s*\n([\s\S]*?)```/g, (_, code) => {
-    return `<div class="mermaid">${escapeHtml(code.trim())}</div>`;
+function upgradeMermaidBlocks() {
+  const mermaidCodeBlocks = contentEl.querySelectorAll("pre code.language-mermaid, code.language-mermaid");
+
+  for (const codeBlock of mermaidCodeBlocks) {
+    const diagramText = (codeBlock.textContent || "").trim();
+    if (!diagramText) {
+      continue;
+    }
+
+    const wrapper = document.createElement("div");
+    wrapper.className = "mermaid";
+    wrapper.textContent = diagramText;
+
+    const pre = codeBlock.closest("pre");
+    if (pre) {
+      pre.replaceWith(wrapper);
+    } else {
+      codeBlock.replaceWith(wrapper);
+    }
+  }
+}
+
+function ensureMermaidConfigured() {
+  if (mermaidConfigured || typeof mermaid === "undefined") {
+    return;
+  }
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "loose",
+    theme: "dark",
+    fontFamily: "Inter, sans-serif",
+    themeVariables: {
+      primaryColor: "#111113",
+      primaryTextColor: "#e5e5e5",
+      primaryBorderColor: "#8b5cf6",
+      lineColor: "#8b5cf6",
+      secondaryColor: "#0a0a0a",
+      tertiaryColor: "#050505",
+      actorBorder: "#8b5cf6",
+      actorBkg: "#111113",
+      actorTextColor: "#e5e5e5",
+      signalColor: "#f59e0b",
+      labelBoxBkgColor: "#111113",
+      labelBoxBorderColor: "#8b5cf6",
+      labelTextColor: "#e5e5e5",
+      noteBkgColor: "#1a1325",
+      noteBorderColor: "#8b5cf6",
+      noteTextColor: "#d8d8dc",
+      background: "#050505",
+    },
   });
+  mermaidConfigured = true;
 }
 
 async function renderMermaid() {
@@ -164,22 +220,33 @@ async function renderMermaid() {
   if (!blocks.length) {
     return;
   }
+
+  ensureMermaidConfigured();
+
+  if (typeof mermaid === "undefined") {
+    return;
+  }
+
   try {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: "dark",
-      securityLevel: "loose",
-      fontFamily: "Space Grotesk, sans-serif",
-    });
     await mermaid.run({ nodes: blocks });
   } catch (error) {
     console.error("Mermaid render error:", error);
+    for (const block of blocks) {
+      if (block.querySelector("svg")) {
+        continue;
+      }
+      const fallback = document.createElement("pre");
+      const fallbackCode = document.createElement("code");
+      fallbackCode.textContent = block.textContent || "";
+      fallback.appendChild(fallbackCode);
+      block.replaceWith(fallback);
+    }
   }
 }
 
 async function loadPage(pageSlug) {
   currentPageEl.textContent = pageLabel(pageSlug);
-  document.title = `${pageLabel(pageSlug)} | Tikti Wiki`;
+  document.title = `${pageLabel(pageSlug)} | TIKTI Docs`;
   renderNavigation(pageSlug, searchEl.value);
 
   try {
@@ -189,8 +256,8 @@ async function loadPage(pageSlug) {
     }
 
     const markdown = await response.text();
-    const prepared = prepareMarkdown(markdown);
-    contentEl.innerHTML = marked.parse(prepared);
+    contentEl.innerHTML = marked.parse(markdown);
+    upgradeMermaidBlocks();
     rewriteInternalLinks();
     await renderMermaid();
   } catch (error) {
@@ -224,6 +291,7 @@ document.addEventListener("click", (event) => {
   if (!page || !ALL_PAGE_SLUGS.includes(page)) {
     return;
   }
+
   history.pushState({}, "", `?page=${encodeURIComponent(page)}`);
   loadPage(page);
 });
