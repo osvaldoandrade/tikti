@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (e.g. v0.2.1). If empty, uses the current ref name."
-        required: false
+        description: "Tag to release (e.g. v0.2.1)."
+        required: true
         type: string
 
 permissions:
@@ -28,8 +28,12 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ github.ref_name }}"
-          if [ -n "${{ github.event.inputs.tag }}" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             tag="${{ github.event.inputs.tag }}"
+          fi
+          if ! [[ "$tag" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
+            echo "Invalid tag: $tag" >&2
+            exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
