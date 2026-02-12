@@ -1,22 +1,22 @@
 # 11 Unit Test Execution Backlog
 
-## Objetivo
+## Objective
 
-Converter a matriz funcional (`10_unit_test_functional_matrix.md`) em plano de execucao de testes de unidade, com foco em risco de negocio, seguranca e cobertura estrutural.
+Convert the functional matrix (`10_unit_test_functional_matrix.md`) into an executable unit-testing plan, focused on business risk, security, and structural coverage.
 
-## Criterios globais
+## Global Criteria
 
-- Base obrigatoria: tecnica funcional (caixa preta) orientada a SPEC.
-- Complemento: tecnica estrutural (CFG) para elevar qualidade.
-- Meta minima por funcao: >=85% dos caminhos executaveis.
-- Proibido: assertiva sem oraculo funcional de negocio.
-- Regra de granularidade: unidade = funcao; interacao entre funcoes entra em integracao.
+- Mandatory base: functional testing (black-box) driven by SPEC.
+- Complementary technique: structural testing (CFG) to increase quality.
+- Minimum target per function: >=85% executable-path coverage.
+- Forbidden: assertions without a functional business oracle.
+- Unit granularity rule: one function equals one unit; interactions between functions belong to integration testing.
 
-## Ordem de execucao (por risco)
+## Execution Order (Risk-Based)
 
-### Fase 1 - Critico (auth e seguranca)
+### Phase 1 - Critical (Auth and Security)
 
-Pacotes:
+Packages:
 
 - `PF-22` (`M-SVC-USER-SignIn`, `M-SVC-USER-SignUp`, `M-SVC-USER-Lookup`)
 - `PF-23` (`M-SVC-USER-SendOob`, `M-SVC-USER-SendOobForTenant`, `M-SVC-USER-SignInWithOobCode`, `M-SVC-USER-ResetPassword`)
@@ -25,112 +25,112 @@ Pacotes:
 - `PF-27` (`M-UTIL-APIKEY`)
 - `PF-02` (`M-CTRL-ADMIN-GUARD`)
 
-Entrega esperada:
+Expected delivery:
 
-- Garantir regras funcionais de autenticacao, emissao/validacao de token e OOB conforme SPEC.
-- Cobrir cenarios de erro de seguranca: assinatura invalida, token expirado, issuer/audience incorretos, role/status invalido.
+- Enforce functional rules for authentication, token issuance/validation, and OOB per SPEC.
+- Cover security error scenarios: invalid signature, expired token, invalid issuer/audience, invalid role/status.
 
-### Fase 2 - Alto (contrato HTTP e operacoes administrativas)
+### Phase 2 - High (HTTP Contract and Administrative Operations)
 
-Pacotes:
+Packages:
 
-- `PF-06` (controllers de auth/OOB/JWKS/token exchange)
-- `PF-07` (controllers de update/delete/status/revoke/membership remove)
-- `PF-25` (servicos admin de usuario)
+- `PF-06` (auth/OOB/JWKS/token exchange controllers)
+- `PF-07` (update/delete/status/revoke/membership remove controllers)
+- `PF-25` (admin user services)
 
-Entrega esperada:
+Expected delivery:
 
-- Asserts de contrato: status code, payload, shape e mensagens funcionais.
-- Validacao de regras administrativas e proibicoes (403/401/400 conforme caso).
+- Contract assertions: status code, payload, shape, and functional messages.
+- Validation of administrative rules and denials (`403/401/400` as applicable).
 
-### Fase 3 - Medio (dominio multi-tenant e autorizacao)
+### Phase 3 - Medium (Multi-Tenant Domain and Authorization)
 
-Pacotes:
+Packages:
 
 - `PF-19` (membership service)
 - `PF-20` (role service)
 - `PF-21` (tenant service)
-- `PF-26` (helpers de autorizacao)
+- `PF-26` (authorization helpers)
 
-Entrega esperada:
+Expected delivery:
 
-- Cobertura funcional de regras de tenant/role/scope.
-- Casos limite de listas, conjuntos e fallback de tenant context.
+- Functional coverage of tenant/role/scope rules.
+- Boundary cases for lists, sets, and tenant-context fallback.
 
-### Fase 4 - Medio/Baixo (repositorios e providers)
+### Phase 4 - Medium/Low (Repositories and Providers)
 
-Pacotes:
+Packages:
 
 - `PF-10`, `PF-11`, `PF-12`, `PF-13`, `PF-14`, `PF-15`, `PF-16`, `PF-17`
 - `PF-08`, `PF-09`
 
-Entrega esperada:
+Expected delivery:
 
-- Validar CRUD funcional e semantica de persistencia (not found, duplicidade, idempotencia, propagacao de erro).
-- OOB no repositorio com enforce de requestType e single-use.
+- Validate functional CRUD and persistence semantics (not found, duplication, idempotency, error propagation).
+- Validate repository OOB behavior with requestType enforcement and single-use.
 
-### Fase 5 - Baixo (constructors e auxiliares restantes)
+### Phase 5 - Low (Constructors and Remaining Helpers)
 
-Pacotes:
+Packages:
 
 - `PF-01`, `PF-03`, `PF-04`, `PF-05`, `PF-18`, `PF-29`
 
-Entrega esperada:
+Expected delivery:
 
-- Garantir wiring, contrato de handlers write/read e carga de configuracao com erros/defaults.
+- Validate wiring, write/read handler contracts, and configuration loading with defaults/errors.
 
-## Sprint tecnico por funcao (template obrigatorio)
+## Per-Function Technical Sprint (Mandatory Template)
 
-Para cada funcao da matriz:
+For each function in the matrix:
 
-1. Identificar pacote `PF/CF`.
-2. Derivar classes de equivalencia de entrada e limites.
-3. Enumerar caminhos CFG independentes.
-4. Definir casos funcionais que cobrem os caminhos.
-5. Implementar doubles/mocks/fakes minimos para isolar a funcao.
-6. Escrever asserts de oraculo funcional (resultado esperado da SPEC).
-7. Medir cobertura de caminhos e ajustar casos ate >=85%.
+1. Identify the `PF/CF` package.
+2. Derive input equivalence classes and boundaries.
+3. Enumerate independent CFG paths.
+4. Define functional cases that cover those paths.
+5. Implement minimal doubles/mocks/fakes to isolate the function.
+6. Write functional-oracle assertions (SPEC-expected results).
+7. Measure path coverage and refine cases until >=85%.
 
-## Gates de qualidade por PR
+## PR Quality Gates
 
-- [ ] Nenhum teste com assertiva tautologica (`assert.True(true)` etc.).
-- [ ] Cada teste referencia requisito funcional do pacote `CF`.
-- [ ] Casos de falha validam erro funcional (codigo/mensagem/estado), nao apenas erro generico.
-- [ ] Cobertura por funcao reportada e >=85% dos caminhos executaveis.
-- [ ] Casos limite explicitamente documentados no nome da tabela/caso.
+- [ ] No tautological test assertions (`assert.True(true)` etc.).
+- [ ] Every test references a functional requirement from the corresponding `CF` package.
+- [ ] Failure cases validate functional errors (code/message/state), not generic errors only.
+- [ ] Per-function coverage is reported and >=85% executable paths.
+- [ ] Boundary cases are explicitly documented in case/table naming.
 
-## Backlog operacional (checklist)
+## Operational Backlog (Checklist)
 
-### Bloco A - Security/Auth Core
+### Block A - Security/Auth Core
 
-- [ ] Implementar/ajustar todos os testes dos pacotes `PF-22`, `PF-23`, `PF-24`.
-- [ ] Fechar lacunas em `PF-27`, `PF-28`, `PF-02`.
-- [ ] Revisao de oraculos por requisito da SPEC de tokens/OOB.
+- [ ] Implement/adjust all tests for `PF-22`, `PF-23`, `PF-24`.
+- [ ] Close gaps in `PF-27`, `PF-28`, `PF-02`.
+- [ ] Review oracles against SPEC requirements for tokens/OOB.
 
-### Bloco B - HTTP Contract
+### Block B - HTTP Contract
 
-- [ ] Cobrir `PF-06` e `PF-07` com matriz de request/response valida e invalida.
-- [ ] Garantir correspondencia 1:1 com `04_api_spec.md`.
+- [ ] Cover `PF-06` and `PF-07` with valid and invalid request/response matrices.
+- [ ] Guarantee 1:1 correspondence with `docs/04_api_spec.md`.
 
-### Bloco C - Multi-tenant Domain
+### Block C - Multi-Tenant Domain
 
-- [ ] Cobrir `PF-19`, `PF-20`, `PF-21`, `PF-26` com limites de roles/scopes/tenant.
+- [ ] Cover `PF-19`, `PF-20`, `PF-21`, `PF-26` with role/scope/tenant boundaries.
 
-### Bloco D - Persistence/Provider
+### Block D - Persistence/Provider
 
-- [ ] Cobrir `PF-10` a `PF-17` com casos de erro de store e compat legada.
-- [ ] Garantir casos de idempotencia e requestType binding no OOB.
+- [ ] Cover `PF-10` through `PF-17` with store-error and legacy-compatibility scenarios.
+- [ ] Guarantee idempotency and requestType binding for OOB.
 
-### Bloco E - Remaining Unit Surface
+### Block E - Remaining Unit Surface
 
-- [ ] Cobrir `PF-01`, `PF-03`, `PF-04`, `PF-05`, `PF-18`, `PF-29`.
-- [ ] Consolidar relatorio final de cobertura por funcao.
+- [ ] Cover `PF-01`, `PF-03`, `PF-04`, `PF-05`, `PF-18`, `PF-29`.
+- [ ] Consolidate the final per-function coverage report.
 
-## Definicao de pronto da fase de unidade
+## Unit Phase Definition of Done
 
-A fase e considerada concluida quando:
+The unit phase is complete when:
 
-- toda funcao da matriz (133) tem casos funcionais implementados;
-- nenhuma funcao no escopo fica abaixo de 85% dos caminhos executaveis;
-- relatorio final explicita bugs encontrados por pacote `PF`;
-- todos os testes sao rastreaveis a regras funcionais da SPEC.
+- every function in the matrix (133) has implemented functional cases;
+- no function in scope is below 85% executable-path coverage;
+- the final report explicitly lists bugs found by `PF` package;
+- all tests are traceable to SPEC functional rules.
