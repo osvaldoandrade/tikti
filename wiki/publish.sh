@@ -13,7 +13,11 @@ trap cleanup EXIT
 
 if git ls-remote "$WIKI_URL" >/dev/null 2>&1; then
   git clone "$WIKI_URL" "$TMP_DIR/wiki" >/dev/null
-  rsync -a --delete --exclude '.git' --exclude 'publish.sh' wiki/ "$TMP_DIR/wiki/"
+  rsync -a --delete \
+    --include='*/' \
+    --include='*.md' \
+    --exclude='*' \
+    wiki/ "$TMP_DIR/wiki/"
 
   cd "$TMP_DIR/wiki"
   git add -A
