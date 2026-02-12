@@ -71,7 +71,10 @@ func NewUserService(r repository.UserRepository, membershipRepo repository.Membe
 
 // SignUp validates uniqueness, hashes the password and persists a new user.
 func (s *userService) SignUp(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error) {
-	existing, _ := s.repo.FindByEmail(ctx, req.Email)
+	existing, err := s.repo.FindByEmail(ctx, req.Email)
+	if err != nil {
+		return nil, err
+	}
 	if existing != nil {
 		return nil, domain.ErrEmailExists
 	}
@@ -176,10 +179,20 @@ func (s *userService) Lookup(ctx context.Context, req domain.LookupReq) (*domain
 	if e != nil {
 		return nil, domain.ErrInvalidToken
 	}
+	sub, _ := claims["sub"].(string)
+	if strings.TrimSpace(sub) == "" {
+		return nil, domain.ErrInvalidToken
+	}
 	email, _ := claims["email"].(string)
+	if strings.TrimSpace(email) == "" {
+		return nil, domain.ErrInvalidToken
+	}
 	u, _ := s.repo.FindByEmail(ctx, email)
 	if u == nil {
 		return nil, domain.ErrNotFound
+	}
+	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
+		return nil, domain.ErrInvalidToken
 	}
 	return &domain.LookupResp{
 		Users: []domain.UserInfo{{
@@ -205,6 +218,52 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if err != nil {
 		return nil, domain.ErrInvalidToken
 	}
+	sub, _ := claims["sub"].(string)
+	if strings.TrimSpace(sub) == "" {
+		return nil, domain.ErrInvalidToken
+	}
+	if expectedIss := strings.TrimSpace(s.issuerBaseURL); expectedIss != "" {
+		if rawIss, hasIss := claims["iss"]; hasIss {
+			iss, ok := rawIss.(string)
+			if !ok || strings.TrimSpace(iss) == "" || iss != expectedIss {
+				return nil, domain.ErrInvalidToken
+			}
+		}
+	}
+	if expectedAud := strings.TrimSpace(s.defaultAudience); expectedAud != "" {
+		if rawAud, hasAud := claims["aud"]; hasAud {
+			switch aud := rawAud.(type) {
+			case string:
+				if strings.TrimSpace(aud) == "" || aud != expectedAud {
+					return nil, domain.ErrInvalidToken
+				}
+			case []interface{}:
+				found := false
+				for _, v := range aud {
+					if s, ok := v.(string); ok && s == expectedAud {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return nil, domain.ErrInvalidToken
+				}
+			case []string:
+				found := false
+				for _, v := range aud {
+					if v == expectedAud {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return nil, domain.ErrInvalidToken
+				}
+			default:
+				return nil, domain.ErrInvalidToken
+			}
+		}
+	}
 	email, _ := claims["email"].(string)
 	if email == "" {
 		return nil, domain.ErrInvalidToken
@@ -212,6 +271,9 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	u, _ := s.repo.FindByEmail(ctx, email)
 	if u == nil {
 		return nil, domain.ErrNotFound
+	}
+	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
+		return nil, domain.ErrInvalidToken
 	}
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
@@ -284,14 +346,15 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 
 	scopeString := strings.Join(scopes, " ")
 	claimsOut := jwt.MapClaims{
-		"iss": s.issuerBaseURL,
-		"aud": req.Audience,
-		"sub": subject,
-		"tid": tenantID,
-		"ver": u.TokenVersion,
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(time.Duration(ttl) * time.Second).Unix(),
-		"jti": uuid.NewString(),
+		"iss":   s.issuerBaseURL,
+		"aud":   req.Audience,
+		"sub":   subject,
+		"email": u.Email,
+		"tid":   tenantID,
+		"ver":   u.TokenVersion,
+		"iat":   time.Now().Unix(),
+		"exp":   time.Now().Add(time.Duration(ttl) * time.Second).Unix(),
+		"jti":   uuid.NewString(),
 	}
 	if scopeString != "" {
 		claimsOut["scope"] = scopeString
@@ -341,6 +404,11 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 	}
 	u, _ := s.repo.FindByEmail(ctx, sub)
 	if u == nil {
+		if email, _ := claims["email"].(string); strings.TrimSpace(email) != "" && email != sub {
+			u, _ = s.repo.FindByEmail(ctx, email)
+		}
+	}
+	if u == nil {
 		return nil, domain.ErrNotFound
 	}
 	if u.TokenVersion != int(ver) {
@@ -371,6 +439,7 @@ func (s *userService) JWKS(ctx context.Context) (map[string]any, error) {
 }
 
 func (s *userService) SetStatus(ctx context.Context, email string, status string) (*domain.StatusResp, error) {
+	email = strings.TrimSpace(email)
 	status = strings.TrimSpace(strings.ToUpper(status))
 	if email == "" || status == "" {
 		return nil, domain.ErrInvalidArgument
@@ -399,9 +468,25 @@ func (s *userService) SetStatus(ctx context.Context, email string, status string
 
 func (s *userService) RevokeTokens(ctx context.Context, email string, tenantID string, scope string) (*domain.RevokeResp, error) {
 	email = strings.TrimSpace(email)
+	tenantID = strings.TrimSpace(tenantID)
+	scope = strings.TrimSpace(strings.ToLower(scope))
+
 	if email == "" {
 		return nil, domain.ErrInvalidArgument
 	}
+	if scope == "" {
+		scope = "global"
+	}
+	switch scope {
+	case "global":
+	case "tenant":
+		if tenantID == "" {
+			return nil, domain.ErrInvalidArgument
+		}
+	default:
+		return nil, domain.ErrInvalidArgument
+	}
+
 	ver, u, err := s.repo.IncrementTokenVersion(ctx, email)
 	if err != nil {
 		return nil, err
@@ -558,10 +643,20 @@ func (s *userService) UpdateUser(ctx context.Context, req domain.UpdateReq) (*do
 	if er != nil {
 		return nil, er
 	}
+	sub, _ := claims["sub"].(string)
+	if strings.TrimSpace(sub) == "" {
+		return nil, domain.ErrInvalidToken
+	}
 	email, _ := claims["email"].(string)
+	if strings.TrimSpace(email) == "" {
+		return nil, domain.ErrInvalidToken
+	}
 	u, findErr := s.repo.FindByEmail(ctx, email)
 	if findErr != nil || u == nil {
 		return nil, domain.ErrNotFound
+	}
+	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
+		return nil, domain.ErrInvalidToken
 	}
 	if req.Email != "" {
 		u.Email = req.Email
@@ -585,7 +680,21 @@ func (s *userService) DeleteUser(ctx context.Context, req domain.DeleteReq) erro
 	if er != nil {
 		return er
 	}
+	sub, _ := claims["sub"].(string)
+	if strings.TrimSpace(sub) == "" {
+		return domain.ErrInvalidToken
+	}
 	email, _ := claims["email"].(string)
+	if strings.TrimSpace(email) == "" {
+		return domain.ErrInvalidToken
+	}
+	u, findErr := s.repo.FindByEmail(ctx, email)
+	if findErr != nil || u == nil {
+		return domain.ErrNotFound
+	}
+	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
+		return domain.ErrInvalidToken
+	}
 	return s.repo.DeleteByEmail(ctx, email)
 }
 
@@ -714,7 +823,13 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 
 // ResetPassword exchanges an OOB code for the stored email and updates the password hash.
 func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq) error {
-	email, e := s.repo.ConsumeOobCode(ctx, req.OobCode, "PASSWORD_RESET")
+	code := strings.TrimSpace(req.OobCode)
+	newPassword := strings.TrimSpace(req.NewPassword)
+	if code == "" || newPassword == "" {
+		return domain.ErrInvalidArgument
+	}
+
+	email, e := s.repo.ConsumeOobCode(ctx, code, "PASSWORD_RESET")
 	if e != nil {
 		return domain.ErrInvalidOob
 	}
@@ -722,7 +837,7 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 	if e2 != nil || u == nil {
 		return domain.ErrNotFound
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	u.Password = string(hash)
 	if e3 := s.repo.UpdateUser(ctx, u); e3 != nil {
 		return e3
@@ -740,6 +855,7 @@ func (s *userService) issueIDToken(u *domain.User) (string, int, error) {
 		return "", 0, domain.ErrInvalidArgument
 	}
 	claims := jwt.MapClaims{
+		"sub":    u.Id,
 		"userId": u.Id,
 		"email":  u.Email,
 		"role":   u.Role,
@@ -747,6 +863,11 @@ func (s *userService) issueIDToken(u *domain.User) (string, int, error) {
 		"aud":    s.defaultAudience,
 		"exp":    time.Now().Add(time.Hour).Unix(),
 		"iat":    time.Now().Unix(),
+	}
+	if u.CompanyId != nil {
+		if tid := strings.TrimSpace(*u.CompanyId); tid != "" {
+			claims["tid"] = tid
+		}
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := tok.SignedString([]byte(s.jwtSecret))

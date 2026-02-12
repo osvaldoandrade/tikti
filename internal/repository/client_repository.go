@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/go-redis/redis/v8"
 
@@ -24,11 +25,20 @@ func NewClientRepo(rdb *redis.Client) ClientRepository {
 }
 
 func (r *clientRepo) Create(ctx context.Context, tenantID string, client *domain.Client) error {
+	tenantID = strings.TrimSpace(tenantID)
+	if client == nil {
+		return domain.ErrInvalidArgument
+	}
+	clientID := strings.TrimSpace(client.Id)
+	if tenantID == "" || clientID == "" {
+		return domain.ErrInvalidArgument
+	}
+	client.Id = clientID
 	data, err := json.Marshal(client)
 	if err != nil {
 		return err
 	}
-	return r.client.HSet(ctx, clientsKey(tenantID), client.Id, data).Err()
+	return r.client.HSet(ctx, clientsKey(tenantID), clientID, data).Err()
 }
 
 func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {

@@ -4,6 +4,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -30,13 +31,21 @@ func ValidateRS256(tokenString string, pub *rsa.PublicKey, issuer string, audien
 	if !ok {
 		return nil, errors.New("invalid claims")
 	}
+	exp, err := claims.GetExpirationTime()
+	if err != nil || exp == nil || exp.Time.Before(time.Now()) {
+		return nil, errors.New("invalid token")
+	}
 	if issuer != "" {
 		if iss, _ := claims["iss"].(string); iss != issuer {
 			return nil, errors.New("invalid issuer")
 		}
 	}
 	if audience != "" {
-		switch aud := claims["aud"].(type) {
+		audRaw, exists := claims["aud"]
+		if !exists {
+			return nil, errors.New("invalid audience")
+		}
+		switch aud := audRaw.(type) {
 		case string:
 			if aud != audience {
 				return nil, errors.New("invalid audience")
@@ -52,6 +61,19 @@ func ValidateRS256(tokenString string, pub *rsa.PublicKey, issuer string, audien
 			if !found {
 				return nil, errors.New("invalid audience")
 			}
+		case []string:
+			found := false
+			for _, v := range aud {
+				if v == audience {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, errors.New("invalid audience")
+			}
+		default:
+			return nil, errors.New("invalid audience")
 		}
 	}
 	return claims, nil

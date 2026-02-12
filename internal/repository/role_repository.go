@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/go-redis/redis/v8"
 
@@ -24,11 +25,20 @@ func NewRoleRepo(rdb *redis.Client) RoleRepository {
 }
 
 func (r *roleRepo) Create(ctx context.Context, tenantID string, role *domain.Role) error {
+	tenantID = strings.TrimSpace(tenantID)
+	if role == nil {
+		return domain.ErrInvalidArgument
+	}
+	roleName := strings.TrimSpace(role.Name)
+	if tenantID == "" || roleName == "" {
+		return domain.ErrInvalidArgument
+	}
+	role.Name = roleName
 	data, err := json.Marshal(role)
 	if err != nil {
 		return err
 	}
-	return r.client.HSet(ctx, rolesKey(tenantID), role.Name, data).Err()
+	return r.client.HSet(ctx, rolesKey(tenantID), roleName, data).Err()
 }
 
 func (r *roleRepo) Get(ctx context.Context, tenantID string, name string) (*domain.Role, error) {

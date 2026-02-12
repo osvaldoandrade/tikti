@@ -3,6 +3,7 @@ package utils
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -25,6 +26,10 @@ func ParseToken(tokenString, secret string) (jwt.MapClaims, error) {
 	claims, ok := parsed.Claims.(jwt.MapClaims)
 	if !ok {
 		return nil, errors.New("invalid claims")
+	}
+	exp, err := claims.GetExpirationTime()
+	if err != nil || exp == nil || exp.Time.Before(time.Now()) {
+		return nil, errors.New("invalid token")
 	}
 	return claims, nil
 }

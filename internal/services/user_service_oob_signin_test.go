@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/osvaldoandrade/tikti/internal/utils"
@@ -12,6 +13,7 @@ type fakeUserRepo struct {
 	usersByEmail map[string]*domain.User
 	oobs         map[string]fakeOob
 	updateCalls  int
+	findErr      error
 }
 
 type fakeOob struct {
@@ -31,6 +33,9 @@ func (r *fakeUserRepo) CreateUser(ctx context.Context, user *domain.User) error 
 }
 
 func (r *fakeUserRepo) FindByEmail(ctx context.Context, email string) (*domain.User, error) {
+	if r.findErr != nil {
+		return nil, r.findErr
+	}
 	if u, ok := r.usersByEmail[email]; ok {
 		return u, nil
 	}
@@ -123,6 +128,9 @@ func TestUserService_SignInWithOobCode_Success(t *testing.T) {
 	if got, _ := claims["email"].(string); got != "user@company.com" {
 		t.Fatalf("unexpected token email claim: %v", claims["email"])
 	}
+	if got, _ := claims["sub"].(string); got != "user-1" {
+		t.Fatalf("unexpected token sub claim: %v", claims["sub"])
+	}
 }
 
 func TestUserService_SignInWithOobCode_EmailMismatch(t *testing.T) {
@@ -162,6 +170,58 @@ func TestUserService_SignInWithOobCode_UserSuspended(t *testing.T) {
 	})
 	if err != domain.ErrInvalidCreds {
 		t.Fatalf("expected ErrInvalidCreds, got %v", err)
+	}
+}
+
+func TestUserService_SignInWithOobCode_InvalidArgument(t *testing.T) {
+	svc := NewUserService(newFakeUserRepo(), nil, nil, nil, "secret", "http://issuer", "tikti", "pem", "kid")
+
+	_, err := svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email:   " ",
+		OobCode: "code-1",
+	})
+	if err != domain.ErrInvalidArgument {
+		t.Fatalf("expected ErrInvalidArgument for empty email, got %v", err)
+	}
+
+	_, err = svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email:   "user@company.com",
+		OobCode: " ",
+	})
+	if err != domain.ErrInvalidArgument {
+		t.Fatalf("expected ErrInvalidArgument for empty code, got %v", err)
+	}
+}
+
+func TestUserService_SignInWithOobCode_ConsumeAndLookupErrors(t *testing.T) {
+	repo := newFakeUserRepo()
+	repo.oobs["code-1"] = fakeOob{email: "user@company.com", reqType: "EMAIL_SIGNIN"}
+	svc := NewUserService(repo, nil, nil, nil, "secret", "http://issuer", "tikti", "pem", "kid")
+
+	_, err := svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email:   "user@company.com",
+		OobCode: "missing-code",
+	})
+	if err != domain.ErrInvalidOob {
+		t.Fatalf("expected ErrInvalidOob, got %v", err)
+	}
+
+	_, err = svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email:   "user@company.com",
+		OobCode: "code-1",
+	})
+	if err != domain.ErrInvalidCreds {
+		t.Fatalf("expected ErrInvalidCreds for missing user, got %v", err)
+	}
+
+	repo.oobs["code-2"] = fakeOob{email: "user@company.com", reqType: "EMAIL_SIGNIN"}
+	repo.findErr = errors.New("find-fail")
+	_, err = svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email:   "user@company.com",
+		OobCode: "code-2",
+	})
+	if err != domain.ErrInvalidCreds {
+		t.Fatalf("expected ErrInvalidCreds for lookup error, got %v", err)
 	}
 }
 

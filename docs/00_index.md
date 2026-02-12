@@ -15,3 +15,5 @@ Document order:
 7. `07_operations_and_slo.md` — configuration, health, rate limiting, logging, audit, metrics, SLOs.
 8. `08_migration_and_implementation_plan.md` — staged execution plan with acceptance criteria.
 9. `09_cli_spec.md` — command‑line interface specification for administration and token workflows.
+10. `10_unit_test_functional_matrix.md` — exhaustive functional unit test matrix (all functions except bootstrap/main), with black-box case packs and CFG-driven structural coverage targets.
+11. `11_unit_test_execution_backlog.md` — execution backlog for unit testing, prioritized by risk with quality gates and completion criteria.
