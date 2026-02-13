@@ -4,22 +4,38 @@ const NAV = [
     pages: [
       ["Get Started", "Get-Started"],
       ["Overview", "Overview"],
+      ["Architecture", "Architecture-and-Data-Model"],
     ],
   },
   {
     section: "Concepts",
     pages: [
-      ["Architecture and Data Model", "Architecture-and-Data-Model"],
       ["Tokens and Keys", "Tokens-and-Keys"],
       ["Multi-Tenant Authorization", "Multi-Tenant-Authorization"],
       ["Security Model", "Security-Model"],
     ],
   },
   {
-    section: "API and Integration",
+    section: "Integration",
+    pages: [
+      ["codeQ Integration", "codeQ-Integration"],
+    ],
+  },
+  {
+    section: "Interfaces",
     pages: [
       ["API Specification", "API-Specification"],
-      ["codeQ Integration", "codeQ-Integration"],
+      ["CLI Reference", "CLI-Reference"],
+    ],
+  },
+  {
+    section: "Operations",
+    pages: [
+      ["Operations and SLO", "Operations-and-SLO"],
+      ["Troubleshooting", "Troubleshooting"],
+      ["Release and Compatibility", "Release-and-Compatibility"],
+      ["Unit Test Functional Matrix", "Unit-Test-Functional-Matrix"],
+      ["Unit Test Execution Backlog", "Unit-Test-Execution-Backlog"],
     ],
   },
   {
@@ -31,22 +47,6 @@ const NAV = [
       ["codeQ Worker Token Exchange", "Use-Cases-codeQ-Worker-Token-Exchange"],
       ["Tenant Admin Lifecycle", "Use-Cases-Tenant-Admin-Lifecycle"],
       ["Resource Server Token Validation", "Use-Cases-Resource-Server-Token-Validation"],
-    ],
-  },
-  {
-    section: "Operations",
-    pages: [
-      ["Operations and SLO", "Operations-and-SLO"],
-      ["Troubleshooting", "Troubleshooting"],
-      ["Release and Compatibility", "Release-and-Compatibility"],
-    ],
-  },
-  {
-    section: "Tooling and Tests",
-    pages: [
-      ["CLI Reference", "CLI-Reference"],
-      ["Unit Test Functional Matrix", "Unit-Test-Functional-Matrix"],
-      ["Unit Test Execution Backlog", "Unit-Test-Execution-Backlog"],
     ],
   },
 ];
@@ -111,7 +111,11 @@ function rewriteInternalLinks() {
     }
 
     const [rawPath, rawHash] = href.split("#");
-    const clean = (rawPath || "").replace(/^\.\//, "").replace(/\.md$/, "").replace(/\/$/, "");
+    const clean = (rawPath || "")
+      .replace(/^\.\//, "")
+      .replace(/\.md$/, "")
+      .replace(/\/$/, "");
+
     const resolved = clean === "Home" ? DEFAULT_PAGE : clean;
     if (!ALL_PAGE_SLUGS.includes(resolved)) {
       continue;
@@ -127,11 +131,11 @@ function renderNavigation(activePage, filterText = "") {
   navEl.innerHTML = "";
 
   for (const group of NAV) {
-    const filteredPages = group.pages.filter(([label]) => {
+    const filteredPages = group.pages.filter(([label, slug]) => {
       if (!normalizedFilter) {
         return true;
       }
-      return label.toLowerCase().includes(normalizedFilter);
+      return label.toLowerCase().includes(normalizedFilter) || slug.toLowerCase().includes(normalizedFilter);
     });
 
     if (!filteredPages.length) {
@@ -196,23 +200,23 @@ function ensureMermaidConfigured() {
     theme: "dark",
     fontFamily: "Inter, sans-serif",
     themeVariables: {
-      primaryColor: "#111113",
-      primaryTextColor: "#e5e5e5",
-      primaryBorderColor: "#8b5cf6",
-      lineColor: "#8b5cf6",
-      secondaryColor: "#0a0a0a",
-      tertiaryColor: "#050505",
-      actorBorder: "#8b5cf6",
-      actorBkg: "#111113",
-      actorTextColor: "#e5e5e5",
+      primaryColor: "#0f172a",
+      primaryTextColor: "#f8fafc",
+      primaryBorderColor: "#10b981",
+      lineColor: "#10b981",
+      secondaryColor: "#020617",
+      tertiaryColor: "#020617",
+      actorBorder: "#10b981",
+      actorBkg: "#0f172a",
+      actorTextColor: "#f8fafc",
       signalColor: "#f59e0b",
-      labelBoxBkgColor: "#111113",
-      labelBoxBorderColor: "#8b5cf6",
-      labelTextColor: "#e5e5e5",
-      noteBkgColor: "#1a1325",
-      noteBorderColor: "#8b5cf6",
-      noteTextColor: "#d8d8dc",
-      background: "#050505",
+      labelBoxBkgColor: "#0f172a",
+      labelBoxBorderColor: "#10b981",
+      labelTextColor: "#f8fafc",
+      noteBkgColor: "#020617",
+      noteBorderColor: "#10b981",
+      noteTextColor: "#cbd5e1",
+      background: "#020617",
     },
   });
   mermaidConfigured = true;
@@ -249,7 +253,7 @@ async function renderMermaid() {
 
 async function loadPage(pageSlug) {
   currentPageEl.textContent = pageLabel(pageSlug);
-  document.title = `${pageLabel(pageSlug)} | TIKTI Docs`;
+  document.title = `${pageLabel(pageSlug)} | tikti Docs`;
   renderNavigation(pageSlug, searchEl.value);
 
   try {

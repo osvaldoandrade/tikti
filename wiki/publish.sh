@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Publish local wiki pages to GitHub Wiki repository.
+# Publish local wiki markdown pages to GitHub Wiki repository.
 # Usage: ./wiki/publish.sh [owner/repo]
 
 REPO="${1:-osvaldoandrade/tikti}"
@@ -14,6 +14,7 @@ trap cleanup EXIT
 if git ls-remote "$WIKI_URL" >/dev/null 2>&1; then
   git clone "$WIKI_URL" "$TMP_DIR/wiki" >/dev/null
   rsync -a --delete \
+    --exclude='.git/' \
     --include='*/' \
     --include='*.md' \
     --exclude='*' \
@@ -30,6 +31,5 @@ if git ls-remote "$WIKI_URL" >/dev/null 2>&1; then
   git push origin master
 else
   echo "Wiki repository is not available: $WIKI_URL"
-  echo "Enable wiki in repository settings and create first page in UI if required, then run again."
   exit 1
 fi
