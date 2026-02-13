@@ -82,10 +82,16 @@ a:hover {
 .brand-mark {
   width: 42px;
   height: 42px;
+  border-radius: 10px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #10b981;
+  font-family: "JetBrains Mono", monospace;
+  font-weight: 600;
+  font-size: 13px;
+  color: #ffffff;
+  border: 1px solid #4c1d95;
+  background: linear-gradient(140deg, rgba(76, 29, 149, 0.5), rgba(91, 33, 182, 0.35));
 }
 
 .brand-title {
