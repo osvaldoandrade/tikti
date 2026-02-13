@@ -33,3 +33,8 @@ bin/
 IMPLEMENTATION_PLAN.md
 IMPLEMENTATION_PROGRESS.md
 AGENTS.md
+
+# Local build artifacts (README suggests `go build -o <name> ...` at repo root)
+tikti
+tikti-cli
+tikti-migrate
