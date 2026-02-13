@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -86,3 +87,22 @@ jobs:
           generate_release_notes: true
           files: |
             dist/*
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://npm.pkg.github.com
+          scope: "@osvaldoandrade"
+
+      - name: Publish npm package (GitHub Packages)
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ steps.vars.outputs.tag }}"
+          ver="${tag#v}"
+          cd npm/tikti-cli
+          npm version "$ver" --no-git-tag-version
+          npm publish

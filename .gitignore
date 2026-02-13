@@ -29,12 +29,20 @@ test_tikti.py
 .env
 .venv/
 .DS_Store
-bin/
+/bin/
 IMPLEMENTATION_PLAN.md
 IMPLEMENTATION_PROGRESS.md
 AGENTS.md
 
 # Local build artifacts (README suggests `go build -o <name> ...` at repo root)
-tikti
-tikti-cli
-tikti-migrate
+/tikti
+/tikti-cli
+/tikti-migrate
+
+# Node (used only for publishing the npm package)
+node_modules/
+npm/**/node_modules/
+
+# npm package postinstall download artifacts (kept out of git)
+npm/**/bin/*-bin
+npm/**/bin/*-bin.exe

@@ -53,6 +53,20 @@ Notes:
 - Pick a version/tag: `TIKTI_REF=v0.2.1 curl -fsSL https://raw.githubusercontent.com/osvaldoandrade/tikti/main/install.sh | sh`
 - Pick install dir: `TIKTI_BIN_DIR=$HOME/.local/bin curl -fsSL https://raw.githubusercontent.com/osvaldoandrade/tikti/main/install.sh | sh`
 
+Install via npm (GitHub Packages) (requires `node`/`npm`):
+
+```bash
+npm config set @osvaldoandrade:registry https://npm.pkg.github.com
+npm config set //npm.pkg.github.com/:_authToken YOUR_GITHUB_TOKEN
+npm install -g @osvaldoandrade/tikti-cli
+```
+
+Upgrade:
+
+```bash
+npm install -g @osvaldoandrade/tikti-cli@latest
+```
+
 ```bash
 ./tikti-cli init --base-url http://localhost:8080 --api-key my_api_key --tenant default
 ./tikti-cli auth login --email admin@example.com
