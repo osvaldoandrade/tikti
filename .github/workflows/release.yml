@@ -117,6 +117,42 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Prepare npm package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="${{ steps.vars.outputs.ver }}"
+          cd npm/tikti-cli
+          npm version "$ver" --no-git-tag-version
+
+      - name: Set up Node (npmjs)
+        if: ${{ secrets.NPM_TOKEN != '' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Publish npm package (npmjs)
+        if: ${{ secrets.NPM_TOKEN != '' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd npm/tikti-cli
+          npm publish --access public
+
+      - name: Skip npmjs publish (missing NPM_TOKEN)
+        if: ${{ secrets.NPM_TOKEN == '' }}
+        shell: bash
+        run: |
+          echo "NPM_TOKEN is not set; skipping publish to npmjs."
+
+      - name: Set up Node (GitHub Packages)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
           registry-url: https://npm.pkg.github.com
           scope: "@osvaldoandrade"
 
@@ -126,7 +162,5 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ver="${{ steps.vars.outputs.ver }}"
           cd npm/tikti-cli
-          npm version "$ver" --no-git-tag-version
           npm publish
