@@ -92,7 +92,11 @@ EOF
         shell: bash
         run: |
           set -euo pipefail
-          shasum -a 256 dist/* > dist/SHA256SUMS.txt
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/* > dist/SHA256SUMS.txt
+          else
+            shasum -a 256 dist/* > dist/SHA256SUMS.txt
+          fi
 
       - name: Create and push tag
         shell: bash
