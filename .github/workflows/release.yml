@@ -35,9 +35,7 @@ jobs:
             minor=0
             patch=0
           else
-            IFS='.' read -r major minor patch <<EOF
-$latest
-EOF
+            IFS='.' read -r major minor patch <<< "$latest"
           fi
 
           if ! [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]; then
