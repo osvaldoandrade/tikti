@@ -1,52 +1,63 @@
-name: Release
+name: Auto Release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: ["main"]
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Tag/version to release (e.g. v0.2.1 or 0.2.1)."
-        required: true
-        type: string
 
 permissions:
   contents: write
   packages: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: autorelease-main
   cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Resolve release tag
-        id: vars
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${{ github.ref_name }}"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.tag }}"
-          fi
-          # Allow "0.2.2" as input and normalize to "v0.2.2".
-          if [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            tag="v${tag}"
-          fi
-          if ! [[ "$tag" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]]; then
-            echo "Invalid tag: $tag" >&2
-            exit 1
-          fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          ref: ${{ steps.vars.outputs.tag }}
+
+      - name: Resolve next tag
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          latest="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sed 's/^v//' | sort -V | tail -n 1 || true)"
+          if [ -z "$latest" ]; then
+            major=0
+            minor=0
+            patch=0
+          else
+            IFS='.' read -r major minor patch <<EOF
+$latest
+EOF
+          fi
+
+          if ! [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]]; then
+            echo "invalid latest tag version: $latest" >&2
+            exit 1
+          fi
+
+          new_patch=$((patch + 1))
+          ver="${major}.${minor}.${new_patch}"
+          tag="v${ver}"
+
+          # In case of a re-run or a race, find the next free patch number.
+          while git rev-parse "$tag" >/dev/null 2>&1; do
+            new_patch=$((new_patch + 1))
+            ver="${major}.${minor}.${new_patch}"
+            tag="v${ver}"
+          done
+
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -83,6 +94,14 @@ jobs:
           set -euo pipefail
           shasum -a 256 dist/* > dist/SHA256SUMS.txt
 
+      - name: Create and push tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.vars.outputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -105,8 +124,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tag="${{ steps.vars.outputs.tag }}"
-          ver="${tag#v}"
+          ver="${{ steps.vars.outputs.ver }}"
           cd npm/tikti-cli
           npm version "$ver" --no-git-tag-version
           npm publish
