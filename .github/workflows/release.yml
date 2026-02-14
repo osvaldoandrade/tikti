@@ -16,6 +16,10 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # GitHub Actions doesn't allow referencing `secrets.*` directly in `if:` expressions.
+      # We copy it into `env` and check for emptiness via `env.NPM_TOKEN`.
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -127,16 +131,16 @@ jobs:
           npm version "$ver" --no-git-tag-version
 
       - name: Set up Node (npmjs)
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        if: ${{ env.NPM_TOKEN != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
       - name: Publish npm package (npmjs)
-        if: ${{ secrets.NPM_TOKEN != '' }}
+        if: ${{ env.NPM_TOKEN != '' }}
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -144,7 +148,7 @@ jobs:
           npm publish --access public
 
       - name: Skip npmjs publish (missing NPM_TOKEN)
-        if: ${{ secrets.NPM_TOKEN == '' }}
+        if: ${{ env.NPM_TOKEN == '' }}
         shell: bash
         run: |
           echo "NPM_TOKEN is not set; skipping publish to npmjs."
