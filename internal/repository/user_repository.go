@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/google/uuid"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -22,6 +23,7 @@ type UserRepository interface {
 	SaveOobCode(ctx context.Context, code, email, reqType string) error
 	ConsumeOobCode(ctx context.Context, code string, expectedReqType string) (string, error)
 	GetAllUsers(ctx context.Context) ([]*domain.User, error)
+	UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string) (domain.User, bool, error)
 }
 
 // redisRepo is a Redis-backed implementation of UserRepository.
@@ -30,11 +32,12 @@ type redisRepo struct {
 }
 
 const (
-	usersHashV2      = "users_v2"
-	legacyUsersHash  = "users"
-	userByEmailKeyNS = "userByEmail:"
-	legacyOobHash    = "oobs"
-	oobKeyPrefix     = "oob:"
+	usersHashV2             = "users_v2"
+	legacyUsersHash         = "users"
+	userByEmailKeyNS        = "userByEmail:"
+	legacyOobHash           = "oobs"
+	oobKeyPrefix            = "oob:"
+	samlSubjectKeyNS        = "samlSubject:"
 )
 
 // NewRedisRepo instantiates a repository using the provided Redis client.
@@ -114,7 +117,7 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 		if e := json.Unmarshal([]byte(val), &u); e != nil {
 			return nil, e
 		}
-		if u.Password == "" {
+		if u.Password == "" && u.AuthSource != domain.AuthSourceSAML {
 			return nil, domain.ErrNotFound
 		}
 		return &u, nil
@@ -134,7 +137,7 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 	if e := json.Unmarshal([]byte(val), &u); e != nil {
 		return nil, e
 	}
-	if u.Password == "" {
+	if u.Password == "" && u.AuthSource != domain.AuthSourceSAML {
 		return nil, domain.ErrNotFound
 	}
 	// Best-effort migration to v2 layout.
@@ -288,6 +291,104 @@ func (r *redisRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 		users = append(users, &u)
 	}
 	return users, nil
+}
+
+// samlSubjectKey builds the Redis key used to index users by (tenant, externalSubject).
+func samlSubjectKey(tid, externalSubject string) string {
+	return samlSubjectKeyNS + tid + ":" + externalSubject
+}
+
+// findByExternalSubject looks up a user by the SAML (tenant, externalSubject) pair.
+func (r *redisRepo) findByExternalSubject(ctx context.Context, tid, externalSubject string) (*domain.User, error) {
+	userID, err := r.client.Get(ctx, samlSubjectKey(tid, externalSubject)).Result()
+	if err == redis.Nil || userID == "" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	val, err := r.client.HGet(ctx, usersHashV2, userID).Result()
+	if err == redis.Nil || val == "" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var u domain.User
+	if e := json.Unmarshal([]byte(val), &u); e != nil {
+		return nil, e
+	}
+	return &u, nil
+}
+
+// UpsertFromSAML creates or updates a user from a SAML assertion.
+// If a user exists with (tid, externalSubject), it is updated and created=false.
+// Else if a password user exists with (tid, email), it is merged and created=false.
+// Otherwise a new user is created and created=true.
+func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string) (domain.User, bool, error) {
+	if tid == "" || externalSubject == "" || email == "" {
+		return domain.User{}, false, domain.ErrInvalidArgument
+	}
+
+	// Case 1: Existing SAML user by external subject.
+	existing, err := r.findByExternalSubject(ctx, tid, externalSubject)
+	if err != nil {
+		return domain.User{}, false, err
+	}
+	if existing != nil {
+		existing.Email = email
+		if len(roles) > 0 {
+			existing.Role = domain.UserRole(roles[0])
+		}
+		if err := r.UpdateUser(ctx, existing); err != nil {
+			return domain.User{}, false, err
+		}
+		return *existing, false, nil
+	}
+
+	// Case 2: Merge by email — password user with the same email within same tenant.
+	emailUser, err := r.FindByEmail(ctx, email)
+	if err != nil && err != domain.ErrNotFound {
+		return domain.User{}, false, err
+	}
+	if emailUser != nil && emailUser.AuthSource == domain.AuthSourcePassword {
+		emailUser.AuthSource = domain.AuthSourceSAML
+		emailUser.ExternalSubject = externalSubject
+		if len(roles) > 0 {
+			emailUser.Role = domain.UserRole(roles[0])
+		}
+		if err := r.UpdateUser(ctx, emailUser); err != nil {
+			return domain.User{}, false, err
+		}
+		_ = r.client.Set(ctx, samlSubjectKey(tid, externalSubject), emailUser.Id, 0).Err()
+		return *emailUser, false, nil
+	}
+
+	// Case 3: Create new SAML user.
+	role := domain.RoleCompanyEmployee
+	if len(roles) > 0 {
+		role = domain.UserRole(roles[0])
+	}
+	u := domain.User{
+		Id:              uuid.NewString(),
+		Email:           email,
+		Role:            role,
+		Status:          domain.UserStatusActive,
+		CreatedAt:       time.Now(),
+		AuthSource:      domain.AuthSourceSAML,
+		ExternalSubject: externalSubject,
+	}
+	data, err := json.Marshal(&u)
+	if err != nil {
+		return domain.User{}, false, err
+	}
+	if err := r.client.HSet(ctx, usersHashV2, u.Id, data).Err(); err != nil {
+		return domain.User{}, false, err
+	}
+	_ = r.client.Set(ctx, userByEmailKeyNS+email, u.Id, 0).Err()
+	_ = r.client.Set(ctx, samlSubjectKey(tid, externalSubject), u.Id, 0).Err()
+
+	return u, true, nil
 }
 
 func oobKey(code string) string {

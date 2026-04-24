@@ -412,3 +412,173 @@ func TestUserRepo_ConsumeLegacyOobCode_DeleteError(t *testing.T) {
 		t.Fatalf("expected hdel error, got %v", err)
 	}
 }
+
+func TestUpsertFromSAML_Create(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	u, created, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice@example.com", "Alice", []string{"ADMIN"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected created=true")
+	}
+	if u.Email != "alice@example.com" {
+		t.Fatalf("unexpected email: %s", u.Email)
+	}
+	if u.AuthSource != domain.AuthSourceSAML {
+		t.Fatalf("expected AuthSourceSAML, got %s", u.AuthSource)
+	}
+	if u.ExternalSubject != "ext-sub-1" {
+		t.Fatalf("expected externalSubject=ext-sub-1, got %s", u.ExternalSubject)
+	}
+	if u.Role != "ADMIN" {
+		t.Fatalf("expected role ADMIN, got %s", u.Role)
+	}
+	if u.Id == "" {
+		t.Fatalf("expected non-empty user ID")
+	}
+}
+
+func TestUpsertFromSAML_UpdateSame(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	u1, created1, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice@example.com", "Alice", []string{"ADMIN"})
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if !created1 {
+		t.Fatalf("expected first call to create")
+	}
+
+	u2, created2, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice-new@example.com", "Alice New", []string{"COMPANY_ADMIN"})
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if created2 {
+		t.Fatalf("expected second call to update, not create")
+	}
+	if u2.Id != u1.Id {
+		t.Fatalf("expected same user ID, got %s vs %s", u1.Id, u2.Id)
+	}
+	if u2.Email != "alice-new@example.com" {
+		t.Fatalf("expected updated email, got %s", u2.Email)
+	}
+	if u2.Role != "COMPANY_ADMIN" {
+		t.Fatalf("expected updated role, got %s", u2.Role)
+	}
+}
+
+func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	// Create a password user first.
+	pwUser := &domain.User{
+		Id:         "pw-user-1",
+		Email:      "bob@example.com",
+		Password:   "hashed-password",
+		Role:       domain.RoleCompanyEmployee,
+		Status:     domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword,
+		CreatedAt:  time.Now(),
+	}
+	if err := repo.CreateUser(ctx, pwUser); err != nil {
+		t.Fatalf("create password user: %v", err)
+	}
+
+	// SAML upsert with same email should merge.
+	u, created, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-bob", "bob@example.com", "Bob", []string{"ADMIN"})
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if created {
+		t.Fatalf("expected merge, not create")
+	}
+	if u.Id != "pw-user-1" {
+		t.Fatalf("expected same user ID after merge, got %s", u.Id)
+	}
+	if u.AuthSource != domain.AuthSourceSAML {
+		t.Fatalf("expected AuthSourceSAML after merge, got %s", u.AuthSource)
+	}
+	if u.ExternalSubject != "ext-sub-bob" {
+		t.Fatalf("expected externalSubject set after merge, got %s", u.ExternalSubject)
+	}
+}
+
+func TestUpsertFromSAML_NoMergeCrossTenant(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	// Create user in tenant-1.
+	u1, created1, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "carol@example.com", "Carol", nil)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if !created1 {
+		t.Fatalf("expected first call to create")
+	}
+
+	// Same external subject but different tenant creates a new user.
+	u2, created2, err := repo.UpsertFromSAML(ctx, "tenant-2", "ext-sub-1", "carol2@example.com", "Carol 2", nil)
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if !created2 {
+		t.Fatalf("expected second call to create (different tenant)")
+	}
+	if u1.Id == u2.Id {
+		t.Fatalf("expected distinct user IDs for different tenants")
+	}
+}
+
+func TestExistingPasswordFlow_Unaffected(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	// Create a standard password user.
+	pwUser := &domain.User{
+		Id:        "pw-user-2",
+		Email:     "dave@example.com",
+		Password:  "hashed-password",
+		Role:      domain.RoleCompanyEmployee,
+		Status:    domain.UserStatusActive,
+		CreatedAt: time.Now(),
+	}
+	if err := repo.CreateUser(ctx, pwUser); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// FindByEmail still works for password users.
+	found, err := repo.FindByEmail(ctx, "dave@example.com")
+	if err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if found == nil {
+		t.Fatalf("expected to find password user")
+	}
+	if found.Id != "pw-user-2" {
+		t.Fatalf("unexpected user id: %s", found.Id)
+	}
+
+	// AuthSource defaults to empty string which is equivalent to password.
+	if found.AuthSource != "" && found.AuthSource != domain.AuthSourcePassword {
+		t.Fatalf("expected default auth source (password or empty), got %s", found.AuthSource)
+	}
+
+	// Update and status operations still work.
+	pwUser.Status = domain.UserStatusSuspended
+	if err := repo.UpdateUser(ctx, pwUser); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	updated, err := repo.FindByEmail(ctx, "dave@example.com")
+	if err != nil {
+		t.Fatalf("find after update: %v", err)
+	}
+	if updated.Status != domain.UserStatusSuspended {
+		t.Fatalf("expected suspended status, got %s", updated.Status)
+	}
+}

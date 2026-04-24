@@ -29,6 +29,7 @@ type mockUserRepo struct {
 	saveOobCodeFn           func(context.Context, string, string, string) error
 	consumeOobCodeFn        func(context.Context, string, string) (string, error)
 	getAllUsersFn           func(context.Context) ([]*domain.User, error)
+	upsertFromSAMLFn       func(context.Context, string, string, string, string, []string) (domain.User, bool, error)
 }
 
 func (m *mockUserRepo) CreateUser(ctx context.Context, user *domain.User) error {
@@ -84,6 +85,12 @@ func (m *mockUserRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) 
 		return m.getAllUsersFn(ctx)
 	}
 	return nil, nil
+}
+func (m *mockUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string) (domain.User, bool, error) {
+	if m.upsertFromSAMLFn != nil {
+		return m.upsertFromSAMLFn(ctx, tid, externalSubject, email, name, roles)
+	}
+	return domain.User{}, false, nil
 }
 
 type mockMembershipRepo struct {
