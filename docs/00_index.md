@@ -17,3 +17,4 @@ Document order:
 9. `09_cli_spec.md` — command‑line interface specification for administration and token workflows.
 10. `10_unit_test_functional_matrix.md` — exhaustive functional unit test matrix (all functions except bootstrap/main), with black-box case packs and CFG-driven structural coverage targets.
 11. `11_unit_test_execution_backlog.md` — execution backlog for unit testing, prioritized by risk with quality gates and completion criteria.
+12. `12_saml_federation_hld.md` — SAML 2.0 federation high-level design for Tikti as Service Provider, including flows, threat model, rollout, FAQ, and appendices.
