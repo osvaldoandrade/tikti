@@ -5,7 +5,7 @@
 | Field | Details |
 |---|---|
 | **Reviewer** | TBD — external security reviewer (NDA required before engagement) |
-| **Scope** | SAML 2.0 SP implementation in Tikti: XML validator handling, signature wrapping defence, replay protection, cookie policy, IdP metadata trust |
+| **Scope** | SAML 2.0 SP implementation in Tikti: XML validator handling, signature wrapping defense, replay protection, cookie policy, IdP metadata trust |
 | **Timeline** | 3-day pentest window scheduled for Week 5 of the SAML milestone |
 | **Deliverables** | Markdown report at `docs/security/saml-pentest-report.md` (produced in P8.7) |
 
