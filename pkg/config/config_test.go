@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeTempConfig(t *testing.T, body string) string {
@@ -97,5 +98,126 @@ jwksKeyId: kid-file
 	}
 	if cfg.JwksKeyID != "kid-x" {
 		t.Fatalf("unexpected kid: %s", cfg.JwksKeyID)
+	}
+}
+
+func TestSAMLConfig_DefaultDisabled(t *testing.T) {
+	path := writeTempConfig(t, "{}")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SAML.Enabled {
+		t.Fatalf("expected saml.enabled=false when absent, got true")
+	}
+}
+
+func TestSAMLConfig_RequiresKeysWhenEnabled(t *testing.T) {
+	path := writeTempConfig(t, `
+saml:
+  enabled: true
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected load error: %v", err)
+	}
+	if err := cfg.SAML.Validate(); err == nil {
+		t.Fatalf("expected validation error for missing signingKeyPath")
+	}
+}
+
+func TestSAMLConfig_DurationsParse(t *testing.T) {
+	path := writeTempConfig(t, `
+saml:
+  sp:
+    clockSkewSeconds: 5
+    requestTTLSeconds: 300
+  idp:
+    refreshIntervalHours: 12
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SAML.SP.ClockSkew != 5*time.Second {
+		t.Fatalf("unexpected clockSkew: %v", cfg.SAML.SP.ClockSkew)
+	}
+	if cfg.SAML.SP.RequestTTL != 300*time.Second {
+		t.Fatalf("unexpected requestTTL: %v", cfg.SAML.SP.RequestTTL)
+	}
+	if cfg.SAML.IdP.RefreshInterval != 12*time.Hour {
+		t.Fatalf("unexpected refreshInterval: %v", cfg.SAML.IdP.RefreshInterval)
+	}
+}
+
+func TestSAMLConfig_AllowedSigAlgsDefault(t *testing.T) {
+	path := writeTempConfig(t, "{}")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.SAML.SP.AllowedSigAlgs) != 1 || cfg.SAML.SP.AllowedSigAlgs[0] != "rsa-sha256" {
+		t.Fatalf("unexpected allowedSigAlgs: %v", cfg.SAML.SP.AllowedSigAlgs)
+	}
+}
+
+func TestSAMLConfig_SameSiteDefault(t *testing.T) {
+	path := writeTempConfig(t, "{}")
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SAML.ACS.CookieSameSite != "Lax" {
+		t.Fatalf("unexpected cookieSameSite: %s", cfg.SAML.ACS.CookieSameSite)
+	}
+}
+
+func TestSAMLConfig_ExampleYAMLParses(t *testing.T) {
+	path := writeTempConfig(t, `
+saml:
+  enabled: true
+  sp:
+    entityID: "https://sp.example.com/metadata"
+    acsURL: "https://sp.example.com/saml/acs"
+    sloURL: "https://sp.example.com/saml/slo"
+    signingKeyPath: "/etc/tikti/saml/sp-key.pem"
+    signingCertPath: "/etc/tikti/saml/sp-cert.pem"
+    encryptionKeyPath: "/etc/tikti/saml/enc-key.pem"
+    encryptionCertPath: "/etc/tikti/saml/enc-cert.pem"
+    keyBits: 2048
+    clockSkewSeconds: 5
+    requestTTLSeconds: 300
+    allowedSigAlgs: ["rsa-sha256"]
+    allowedDigestAlgs: ["sha256"]
+    canonicalization: "http://www.w3.org/2001/10/xml-exc-c14n#"
+    requireAssertionSigned: true
+    requireEncryptedAssertion: false
+  acs:
+    deliveryMode: cookie
+    cookieName: tikti_saml
+    cookieDomain: ".example.com"
+    cookieSameSite: Lax
+    cookieSecure: true
+    sessionTTL: 3600
+  idp:
+    metadataURL: "https://idp.example.com/metadata"
+    refreshIntervalHours: 12
+    trustedCertPaths:
+      - /etc/tikti/saml/idp-ca.pem
+    skipSignatureCheck: false
+  discover:
+    enabled: false
+    protocolType: "SAML2Redirect"
+    serviceURL: "https://sp.example.com/discovery"
+  metrics:
+    enabled: true
+    namespace: "tikti_saml"
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := cfg.SAML.Validate(); err != nil {
+		t.Fatalf("validation failed: %v", err)
 	}
 }
