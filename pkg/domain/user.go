@@ -46,8 +46,8 @@ type User struct {
 	CompanyId       *string    `json:"companyId,omitempty"`
 	TokenVersion    int        `json:"tokenVersion,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
-	AuthSource      AuthSource `json:"auth_source"`
-	ExternalSubject string     `json:"external_subject"`
+	AuthSource      AuthSource `json:"authSource"`
+	ExternalSubject string     `json:"externalSubject"`
 }
 
 // SignUpReq holds the payload expected when an admin creates a new user.

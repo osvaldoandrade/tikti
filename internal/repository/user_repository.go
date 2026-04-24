@@ -351,7 +351,7 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	if err != nil && err != domain.ErrNotFound {
 		return domain.User{}, false, err
 	}
-	if emailUser != nil && emailUser.AuthSource == domain.AuthSourcePassword {
+	if emailUser != nil && (emailUser.AuthSource == domain.AuthSourcePassword || emailUser.AuthSource == "") {
 		emailUser.AuthSource = domain.AuthSourceSAML
 		emailUser.ExternalSubject = externalSubject
 		if len(roles) > 0 {
@@ -360,7 +360,9 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 		if err := r.UpdateUser(ctx, emailUser); err != nil {
 			return domain.User{}, false, err
 		}
-		_ = r.client.Set(ctx, samlSubjectKey(tid, externalSubject), emailUser.Id, 0).Err()
+		if err := r.client.Set(ctx, samlSubjectKey(tid, externalSubject), emailUser.Id, 0).Err(); err != nil {
+			return domain.User{}, false, err
+		}
 		return *emailUser, false, nil
 	}
 
@@ -385,8 +387,12 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	if err := r.client.HSet(ctx, usersHashV2, u.Id, data).Err(); err != nil {
 		return domain.User{}, false, err
 	}
-	_ = r.client.Set(ctx, userByEmailKeyNS+email, u.Id, 0).Err()
-	_ = r.client.Set(ctx, samlSubjectKey(tid, externalSubject), u.Id, 0).Err()
+	if err := r.client.Set(ctx, userByEmailKeyNS+email, u.Id, 0).Err(); err != nil {
+		return domain.User{}, false, err
+	}
+	if err := r.client.Set(ctx, samlSubjectKey(tid, externalSubject), u.Id, 0).Err(); err != nil {
+		return domain.User{}, false, err
+	}
 
 	return u, true, nil
 }
