@@ -46,3 +46,7 @@ npm/**/node_modules/
 # npm package postinstall download artifacts (kept out of git)
 npm/**/bin/*-bin
 npm/**/bin/*-bin.exe
+
+# SAML SP keys (real keys must never be committed; use *.sample for dev/test)
+hack/saml/sp.key
+hack/saml/sp.crt
