@@ -1,0 +1,34 @@
+name: saml
+on:
+  pull_request:
+    paths:
+      - 'internal/saml/**'
+      - 'cmd/tikti-cli/**'
+      - 'helm/tikti/**'
+      - 'config/**'
+      - 'pkg/config/**'
+      - 'internal/app/**'
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: 'go.mod' }
+      - run: go test -race -count=1 ./internal/saml/...
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: 'go.mod' }
+      - run: go test -run Conformance -count=1 ./internal/saml
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      redis: { image: redis:7-alpine, ports: ['6379:6379'] }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: 'go.mod' }
+      - run: go test -count=1 ./test/integration -run TestSAMLE2E
