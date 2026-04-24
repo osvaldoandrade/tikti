@@ -1,0 +1,9 @@
+linters:
+  enable:
+    - gosec
+linters-settings:
+  gosec:
+    includes:
+      - G402
+      - G505
+      - G107
