@@ -1,0 +1,13 @@
+name: saml-fuzz
+on:
+  schedule: [{ cron: '0 3 * * *' }]
+permissions:
+  contents: read
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: 'go.mod' }
+      - run: go test -fuzz=FuzzParseResponse -fuzztime=1h ./internal/saml
