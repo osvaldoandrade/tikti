@@ -1,6 +1,8 @@
 name: saml-fuzz
 on:
   schedule: [{ cron: '0 3 * * *' }]
+permissions:
+  contents: read
 jobs:
   fuzz:
     runs-on: ubuntu-latest
