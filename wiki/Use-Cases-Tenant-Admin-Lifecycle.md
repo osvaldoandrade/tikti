@@ -1,25 +1,26 @@
 # Tenant Admin Lifecycle
 
-Manage tenant resources and memberships through admin operations.
+Manage tenant resources, memberships, and identity federation through admin operations. This flow covers tenant creation through to IdP registration for SAML SSO.
 
 ## Actors
 
 - Global admin or tenant admin
 - Tikti API
+- Tikti CLI
 
 ## Preconditions
 
-- Caller is authenticated and authorized for admin scopes.
-- Target tenant exists for tenant-scoped operations.
+The caller is authenticated and authorized for admin scopes. The target tenant exists for tenant-scoped operations (steps 2 onward).
 
 ## Main flow
 
-1. Admin creates tenant (`POST /v1/tenants`) when needed.
-2. Admin creates tenant roles (`POST /v1/tenants/{tenantId}/roles`).
-3. Admin creates tenant clients (`POST /v1/tenants/{tenantId}/clients`).
-4. Admin adds users to tenant (`POST /v1/tenants/{tenantId}/users`).
-5. Admin may remove users (`POST /v1/tenants/{tenantId}/users/remove`).
-6. Admin may suspend/re-activate users using account status operations.
+1. Admin creates a tenant via `POST /v1/tenants`.
+2. Admin creates tenant roles via `POST /v1/tenants/{tenantId}/roles`.
+3. Admin creates tenant clients via `POST /v1/tenants/{tenantId}/clients`.
+4. Admin adds users to the tenant via `POST /v1/tenants/{tenantId}/users`.
+5. Admin registers a SAML IdP for the tenant via `tikti-cli saml idp register`. This stores the IdP metadata, SSO URL, and pinned signing certificate at `saml:idp:{tenantId}` in Redis.
+6. Admin removes users from the tenant via `POST /v1/tenants/{tenantId}/users/remove` when needed.
+7. Admin suspends or reactivates users via account status operations when needed.
 
 ### Sequence diagram
 
@@ -27,6 +28,8 @@ Manage tenant resources and memberships through admin operations.
 sequenceDiagram
     participant A as Admin
     participant T as Tikti API
+    participant C as Tikti CLI
+    participant R as Redis
 
     A->>T: POST /v1/tenants
     T-->>A: Tenant created
@@ -36,6 +39,9 @@ sequenceDiagram
     T-->>A: Client created
     A->>T: POST /v1/tenants/{tenantId}/users
     T-->>A: Membership created
+    A->>C: tikti-cli saml idp register --tenant {tenantId}
+    C->>R: SET saml:idp:{tenantId} (metadata, cert, SSO URL)
+    C-->>A: IdP registered
     opt Remove user from tenant
         A->>T: POST /v1/tenants/{tenantId}/users/remove
         T-->>A: Membership removed
@@ -48,17 +54,20 @@ sequenceDiagram
 
 ## Expected outcomes
 
-- Tenant boundaries are enforced in every mutation.
-- Role and client registries are deterministic and auditable.
-- Membership changes are reflected in subsequent authorization decisions.
+Tenant boundaries are enforced in every mutation. Role and client registries are deterministic and auditable. Membership changes are reflected in subsequent authorization decisions. After IdP registration, tenant users can authenticate via SAML SSO at `/saml/login/{tenantId}`.
 
 ## Failure scenarios
 
-- Non-admin caller -> operation denied.
-- Invalid tenant identifier -> operation denied with contract error.
-- Invalid role/scope payload -> validation error.
+Non-admin caller: operation denied.
+
+Invalid tenant identifier: operation denied with a contract error.
+
+Invalid role or scope payload: validation error.
+
+IdP registration with an invalid or expired signing certificate: registration rejected by the CLI.
 
 ## Related specs
 
 - [API Specification](API-Specification)
 - [Multi-Tenant Authorization](Multi-Tenant-Authorization)
+- [SAML Federation HLD](../docs/12_saml_federation_hld.md)

@@ -1,10 +1,10 @@
 # 02 Architecture and Data Model
 
-This document specifies Tikti’s architecture and data model with enough precision to drive storage design, API behavior, and authorization logic. It includes data structures, key layout, and algorithmic complexity where decisions depend on scale. The target design assumes Redis as the primary store, but the model is storage‑agnostic and can be implemented over any key‑value database with hash primitives.
+This document specifies Tikti's architecture and data model with enough precision to drive storage design, API behavior, and authorization logic. It includes data structures, key layout, and algorithmic complexity where decisions depend on scale. The target design assumes Redis as the primary store, but the model is storage‑agnostic and can be implemented over any key‑value database with hash primitives.
 
 ## Architectural layers
 
-Tikti is structured into four conceptual layers. The HTTP layer handles JSON parsing, request validation, and response formatting. The service layer enforces business rules such as password verification, membership checks, and scope evaluation. The repository layer manages persistence and provides deterministic reads and writes for identity, membership, and tenant metadata. The cryptographic layer issues and validates tokens, handles key rotation, and exposes JWKS. These layers must remain separable because token policy and data policy evolve at different cadences. The HTTP layer should not embed authorization logic; authorization is centralized in the service layer and is driven by explicit inputs (token claims, tenant context, client configuration).
+Tikti is structured into four layers. The HTTP layer handles JSON parsing, request validation, and response formatting. The service layer enforces business rules such as password verification, SAML assertion validation, membership checks, and scope evaluation. The repository layer manages persistence and provides deterministic reads and writes for identity, membership, tenant metadata, and SAML federation state. The cryptographic layer issues and validates tokens, handles key rotation, and exposes JWKS. These layers must remain separable because token policy and data policy evolve at different cadences. The HTTP layer must not embed authorization logic; authorization is centralized in the service layer and is driven by explicit inputs (token claims, tenant context, client configuration).
 
 ## Canonical entities
 
@@ -12,7 +12,7 @@ The canonical entities define the identity graph. They are represented as JSON o
 
 A Tenant represents a security boundary. A User represents a global identity. A Membership binds a User to a Tenant. A Role defines permissions and is scoped globally, to a tenant, or to a resource server. A Client defines an audience for access tokens. An API Key gates administrative endpoints. An OOB Code provides a single‑use mechanism for password resets and verification.
 
-This model provides stable identity (User), stable boundary (Tenant), and flexible authorization (Membership + Role). It also separates authentication credentials (User.passwordHash) from authorization state (Membership.roles), which is essential for multi‑tenant access control.
+This model provides stable identity (User), stable boundary (Tenant), and composable authorization (Membership + Role). It separates authentication credentials (User.passwordHash) from authorization state (Membership.roles), which is required for multi‑tenant access control.
 
 ## Data model definitions
 
@@ -34,7 +34,7 @@ A tenant is identified by a stable UUID. A slug is used for human‑readable URL
 
 ### User
 
-A user is global. Email must be globally unique.
+A user is global. Email must be globally unique. When a user is created through SAML JIT provisioning, the `amr` field is set to `"saml"`. The `amr` field is optional and absent for password‑created users.
 
 ```json
 {
@@ -42,6 +42,7 @@ A user is global. Email must be globally unique.
   "email": "admin@codecompany.com.br",
   "passwordHash": "bcrypt",
   "status": "ACTIVE",
+  "amr": "saml",
   "createdAt": "2026-01-28T12:00:00Z"
 }
 ```
@@ -118,38 +119,28 @@ The OOB `type` binds a code to a specific flow. Supported types are `PASSWORD_RE
 
 ## Redis key layout
 
-The target layout avoids full scans and enables O(1) lookups. Keys use explicit prefixes and tenant IDs to enforce isolation. For high cardinality data (users, memberships), a two‑step lookup is used to avoid storing large indexes within a single hash.
+The layout avoids full scans and enables O(1) lookups. Keys use explicit prefixes and tenant IDs to enforce isolation. For high cardinality data (users, memberships), a two‑step lookup avoids storing large indexes within a single hash. SAML federation keys follow the same prefix convention and are tenant‑scoped where applicable.
 
-```
-# Tenants
-HSET tenants {tenantId} {TenantJson}
+| Key pattern | Value | TTL | Complexity | Purpose |
+|---|---|---|---|---|
+| `tenants` (hash) | `{tenantId}` -> `{TenantJson}` | none | O(1) | Tenant registry |
+| `users` (hash) | `{userId}` -> `{UserJson}` | none | O(1) | User registry |
+| `userByEmail:{email}` | `{userId}` | none | O(1) | Email-to-user index |
+| `memberships:{tenantId}` (hash) | `{userId}` -> `{MembershipJson}` | none | O(1) | Tenant-scoped memberships |
+| `roles:{tenantId}` (hash) | `{roleName}` -> `{RoleJson}` | none | O(1) | Tenant-scoped roles |
+| `clients:{tenantId}` (hash) | `{clientId}` -> `{ClientJson}` | none | O(1) | Tenant-scoped clients |
+| `apiKeys:{tenantId}` (hash) | `{apiKeyId}` -> `{ApiKeyJson}` | none | O(1) | Tenant-scoped API keys |
+| `oob:{code}` (hash) | `email`, `reqType`, `expiresAt` | 900 s | O(1) | One-time OOB codes |
+| `saml:req:{id}` | Pending AuthnRequest state | 300 s | O(1) read/write/delete | Stores request ID so the Assertion Consumer Service can match `InResponseTo` |
+| `saml:idp:{tenantId}` | Per-tenant IdP metadata: entityID, ssoURL, sloURL, cert, attributeMapping | none (persisted until admin removes) | O(1) lookup | IdP trust configuration per tenant |
+| `saml:idx:NameID` | tenant, subject, SessionIndex | none | O(1) lookup | SAML session index for Single Logout; maps NameID to session state |
+| `saml:seen:{AssertionID}` | flag | 3600 s | O(1) lookup/set | Assertion replay protection; prevents the same assertion from being consumed twice |
 
-# Users and email index
-HSET users {userId} {UserJson}
-SET userByEmail:{email} {userId}
-
-# Memberships
-HSET memberships:{tenantId} {userId} {MembershipJson}
-
-# Roles
-HSET roles:{tenantId} {roleName} {RoleJson}
-
-# Clients
-HSET clients:{tenantId} {clientId} {ClientJson}
-
-# API keys
-HSET apiKeys:{tenantId} {apiKeyId} {ApiKeyJson}
-
-# OOB codes (one-time)
-HSET oob:{code} email {email} reqType {type} expiresAt {unix}
-EXPIRE oob:{code} 900
-```
-
-This layout enforces tenant scoping by key and avoids inter‑tenant data access without explicit tenant ID. It supports fast membership checks and role resolution with a small number of hash lookups.
+This layout enforces tenant scoping by key and prevents inter‑tenant data access without an explicit tenant ID. It supports O(1) membership checks, role resolution, and SAML request correlation.
 
 ## Lookup paths and complexity
 
-The performance critical operations are lookup, sign‑in, token exchange, and membership evaluation. The following outlines the expected complexity.
+The performance‑critical operations are lookup, sign‑in, token exchange, SAML assertion consumption, and membership evaluation. The following specifies the expected complexity for each.
 
 ### Sign‑in
 
@@ -163,7 +154,7 @@ user = HGET users userId
 verify bcrypt(password, user.passwordHash)
 ```
 
-Time complexity: O(1) for Redis lookups plus O(cost) for bcrypt verification. Bcrypt cost is a configured constant, typically 10–12. Memory usage is O(1) per request.
+Time complexity: O(1) for Redis lookups plus O(cost) for bcrypt verification. Bcrypt cost is a configured constant in the range 10-12. Memory usage is O(1) per request.
 
 ### Lookup
 
@@ -180,6 +171,27 @@ return user identity fields
 ```
 
 Time complexity: O(1) for Redis and O(1) for token verification.
+
+### SAML assertion consumption
+
+The Assertion Consumer Service receives a SAMLResponse, validates it, and issues an idToken. The lookup path touches four SAML keys.
+
+Algorithm:
+
+```text
+idpMeta = GET saml:idp:{tenantId}
+reqState = GET saml:req:{InResponseTo}
+validate assertion signature, timestamps, audience, InResponseTo
+DEL saml:req:{InResponseTo}
+replayCheck = GET saml:seen:{AssertionID}
+if replayCheck exists: reject
+SET saml:seen:{AssertionID} TTL 3600
+upsert user by tenantId + subject (JIT provisioning, amr="saml")
+SET saml:idx:NameID {tenantId, subject, SessionIndex}
+issue idToken with sub, tid, amr
+```
+
+Time complexity: O(1) for each Redis operation. The total is 6 Redis round trips (2 reads, 1 delete, 1 replay check, 2 writes) plus XML signature verification.
 
 ### Membership resolution
 
@@ -212,7 +224,7 @@ Time complexity: O(r) with r = number of roles, each role lookup is O(1). Scope 
 
 Redis does not provide multi‑key transactions by default. Operations that touch multiple keys must be structured to maintain invariants.
 
-User creation requires two writes: `HSET users` and `SET userByEmail:{email}`. To avoid dangling users, the service must perform cleanup if the second write fails. The implementation uses a best‑effort rollback. This yields eventual consistency under partial failure but maintains correctness because `userByEmail` is the canonical entry point.
+User creation requires two writes: `HSET users` and `SET userByEmail:{email}`. To avoid dangling users, the service must perform cleanup if the second write fails. The implementation uses a best‑effort rollback. This yields eventual consistency under partial failure but maintains correctness because `userByEmail` is the canonical entry point. The same pattern applies to SAML JIT provisioning, where user creation and membership creation must both succeed or roll back.
 
 Pseudo‑code:
 
@@ -224,11 +236,11 @@ if SET userByEmail:{email} userId fails:
   return error
 ```
 
-This is O(1) and can be retried safely. Similar patterns apply to membership creation and role assignment.
+This is O(1) and can be retried safely. The same pattern applies to membership creation, role assignment, and SAML IdP metadata writes.
 
 ## Password reset lifecycle
 
-OOB codes are stored with an `expiresAt` timestamp. Validation must check both presence and expiration. The code is one‑time: after successful use, it is deleted. OOB expiration can be enforced either at read time (current) or by Redis TTL. The specification allows both; a TTL is recommended for safety but not required.
+OOB codes are stored with an `expiresAt` timestamp. Validation must check both presence and expiration. The code is one‑time: after successful use, it is deleted. OOB expiration can be enforced at read time or by Redis TTL. The specification allows both; a TTL is recommended for safety but not required.
 
 ## Multi‑tenant invariants
 
@@ -238,6 +250,9 @@ The following invariants must hold at all times:
 2. A membership is scoped to exactly one tenant.
 3. A role belongs to at most one tenant or resource.
 4. Access tokens must include a tenant claim (`tid`) that refers to an existing membership.
-5. Deleting a tenant removes memberships, clients, roles, and API keys scoped to that tenant.
+5. Deleting a tenant removes memberships, clients, roles, API keys, and SAML IdP configuration scoped to that tenant.
+6. A `saml:idp:{tenantId}` key binds exactly one IdP to one tenant. No tenant shares an IdP binding with another tenant.
+7. A `saml:req:{id}` key expires after 300 seconds. The Assertion Consumer Service rejects any response whose `InResponseTo` has no matching request key.
+8. A `saml:seen:{AssertionID}` key prevents assertion replay for 3600 seconds after first consumption.
 
-These invariants allow deterministic authorization and prevent cross‑tenant access through stale records.
+These invariants enable deterministic authorization and prevent cross‑tenant access through stale or replayed records.

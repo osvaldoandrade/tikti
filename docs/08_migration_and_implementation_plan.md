@@ -1,115 +1,62 @@
 # 08 Migration and Implementation Plan
 
-This document defines a staged plan to evolve Tikti from its current single‑tenant, HS256‑only system into a multi‑tenant, RS256‑capable identity provider with codeQ support. Each stage is an independent unit of work with explicit acceptance criteria. The plan is designed to minimize downtime and maintain backward compatibility at every step.
+This document defines a staged plan to evolve Tikti from a single-tenant, HS256-only system into a multi-tenant, RS256-capable identity provider with codeQ support and SAML 2.0 federation. Each stage is an independent unit of work with acceptance criteria. The plan maintains backward compatibility at every step.
 
 ## Stage 0: Baseline hardening
 
-The objective is to ensure that the existing service has operational safety and consistent errors before introducing new semantics.
+This stage establishes operational safety and error consistency before introducing new semantics.
 
-Actions:
+Introduce `/healthz` and `/readyz` endpoints. `/readyz` must fail if Redis is unreachable or if cryptographic keys cannot be loaded. Normalize error responses to the JSON error shape while preserving the existing `error` field for backward compatibility. Add structured logging with request IDs on all endpoints.
 
-- Introduce `/healthz` and `/readyz` endpoints. `/readyz` must fail if Redis is unreachable or if cryptographic keys cannot be loaded.
-- Normalize error responses to the JSON error shape while preserving the existing `error` field.
-- Add structured logging with request IDs.
-
-Acceptance criteria:
-
-- Health endpoints return expected status codes in local and production environments.
-- Existing clients still function and receive an `error` field on failures.
+Acceptance criteria: health endpoints return expected status codes in local and production environments. Existing clients continue to function and receive an `error` field on failures.
 
 ## Stage 1: Issuer and lookup extensions
 
-The objective is to make tokens verifiable by external services and extend lookup with role and tenant data.
+This stage makes tokens verifiable by external services and extends lookup with role and tenant data.
 
-Actions:
+Add `issuerBaseUrl` and `defaultAudience` to configuration. Include `iss` and `aud` claims in idTokens. Extend the `/lookup` response to include `role`, `tenantId`, and `status`.
 
-- Add configuration fields `issuerBaseUrl` and `defaultAudience`.
-- Include `iss` and `aud` in idTokens.
-- Extend `/lookup` response to include `role`, `tenantId`, and `status`.
-
-Acceptance criteria:
-
-- `signIn` returns tokens containing `iss` and `aud`.
-- `lookup` returns `role` and `tenantId` when available.
-- codeQ producer validation works without changes.
+Acceptance criteria: `signIn` returns tokens containing `iss` and `aud`. `lookup` returns `role` and `tenantId` when available. codeQ producer validation works without changes.
 
 ## Stage 2: RS256 signing and JWKS
 
-The objective is to introduce RS256 signing for access tokens and publish JWKS for downstream verification.
+This stage introduces RS256 signing for access tokens and publishes JWKS for downstream verification.
 
-Actions:
+Introduce RSA key management with `kid` support. Implement `/.well-known/jwks.json` with cache-control headers. Add RS256 signing utilities and validation helpers.
 
-- Introduce RSA key management with `kid` support.
-- Implement `/.well-known/jwks.json` with caching headers.
-- Add RS256 signing utilities and validation helpers.
+Acceptance criteria: the JWKS endpoint returns a valid key set. RS256 tokens validate using the published JWKS. Key rotation completes without token verification failures.
 
-Acceptance criteria:
+## Stage 3: Multi-tenant domain
 
-- JWKS endpoint returns valid key set.
-- RS256 tokens validate successfully using JWKS.
-- Key rotation can occur without token verification failures.
+This stage splits identity from membership and enforces tenant boundaries.
 
-## Stage 3: Multi‑tenant domain
+Add Tenant and Membership entities with their respective storage. Introduce the `userByEmail` index to enforce global email uniqueness. Update user creation to assign a membership within a default tenant.
 
-The objective is to split identity from membership and enforce tenant boundaries.
-
-Actions:
-
-- Add Tenant entity and storage.
-- Add Membership entity and storage.
-- Introduce `userByEmail` index to enforce global email uniqueness.
-- Update user creation to create membership within a default tenant.
-
-Acceptance criteria:
-
-- Users can belong to multiple tenants.
-- Email uniqueness is enforced globally.
-- Membership is required for tenant‑scoped operations.
+Acceptance criteria: users can belong to multiple tenants. Email uniqueness is enforced globally. Membership is required for tenant-scoped operations.
 
 ## Stage 4: Role and client registry
 
-The objective is to formalize permissions and client audiences.
+This stage formalizes permissions and client audiences.
 
-Actions:
+Add the Role entity and role CRUD endpoints. Add the Client entity with secret rotation support. Define a scope registry and validation rules.
 
-- Add Role entity and role CRUD endpoints.
-- Add Client entity with secret rotation support.
-- Define scope registry and validation rules.
-
-Acceptance criteria:
-
-- Roles resolve into scopes deterministically.
-- Clients control allowed grant types and default scopes.
-- Scope validation rejects unauthorized scopes.
+Acceptance criteria: roles resolve into scopes deterministically. Clients control allowed grant types and default scopes. Scope validation rejects unauthorized scopes.
 
 ## Stage 5: Token exchange
 
-The objective is to issue scoped access tokens for resource servers and workers.
+This stage issues scoped access tokens for resource servers and workers.
 
-Actions:
+Implement `/v1/accounts/token/exchange`. Validate idToken, tenant membership, client configuration, and requested scopes before issuing an RS256 access token. Support the `eventTypes` claim for worker tokens.
 
-- Implement `/v1/accounts/token/exchange`.
-- Validate idToken, tenant membership, client configuration, and requested scopes.
-- Support `eventTypes` claim for worker tokens.
-
-Acceptance criteria:
-
-- Exchange returns RS256 tokens with `aud`, `scope`, and `tid`.
-- codeQ workers can claim tasks using exchanged tokens.
+Acceptance criteria: exchange returns RS256 tokens with `aud`, `scope`, and `tid`. codeQ workers can claim tasks using exchanged tokens.
 
 ## Stage 6: Data migration
 
-The objective is to migrate legacy data into the new multi‑tenant layout.
+This stage migrates legacy data into the multi-tenant layout.
 
-Actions:
+Create a default tenant (`tenantId=default`). For each user in the legacy `users` hash, create a user record (if not present), a `userByEmail:{email}` index entry, and a membership in the default tenant.
 
-- Create a default tenant (`tenantId=default`).
-- For each user in the legacy `users` hash:
-  - create a user record (if not already present)
-  - create `userByEmail:{email}` index
-  - create a membership in the default tenant
-
-Pseudo‑code:
+Pseudo-code:
 
 ```text
 for each (email, userJson) in HGETALL users:
@@ -121,55 +68,38 @@ for each (email, userJson) in HGETALL users:
 
 Complexity: O(n) for n users. Each iteration performs a constant number of Redis operations.
 
-Acceptance criteria:
-
-- All existing users can still sign in.
-- Memberships exist for the default tenant.
-- Lookup returns tenantId for migrated users.
+Acceptance criteria: all existing users can still sign in. Memberships exist for the default tenant. Lookup returns `tenantId` for migrated users.
 
 ## Stage 7: Authorization enforcement
 
-The objective is to enforce tenant scope and audience validation consistently.
+This stage enforces tenant scope and audience validation on all endpoints.
 
-Actions:
+Implement tenant context resolution and membership checks. Enforce `aud` and `scope` on all resource endpoints. Remove reliance on dev-only role headers in production paths.
 
-- Implement tenant context resolution and membership checks.
-- Enforce `aud` and `scope` on all resource endpoints.
-- Remove reliance on dev‑only role headers in production paths.
-
-Acceptance criteria:
-
-- Cross‑tenant access is denied.
-- Invalid audience tokens are rejected.
-- Admin endpoints require explicit admin role.
+Acceptance criteria: cross-tenant access is denied. Tokens with an invalid audience are rejected. Admin endpoints require the admin role.
 
 ## Stage 8: Verification
 
-The objective is to prove correctness through tests.
+This stage proves correctness through tests.
 
-Actions:
+Extend `test_tikti.py` to verify lookup role and token exchange. Add unit tests for token validation and role expansion. Add integration tests for JWKS and RS256 validation.
 
-- Extend `test_tikti.py` to verify lookup role and token exchange.
-- Add unit tests for token validation and role expansion.
-- Add integration tests for JWKS and RS256 validation.
-
-Acceptance criteria:
-
-- All tests pass in CI.
-- codeQ integration tests pass using real tokens.
+Acceptance criteria: all tests pass in CI. codeQ integration tests pass using real tokens.
 
 ## Stage 9: Rollout and monitoring
 
-The objective is to deploy safely with measurable confidence.
+This stage deploys the multi-tenant system with monitoring.
 
-Actions:
+Deploy to staging with RS256 enabled but idTokens still HS256. Validate JWKS availability and cache behavior. Roll out to production with monitoring of auth failures and latency.
 
-- Deploy to staging with RS256 enabled but idTokens still HS256.
-- Validate JWKS availability and cache behavior.
-- Roll out to production with monitoring of auth failures and latency.
+Acceptance criteria: no increase in auth error rates beyond baseline. JWKS endpoint maintains 99.9% availability. Token exchange P95 latency meets the target defined in the operations document.
 
-Acceptance criteria:
+## Stage 10: SAML 2.0 federation
 
-- No increase in auth error rates beyond baseline.
-- JWKS endpoint maintains 99.9% availability.
-- Token exchange P95 latency under target.
+This stage adds SAML 2.0 SP-initiated SSO as defined in the SAML federation HLD (`docs/12_saml_federation_hld.md`). SAML federation is additive and does not require migration of existing users. Tenants that do not configure an IdP binding continue to use the password authentication path with no changes. Tenants that configure an IdP binding gain SAML login as an additional authentication method.
+
+Deploy the SAML HTTP handler, assertion validator, JIT provisioner, and SLO handler. Register IdP trust relationships for tenants via the `saml idp register` CLI command. Generate SP metadata and distribute it to IdP administrators.
+
+This stage can be deployed independently of the preceding stages, provided that Stage 3 (multi-tenant domain) and Stage 2 (RS256 signing) are already in place. No data migration is required because SAML users are provisioned via JIT on first login.
+
+Acceptance criteria: SP-initiated SSO completes end-to-end for at least one IdP (Azure AD or Okta). The idToken issued after SAML login contains `amr: ["saml"]` and is accepted by the existing token exchange path. SLO round-trip completes at P95 under 5 seconds. SAML metrics and audit records are emitted as defined in the operations document. SP key rotation completes with zero failed requests under load.

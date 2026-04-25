@@ -1,12 +1,16 @@
 # codeQ Integration
 
-This document specifies the Tikti requirements that enable codeQ producer and worker authentication. The goal is to make the integration deterministic, auditable, and secure, while preserving compatibility with existing codeQ flows that rely on token lookup.
+This document specifies the Tikti requirements that enable codeQ producer and worker authentication. The integration is deterministic, auditable, and compatible with existing codeQ flows that rely on token lookup.
+
+## Authentication method independence
+
+SAML-authenticated users who hold membership in a codeQ-enabled tenant can exchange their idToken for a worker token in the same way as password-authenticated users. The `amr: saml` claim in the idToken does not affect the token exchange or the worker authorization path. The token exchange endpoint validates the idToken, verifies tenant membership, and checks scope entitlements without inspecting the authentication method. This means the entire codeQ integration described below works identically for both authentication methods.
 
 ## Producer authentication flow
 
-A codeQ producer authenticates using an idToken obtained from Tikti sign‑in. codeQ does not verify the signature directly; instead, it calls Tikti’s lookup endpoint. This flow requires the lookup response to include role information so that codeQ can decide whether admin routes are allowed.
+A codeQ producer authenticates using an idToken obtained from Tikti sign-in (password or SAML). codeQ does not verify the idToken signature directly; it calls Tikti's lookup endpoint. The lookup response must include role information so that codeQ can determine whether admin routes are allowed.
 
-The lookup call uses the API key, and the idToken is supplied in the request body. The contract is strict: if the response does not include `role`, codeQ cannot grant admin access.
+The lookup call uses the API key, and the idToken is supplied in the request body. If the response does not include `role`, codeQ cannot grant admin access.
 
 Request:
 
@@ -33,15 +37,15 @@ Response:
 }
 ```
 
-If the idToken is invalid, Tikti must return 401 and codeQ must reject the request. If the user is suspended, Tikti should return a 403 or include status that codeQ uses to deny access.
+If the idToken is invalid, Tikti returns 401 and codeQ rejects the request. If the user is suspended, Tikti returns 403 or includes a status that codeQ uses to deny access.
 
 ## Worker authentication flow
 
-Workers require RS256 tokens. These are not produced by sign‑in. They are produced by a token exchange endpoint that validates a user identity and issues a scoped access token with a specific audience and allowed event types.
+Workers require RS256 tokens. These tokens are not produced by sign-in. They are produced by a token exchange endpoint that validates a user identity and issues a scoped access token with a specific `aud` and allowed event types.
 
 ### Token exchange contract
 
-The token exchange endpoint is used by CLI or automation to obtain a worker token. The caller passes an idToken and specifies the desired audience, scope set, and event types. The server must validate that the idToken is valid, that the user belongs to the requested tenant, and that requested scopes are a subset of permissions granted to the user and to the client.
+The token exchange endpoint is used by CLI or automation to obtain a worker token. The caller passes an idToken and specifies the desired `aud`, scope set, and event types. The server validates that the idToken is valid, that the user belongs to the requested tenant, and that requested scopes are a subset of permissions granted to the user and to the client.
 
 Request:
 
@@ -69,29 +73,13 @@ Response:
 
 ### Required claims
 
-The worker token must include:
-
-- `iss`: Tikti issuer base URL (example: `https://api.storifly.ai`)
-- `aud`: `codeq-worker`
-- `sub`: worker id
-- `tid`: tenant id
-- `scope`: space‑delimited scopes
-- `eventTypes`: array of event type strings
-- `iat`, `exp`, `jti`
+The worker token includes the following claims: `iss` set to the Tikti issuer base URL (for example, `https://api.storifly.ai`), `aud` set to `codeq-worker`, `sub` set to the worker id, `tid` set to the tenant id, `scope` as a space-delimited string, `eventTypes` as an array of event type strings, and standard temporal claims `iat`, `exp`, `jti`.
 
 ### Validation in codeQ
 
-codeQ validates worker tokens by performing the following checks:
+codeQ validates worker tokens by fetching JWKS and selecting the key by `kid`, verifying the RS256 signature, validating that `iss` equals the configured `WORKER_ISSUER`, validating that `aud` equals the configured `WORKER_AUDIENCE`, validating `exp` and `iat` with clock skew tolerance, validating required `scope` per endpoint, and validating event type membership when claiming tasks. Any validation failure results in 401 or 403.
 
-1. Fetch JWKS and select key by `kid`.
-2. Verify RS256 signature.
-3. Validate `iss` equals configured `WORKER_ISSUER`.
-4. Validate `aud` equals configured `WORKER_AUDIENCE`.
-5. Validate `exp` and `iat` with clock skew.
-6. Validate required scope per endpoint.
-7. Validate event type membership when claiming tasks.
-
-Any failure results in 401 or 403. The codeQ configuration values are:
+The codeQ configuration values are:
 
 - `WORKER_ISSUER=https://api.storifly.ai`
 - `WORKER_AUDIENCE=codeq-worker`
@@ -99,7 +87,7 @@ Any failure results in 401 or 403. The codeQ configuration values are:
 
 ## JWKS requirements
 
-codeQ caches JWKS but must be able to refresh on `kid` miss. Tikti must publish JWKS at a stable path and must include all active public keys. Key rotation must be non‑disruptive (see token spec).
+codeQ caches JWKS but must refresh on `kid` miss. Tikti publishes JWKS at a stable path and includes all active public keys. Key rotation must be non-disruptive (see token spec).
 
 ## Example: issuing a worker token
 
@@ -119,21 +107,8 @@ curl -sS -X POST "https://api.storifly.ai/v1/accounts/token/exchange?key=API_KEY
 
 ## Failure modes
 
-The integration must treat token exchange as an authorization boundary. Failure modes are explicit:
-
-- Invalid idToken: 401.
-- Tenant membership missing: 403.
-- Scope requested outside role permissions: 403.
-- Unknown audience: 400.
-- Event types not allowed: 403.
-
-These errors must be deterministic and must be logged with tenantId and subject.
+The integration treats token exchange as an authorization boundary. Failure modes are: invalid idToken returns 401; missing tenant membership returns 403; scope requested outside role permissions returns 403; unknown `aud` returns 400; disallowed event types returns 403. These errors are deterministic and are logged with `tenantId` and `sub`.
 
 ## OOB email delivery (out of scope)
 
-OOB email delivery is orchestrated outside of codeQ. The recommended approach is to use a workflow engine (for example, Cadence) to:
-
-1) call Tikti to generate and persist an OOB code (`POST /v1/tenants/{tenantId}/oob/send?key=API_KEY`), and then
-2) call the Notifications Service to send the email containing the code.
-
-This keeps Tikti focused on identity/token policy and keeps email delivery concerns outside the identity boundary.
+OOB email delivery is orchestrated outside of codeQ. The workflow engine (for example, Cadence) calls Tikti to generate and persist an OOB code (`POST /v1/tenants/{tenantId}/oob/send?key=API_KEY`), then calls the Notifications Service to send the email containing the code. This keeps Tikti focused on identity and token policy and keeps email delivery concerns outside the identity boundary.

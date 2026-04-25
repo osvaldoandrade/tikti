@@ -1,6 +1,6 @@
 # Tikti Helm Chart
 
-This chart installs Tikti with a ConfigMap‑based YAML config and optional Secrets.
+The Tikti Helm chart deploys the Tikti identity service into a Kubernetes cluster. It renders a ConfigMap that holds the application's YAML configuration, a Secret that stores credentials and SAML SP keypair material, a Service, a Deployment, and an Ingress resource. The chart reads all tunables from `values.yaml` and accepts overrides through `--set` and `--set-string` flags at install time.
 
 ## Install
 
@@ -10,8 +10,15 @@ helm upgrade --install tikti ./helm/tikti \
   --set image.tag=0.1.0 \
   --set-string config.redisAddr=redis:6379 \
   --set-string secrets.jwtSecret=CHANGE_ME \
-  --set-string secrets.apiKey=CHANGE_ME
+  --set-string secrets.apiKey=CHANGE_ME \
+  --set-string secrets.jwksPrivateKey=CHANGE_ME \
+  --set-string secrets.samlSpPrivateKey=CHANGE_ME \
+  --set-string secrets.samlSpCertificate=CHANGE_ME
 ```
+
+## Configuration
+
+The chart exposes values under three groups. `image.repository` and `image.tag` control the container image. `replicaCount` sets the number of pods. `resources` accepts standard Kubernetes resource requests and limits. `config.redisAddr` and `config.redisDb` point the application at a Redis instance. `ingress.enabled`, `ingress.className`, `ingress.hosts`, and `ingress.tls` configure the Ingress resource. Under `secrets`, the chart stores `jwtSecret`, `apiKey`, `redisPassword`, and `jwksPrivateKey` as Kubernetes Secrets.
 
 Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and configuring hosts.
 
@@ -34,9 +41,7 @@ helm upgrade --install tikti ./helm/tikti \
 
 ### External secret (staging / production)
 
-When using `external-secrets-operator` or a pre-provisioned Secret, set
-`saml.existingSecret` to skip the chart-managed Secret and mount the named
-Secret instead:
+When using `external-secrets-operator` or a pre-provisioned Secret, set `saml.existingSecret` to skip the chart-managed Secret and mount the named Secret instead:
 
 ```bash
 helm upgrade --install tikti ./helm/tikti \
@@ -48,8 +53,7 @@ helm upgrade --install tikti ./helm/tikti \
 
 ### Staging overlay
 
-A `values-staging.yaml` overlay is provided for staging dogfood deployments
-(P10.2). It enables SAML with sensible defaults for an Okta integration:
+A `values-staging.yaml` overlay is provided for staging dogfood deployments. It enables SAML with defaults for an Okta integration:
 
 ```bash
 helm upgrade --install tikti ./helm/tikti \

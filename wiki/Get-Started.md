@@ -1,6 +1,6 @@
 # Get Started
 
-This guide runs Tikti locally, exercises the core sign-in and lookup flows, and shows how to exchange an idToken into a RS256 worker token for downstream services (codeQ).
+This guide runs Tikti locally, exercises the sign-in and lookup flows, and shows how to exchange an idToken into a RS256 worker token for downstream services (codeQ).
 
 ## Prerequisites
 
@@ -66,10 +66,31 @@ Example:
 ./tikti-cli token show --type worker
 ```
 
+## 7) SAML Federation Setup
+
+Register an external SAML 2.0 IdP for a tenant, verify the SP metadata Tikti publishes, and test the SP-initiated login flow.
+
+Register an IdP:
+
+```bash
+./tikti-cli saml idp register --tenant <tenantId> --metadata-url <url>
+```
+
+Verify SP metadata:
+
+```bash
+./tikti-cli saml metadata
+```
+
+Test SAML login by navigating to `/saml/login/<tenantId>` in a browser. The IdP authenticates the user and posts an assertion back to Tikti, which issues the same HS256 idToken used by all other flows.
+
+For the full protocol sequence see [SAML Federation](SAML-Federation).
+
 ## Next Pages
 
 - [Overview](Overview)
 - [API Specification](API-Specification)
 - [Tokens and Keys](Tokens-and-Keys)
 - [Multi-Tenant Authorization](Multi-Tenant-Authorization)
+- [SAML Federation](SAML-Federation)
 - [Operations and SLO](Operations-and-SLO)

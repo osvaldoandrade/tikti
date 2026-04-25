@@ -1,15 +1,16 @@
 # Overview
 
-TIKTI is a multi-tenant identity service that provides deterministic authentication and authorization contracts across services.
+TIKTI is a multi-tenant identity service that provides authentication and authorization contracts across services.
 
-It keeps a Firebase-compatible API surface for sign-in and lookup, but extends it with explicit issuer/audience, multi-tenant membership, and RS256 access tokens for downstream resource servers.
+It keeps a Firebase-compatible API surface for sign-in and lookup, but extends it with issuer/audience binding, multi-tenant membership, and RS256 access tokens for downstream resource servers.
 
 ## What Tikti Does
 
-- Authenticates users (email/password and OOB flows) and issues HS256 idTokens.
-- Resolves idTokens via `lookup` for legacy clients and service-side introspection.
-- Exchanges idTokens into RS256 access tokens scoped to a resource server (`aud`) with explicit scopes (`scope`) and tenant context (`tid`).
-- Publishes JWKS for RS256 verification by resource servers.
+Tikti authenticates users through email/password and OOB email flows, then issues HS256 idTokens. It also delegates authentication to external SAML 2.0 identity providers (Azure AD, Okta, Ping Identity, Google Workspace) and produces the same HS256 idToken regardless of which authentication method the user chose.
+
+Tikti resolves idTokens via `lookup` for legacy clients and for service-side introspection. Clients that need downstream authorization exchange an idToken into an RS256 access token scoped to a resource server (`aud`) with explicit scopes (`scope`) and tenant context (`tid`).
+
+Tikti publishes JWKS endpoints so resource servers can verify RS256 tokens without contacting Tikti at runtime.
 
 ## The Token Contract
 
@@ -25,13 +26,13 @@ For claim requirements, lifetimes, and validation rules, see [Tokens and Keys](T
 
 A tenant is the authorization boundary. A user is global. Membership binds a user to a tenant and carries roles that expand into scopes.
 
-Tenant-scoped operations must always have an explicit tenant context and a membership check. This is what prevents cross-tenant access by accident.
+Tenant-scoped operations require an explicit tenant context and a membership check. This prevents cross-tenant access.
 
 See [Multi-Tenant Authorization](Multi-Tenant-Authorization) and [Architecture](Architecture-and-Data-Model).
 
 ## Compatibility
 
-Compatibility with existing clients is a hard constraint:
+Compatibility with existing clients is a constraint:
 
 - `/signInWithPassword` and `/lookup` keep the same request/response shape.
 - New response fields are additive and must not change the meaning of existing fields.
@@ -39,10 +40,11 @@ Compatibility with existing clients is a hard constraint:
 
 ## Reading Path
 
-If you are evaluating Tikti end-to-end, the fastest reading path is:
+The reading path for end-to-end evaluation is:
 
 1. [Get Started](Get-Started)
 2. [API Specification](API-Specification)
 3. [Tokens and Keys](Tokens-and-Keys)
 4. [Architecture](Architecture-and-Data-Model)
-5. [Use Cases](Use-Cases)
+5. [SAML Federation](SAML-Federation)
+6. [Use Cases](Use-Cases)

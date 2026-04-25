@@ -1,12 +1,6 @@
 # Use Cases
 
-This section defines concrete end-to-end scenarios for Tikti. Each use case maps business intent to API calls, token semantics, and expected outcomes.
-
-## Why this section exists
-
-- It makes product behavior explicit for engineering, QA, and integration teams.
-- It reduces ambiguity between API contract and runtime behavior.
-- It provides scenario-driven acceptance criteria, not only endpoint-level docs.
+This section defines end-to-end scenarios for Tikti. Each use case maps a business operation to API calls, token semantics, and expected outcomes. The scenarios serve as acceptance criteria for engineering, QA, and integration teams, bridging the gap between API contract and runtime behavior.
 
 ## Core use cases
 
@@ -15,10 +9,12 @@ This section defines concrete end-to-end scenarios for Tikti. Each use case maps
 3. [codeQ Worker Token Exchange](Use-Cases-codeQ-Worker-Token-Exchange)
 4. [Tenant Admin Lifecycle](Use-Cases-Tenant-Admin-Lifecycle)
 5. [Resource Server Token Validation](Use-Cases-Resource-Server-Token-Validation)
+6. [SAML SSO](Use-Cases-SAML-SSO)
 
 ## Traceability map
 
 - Identity and authentication contracts: [API Specification](API-Specification)
 - Token claims and validation: [Tokens and Keys](Tokens-and-Keys)
 - Tenant-aware authorization: [Multi-Tenant Authorization](Multi-Tenant-Authorization)
+- SAML federation: [SAML Federation HLD](../docs/12_saml_federation_hld.md)
 - codeQ behavior and claims: [codeQ Integration](codeQ-Integration)

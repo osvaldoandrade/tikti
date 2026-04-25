@@ -1,18 +1,16 @@
 # CLI Reference
 
-This document specifies the Tikti command‑line interface. The CLI is a thin client that exercises the HTTP API and provides deterministic automation for operators, CI, and local development. The CLI must be feature‑complete for tenant administration, token exchange, and validation workflows required by codeQ and other resource servers. The design favors explicit configuration, reproducible outputs, and secure token handling.
+This document specifies the Tikti command-line interface. The CLI is a client that exercises the HTTP API and provides automation for operators, CI, and local development. The CLI covers tenant administration, SAML federation management, token exchange, and validation workflows required by codeQ and other resource servers.
 
 ## Purpose and scope
 
-The CLI provides three categories of functionality. First, it authenticates a user and manages the local session context, including base URLs, API keys, and tokens. Second, it exposes administrative operations such as tenant creation, user membership management, role and client configuration, and API key rotation. Third, it supports token exchange and local inspection of tokens and JWKS for integration debugging.
+The CLI provides four categories of functionality. It authenticates a user and manages the local session context, including base URLs, API keys, and tokens. It exposes administrative operations: tenant creation, user membership management, role and client configuration, and API key rotation. It manages SAML 2.0 federation lifecycle: IdP registration, SP metadata retrieval, and SP key rotation. It supports token exchange and local inspection of tokens and JWKS for integration debugging.
 
-The CLI must not depend on environment variables for normal use. It must support interactive initialization and explicit command flags. It must persist configuration locally in a predictable file and never print secrets unless explicitly requested. All network requests must be idempotent where possible and must return machine‑parseable output for automation.
+The CLI does not depend on environment variables for operation. It supports interactive initialization and command flags. It persists configuration locally in a file at a fixed path and never prints secrets unless the operator requests it. Network requests are idempotent where the HTTP method allows it and return machine-parseable output for automation.
 
 ## Configuration model
 
-The CLI stores configuration in a YAML file at `~/.tikti/config.yaml`. The file contains named profiles. Each profile includes the Tikti base URL, IAM API key, optional default tenant, and the most recently issued tokens. The CLI always operates in a single active profile. The active profile can be changed per command via `--profile`.
-
-A minimal configuration structure is:
+The CLI stores configuration in a YAML file at `~/.tikti/config.yaml`. The file contains named profiles. Each profile includes the Tikti base URL, IAM API key, a tenant identifier, and the tokens from the last authentication or exchange operation. The CLI operates in one profile at a time. The operator selects a profile per command via `--profile`.
 
 ```yaml
 currentProfile: default
@@ -26,30 +24,26 @@ profiles:
     workerToken: <rs256-token>
 ```
 
-The CLI must support both interactive initialization and non‑interactive initialization. Interactive initialization prompts for the base URL and API key, and optionally a default tenant. Non‑interactive initialization uses explicit flags and never prompts. If a profile already exists, the CLI must update only the provided fields and preserve existing tokens unless explicitly overwritten.
+The CLI supports both interactive and non-interactive initialization. Interactive initialization prompts for the base URL and API key, and optionally a tenant. Non-interactive initialization uses flags and never prompts. If a profile exists, the CLI updates only the provided fields and preserves existing tokens unless the operator overwrites them.
 
-The configuration lookup algorithm is deterministic and O(1) with respect to the number of profiles because it is a keyed lookup on the profile name. When a profile is missing, the CLI must return a clear error rather than silently creating a new profile.
+Configuration lookup is O(1) with respect to the number of profiles because it is a keyed lookup on the profile name. When a profile is missing, the CLI returns an error rather than creating a profile.
 
 ## Authentication commands
 
-The CLI exposes an `auth` command that authenticates a user and stores the resulting idToken in the active profile. Authentication uses the `signInWithPassword` endpoint and is API‑key protected.
-
-The canonical flow is:
+The CLI exposes an `auth` command that authenticates a user and stores the resulting idToken in the profile. Authentication uses the `signInWithPassword` endpoint and requires an API key.
 
 ```bash
 tikti-cli init
 tikti-cli auth login --email admin@codecompany.com.br
 ```
 
-The `auth login` command must prompt for the password if it is not provided by flag. The password must never be logged or stored. The resulting idToken must be stored in the profile and used by subsequent commands that require user identity.
+The `auth login` command prompts for the password if it is not provided by flag. The password is never logged or stored. The resulting idToken is stored in the profile and used by subsequent commands that require user identity.
 
-The CLI must also provide `auth logout`, which clears stored tokens for the active profile. This command must be idempotent and should return success even if no tokens are present.
+The CLI also provides `auth logout`, which clears stored tokens for the profile. This command is idempotent and returns success even if no tokens are present.
 
 ## Token exchange commands
 
-The CLI provides a `token exchange` command that calls the `token/exchange` endpoint and stores the resulting access or worker token. The command accepts the audience, scopes, tenant id, subject, and event types. The idToken from the active profile is used unless explicitly overridden.
-
-Example:
+The CLI provides a `token exchange` command that calls the `token/exchange` endpoint and stores the resulting access or worker token. The command accepts the audience, scopes, tenant id, subject, and event types. The idToken from the profile is used unless the operator overrides it.
 
 ```bash
 tikti-cli token exchange \
@@ -60,95 +54,81 @@ tikti-cli token exchange \
   --subject worker-1
 ```
 
-The CLI must translate comma‑separated scopes and event types into arrays in the request body. The CLI must store the returned access token in the profile under `workerToken` if the audience is `codeq-worker`, and under `accessToken` otherwise. This rule avoids ambiguity and makes subsequent worker operations deterministic.
+The CLI translates comma-separated scopes and event types into arrays in the request body. The CLI stores the returned token in the profile under `workerToken` if the audience is `codeq-worker`, and under `accessToken` otherwise. This rule eliminates ambiguity and makes subsequent worker operations deterministic.
 
-The token exchange command is O(1) in local computation. The dominant cost is network round‑trip and server‑side authorization, which is outside the CLI’s complexity model.
+Token exchange is O(1) in local computation. The cost is dominated by network round-trip and server-side authorization, which is outside the CLI's complexity model.
 
 ## Tenant administration commands
 
-The CLI must expose a `tenant` command group. These commands are administrative and require an idToken with admin role. The CLI does not enforce roles locally; it relies on server responses.
-
-Examples:
+The CLI exposes a `tenant` command group. These commands require an idToken with admin role. The CLI does not enforce roles locally; it relies on server responses.
 
 ```bash
-# Create a tenant
 tikti-cli tenant create --name "Code Company" --slug codecompany
-
-# Get tenant details
 tikti-cli tenant get --tenant tenant-1
 ```
 
-The CLI must include the active profile’s idToken in the Authorization header when calling admin endpoints. It must reject execution if no idToken is present and instruct the user to log in.
+The CLI includes the profile's idToken in the Authorization header when calling admin endpoints. It rejects execution if no idToken is present and instructs the operator to log in.
 
 ## User administration commands
 
-The CLI must expose a `user` command group for administrative user lifecycle operations. These commands require an admin token and operate either globally (user creation) or within a tenant (membership and status). The CLI should not hide complexity; it must make the scope explicit via flags so the operator does not accidentally apply a change across tenants.
+The CLI exposes a `user` command group for user lifecycle operations. These commands require an admin token and operate either globally (user creation) or within a tenant (membership and status). The CLI makes the scope explicit via flags so the operator does not apply a change across tenants by mistake.
 
-The minimal user command set is:
-
-1. `user create` — creates a user with email, password, and optional global role. This maps to `POST /v1/accounts/signUp` and uses the admin token in the Authorization header. The CLI must never print the password after submission. Example:
+`user create` creates a user with email, password, and a role. This maps to `POST /v1/accounts/signUp` and uses the admin token in the Authorization header. The CLI never prints the password after submission.
 
 ```bash
 tikti-cli user create --email user@company.com --password 'Secret123' --role COMPANY_EMPLOYEE
 ```
 
-2. `user get` — fetches identity metadata for the current idToken. This maps to `lookup`. Example:
+`user get` fetches identity metadata for the current idToken. This maps to `lookup`.
 
 ```bash
 tikti-cli user get
 ```
 
-3. `user suspend` — sets user status to SUSPENDED, which invalidates new token exchanges and prevents sign‑in. This requires `POST /v1/accounts/status`. Example:
+`user suspend` sets user status to SUSPENDED, which prevents new token exchanges and sign-in. This requires `POST /v1/accounts/status`.
 
 ```bash
 tikti-cli user suspend --email user@company.com
 ```
 
-4. `user activate` — sets user status to ACTIVE. Example:
+`user activate` sets user status to ACTIVE.
 
 ```bash
 tikti-cli user activate --email user@company.com
 ```
 
-5. `user delete` — deletes the current user (idToken owner). This maps to `POST /v1/accounts/delete`. Example:
+`user delete` deletes the current user (idToken owner). This maps to `POST /v1/accounts/delete`.
 
 ```bash
 tikti-cli user delete --confirm
 ```
 
-The CLI must require `--confirm` for destructive actions. The output must include the user id and affected tenants when possible.
+The CLI requires `--confirm` for destructive actions. The output includes the user id and affected tenants when the server provides them.
 
 ## Membership and role commands
 
-The CLI must expose `membership` and `role` command groups for managing tenant memberships and roles. These commands send and receive JSON as defined in `04_api_spec.md` and must support explicit tenant targeting.
-
-Examples:
+The CLI exposes `membership` and `role` command groups for managing tenant memberships and roles. These commands send and receive JSON as defined in `04_api_spec.md` and require explicit tenant targeting.
 
 ```bash
-# Add a user to a tenant
 tikti-cli membership add --tenant tenant-1 --email user@company.com --roles TENANT_USER
-
-# Remove a user from a tenant
 tikti-cli membership remove --tenant tenant-1 --email user@company.com
-
-# Create a role with permissions
 tikti-cli role create --tenant tenant-1 --name CODEQ_ADMIN \
    --permissions codeq:admin,codeq:claim,codeq:result
 ```
 
-The CLI must validate that role names and permissions are non‑empty strings but must not enforce policy semantics client‑side. The server remains authoritative.
+The CLI validates that role names and permissions are non-empty strings but does not enforce policy semantics client-side. The server remains authoritative.
 
 ## Access revocation commands
 
-The CLI must expose a `revoke` command group for revoking access. Revocation is the operational mechanism to invalidate tokens before expiration. The system supports two complementary revocation strategies: status‑based revocation and token‑version revocation. The CLI must support both methods when the server supports them.
+The CLI exposes a `revoke` command group for revoking access. Revocation invalidates tokens before expiration. The system supports two revocation strategies: status-based revocation and token-version revocation. The CLI supports both methods when the server supports them.
 
-### 1) Status‑based revocation
+### Status-based revocation
 
-Suspending a user or removing a membership prevents future token exchange. This is implemented via `user suspend` and `membership remove`. This does not invalidate already issued tokens immediately, but it prevents renewal. This is sufficient for most operations with short token lifetimes (900–3600 seconds).
+Suspending a user or removing a membership prevents future token exchange. This is implemented via `user suspend` and `membership remove`. Issued tokens remain valid until they expire, but renewal is blocked. This is sufficient for operations with token lifetimes between 900 and 3600 seconds.
 
-### 2) Token‑version revocation
+### Token-version revocation
 
-To invalidate tokens immediately, Tikti must support a token version or blacklist mechanism. The recommended approach is a `tokenVersion` field stored on the user and optionally on the membership. Tokens include `ver` and are rejected if `ver` does not match the current version.
+To invalidate tokens before expiry, Tikti supports a token version mechanism. A `tokenVersion` field is stored on the user and on the membership. Tokens include `ver` and are rejected if `ver` does not match the stored version.
 
 The CLI command `revoke tokens` increments the token version for a user or tenant membership:
 
@@ -157,43 +137,108 @@ tikti-cli revoke tokens --email user@company.com
 tikti-cli revoke tokens --tenant tenant-1 --email user@company.com
 ```
 
-This requires a dedicated endpoint (for example, `POST /v1/accounts/revoke` or `POST /v1/tenants/{tenantId}/memberships/{userId}/revoke`). The server must return the new token version and the effective revocation time. This operation is O(1) because it updates a single record in Redis.
+This requires a dedicated endpoint (`POST /v1/accounts/revoke` or `POST /v1/tenants/{tenantId}/memberships/{userId}/revoke`). The server returns the new token version and the revocation timestamp. This operation is O(1) because it updates a single record in Redis.
 
-### 3) JTI blacklist (optional)
+### JTI blacklist
 
-If token versions are not feasible, Tikti can maintain a blacklist keyed by token `jti` with TTL set to token expiration. The CLI may expose `revoke jti --token <jwt>` which extracts `jti` and calls a blacklist endpoint. This approach is O(1) per revoke and O(1) per validation but increases Redis memory proportional to the number of revoked tokens.
+As an alternative, Tikti can maintain a blacklist keyed by token `jti` with TTL set to token expiration. The CLI exposes `revoke jti --token <jwt>` which extracts `jti` and calls a blacklist endpoint. This approach is O(1) per revoke and O(1) per validation but increases Redis memory proportional to the number of revoked tokens.
 
-The CLI must clearly state which revocation strategy is active by inspecting server capabilities or configuration.
+The CLI states which revocation strategy is active by inspecting server capabilities or configuration.
 
 ## Client and API key commands
 
-The CLI must manage clients and API keys because these objects are required for token exchange and protected endpoints. The CLI must never print client secrets unless `--show-secret` is provided explicitly, and it must redact secrets in logs.
-
-Example:
+The CLI manages clients and API keys because these objects are required for token exchange and protected endpoints. The CLI never prints client secrets unless `--show-secret` is provided, and it redacts secrets in logs.
 
 ```bash
-# Create a client
 tikti-cli client create --tenant tenant-1 --client-id codeq-worker --type SERVICE \
    --grant token_exchange --scopes codeq:claim,codeq:result
 ```
 
-When a client secret is generated, the CLI must print it exactly once and store it only if the user passes `--store-secret`. By default the secret is not persisted in the local config.
+When a client secret is generated, the CLI prints it once and stores it only if the operator passes `--store-secret`. By default the secret is not persisted in the local config.
+
+## SAML federation commands
+
+The CLI exposes a `saml` command group for managing SAML 2.0 federation lifecycle. These commands handle SP metadata retrieval, IdP registration and inspection, and SP signing key rotation. They are part of the standard admin toolset alongside tenant, membership, role, client, and token commands.
+
+### SP metadata retrieval
+
+`saml metadata` fetches the SP metadata XML from the Tikti server and writes it to stdout. Operators use this output to register Tikti as an SP in the IdP admin console during initial SAML setup.
+
+```bash
+tikti-cli saml metadata
+tikti-cli saml metadata --output json
+```
+
+The command sends `GET /saml/metadata` and returns the XML document. When `--output json` is specified, the CLI parses the XML and emits a JSON object containing the entity ID, ACS URL, SLO URL, and signing certificate.
+
+### IdP registration
+
+`saml idp register` registers an external IdP for a tenant. The command accepts IdP metadata as a URL or a local file path. It parses the IdP metadata XML to extract the entity ID, SSO URL, SLO URL, and signing certificate, then stores the configuration in Redis under `saml:idp:{tenantId}`.
+
+```bash
+tikti-cli saml idp register --tenant tenant-1 --metadata-url https://idp.example.com/metadata
+tikti-cli saml idp register --tenant tenant-1 --metadata-file /path/to/idp-metadata.xml
+```
+
+For environments where metadata XML is unavailable, the command accepts manual configuration flags:
+
+```bash
+tikti-cli saml idp register --tenant tenant-1 \
+  --entity-id https://idp.example.com \
+  --sso-url https://idp.example.com/sso \
+  --slo-url https://idp.example.com/slo \
+  --cert-file /path/to/idp-signing.pem
+```
+
+The command requires either `--metadata-url` or `--metadata-file` or the full set of manual flags (`--entity-id`, `--sso-url`, `--cert-file`). The `--slo-url` flag is optional because not all IdPs support Single Logout. The command validates the certificate format before storing the configuration and returns the stored entity ID and tenant binding on success.
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--tenant` | yes | Target tenant identifier |
+| `--metadata-url` | one of metadata-url, metadata-file, or manual set | URL of the IdP metadata XML endpoint |
+| `--metadata-file` | one of metadata-url, metadata-file, or manual set | Local file path to IdP metadata XML |
+| `--entity-id` | required if no metadata | IdP entity ID |
+| `--sso-url` | required if no metadata | IdP SSO endpoint URL |
+| `--slo-url` | no | IdP SLO endpoint URL |
+| `--cert-file` | required if no metadata | Path to IdP signing certificate PEM file |
+
+### IdP configuration inspection
+
+`saml idp show` displays the stored IdP configuration for a tenant. The output includes the entity ID, SSO URL, SLO URL, certificate fingerprint (SHA-256), and attribute mapping.
+
+```bash
+tikti-cli saml idp show --tenant tenant-1
+tikti-cli saml idp show --tenant tenant-1 --output json
+```
+
+The command reads from `saml:idp:{tenantId}` in Redis via the API. It never outputs the full certificate; it prints only the SHA-256 fingerprint.
+
+### SP key rotation
+
+`saml keys rotate` rotates the SP signing keypair used to sign SAML AuthnRequests. The command generates a new RSA keypair, publishes both old and new keys in the SP metadata during an overlap window, and removes the old key after a grace period.
+
+```bash
+tikti-cli saml keys rotate
+tikti-cli saml keys rotate --grace-period 24h
+```
+
+The `--grace-period` flag controls how long both keys remain in the SP metadata. The default is 24 hours. During this window, IdPs that cache SP metadata can validate signatures made with either key. After the grace period, the old key is removed from the metadata and deleted from storage.
+
+The command requires an admin idToken. It calls the key rotation endpoint and returns the new key's `kid`, the overlap window start time, and the scheduled removal time for the old key.
 
 ## JWKS inspection
 
-The CLI must include a `jwks` command that fetches and prints the current JWKS. This is essential for integration debugging.
-
-Example:
+The CLI includes a `jwks` command that fetches and prints the JWKS. This is used for integration debugging.
 
 ```bash
 tikti-cli jwks
 ```
 
-The CLI must support `--output json` and `--output pretty` formatting. The JWKS fetch is a simple GET request and should cache the response for the duration of the process.
+The CLI supports `--output json` and `--output pretty` formatting. The JWKS fetch is a GET request and the CLI caches the response for the duration of the process.
 
 ## Output format and exit codes
 
-All commands must support `--output json` to enable automation. In JSON mode, the CLI must emit a single JSON object or array to stdout with no additional formatting. In human mode, the CLI should emit concise text lines. Errors must be written to stderr and must include the HTTP status code and response body when available.
+All commands support `--output json` for automation. In JSON mode, the CLI emits a single JSON object or array to stdout with no formatting beyond the JSON structure. In human mode, the CLI emits text lines. Errors are written to stderr and include the HTTP status code and response body when the server provides them.
 
 Exit codes:
 
@@ -204,33 +249,40 @@ Exit codes:
 
 ## Security requirements
 
-The CLI must never log passwords, access tokens, or API keys. It must store tokens in the local config file with file permissions restricted to the current user. On Unix systems, the CLI must set `0600` permissions when writing the config file. The CLI must not use environment variables by default, but it may read them for non‑interactive automation when explicitly enabled by a `--use-env` flag.
+The CLI never logs passwords, access tokens, or API keys. It stores tokens in the local config file with file permissions restricted to the current user. On Unix systems, the CLI sets `0600` permissions when writing the config file. The CLI does not use environment variables by default, but it reads them for non-interactive automation when the operator enables `--use-env`.
 
-## Example: end‑to‑end worker setup
+## Example: end-to-end worker setup
 
-The following example shows a complete flow: initialize config, login, exchange a worker token, and print it.
+This example shows a flow that initializes config, logs in, exchanges a worker token, and prints it.
 
 ```bash
-# 1) Initialize profile
 tikti-cli init --base-url https://api.storifly.ai --api-key $API_KEY --tenant tenant-1
-
-# 2) Login and store idToken
 tikti-cli auth login --email admin@codecompany.com.br
-
-# 3) Exchange worker token
 tikti-cli token exchange \
    --audience codeq-worker \
    --scopes codeq:claim,codeq:heartbeat,codeq:result \
    --event-types render_video \
    --tenant tenant-1 \
    --subject worker-1
-
-# 4) Print token
 tikti-cli token show --type worker
 ```
 
 This flow is deterministic and does not require environment variables. All state is stored in the profile.
 
-## Minimal command surface
+## Example: SAML IdP onboarding
 
-The CLI must include these command groups at minimum: `init`, `auth`, `token`, `tenant`, `membership`, `role`, `client`, `apikey`, `jwks`, and `config`. Additional commands are allowed but must not change the semantics of the core set.
+This example shows the flow for onboarding a tenant's IdP via SAML federation.
+
+```bash
+tikti-cli auth login --email admin@codecompany.com.br
+tikti-cli saml metadata > sp-metadata.xml
+tikti-cli saml idp register --tenant tenant-1 \
+  --metadata-url https://login.microsoftonline.com/{tenant}/federationmetadata/2007-06/federationmetadata.xml
+tikti-cli saml idp show --tenant tenant-1
+```
+
+The operator exports the SP metadata XML and uploads it to the IdP admin console. Then the operator registers the IdP metadata URL with Tikti. The `saml idp show` command confirms that the IdP configuration is stored and the trust relationship is established.
+
+## Command surface
+
+The CLI includes these command groups: `init`, `auth`, `token`, `tenant`, `user`, `membership`, `role`, `client`, `apikey`, `jwks`, `saml`, `revoke`, and `config`. The `saml` group contains `metadata`, `idp register`, `idp show`, and `keys rotate` subcommands.

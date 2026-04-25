@@ -13,6 +13,9 @@
 ## Integration
 - [codeQ Integration](codeQ-Integration)
 
+## Federation
+- [SAML Federation](SAML-Federation)
+
 ## Interfaces
 - [API Specification](API-Specification)
 - [CLI Reference](CLI-Reference)
@@ -31,3 +34,4 @@
 - [codeQ Worker Token Exchange](Use-Cases-codeQ-Worker-Token-Exchange)
 - [Tenant Admin Lifecycle](Use-Cases-Tenant-Admin-Lifecycle)
 - [Resource Server Token Validation](Use-Cases-Resource-Server-Token-Validation)
+- [SAML SSO](Use-Cases-SAML-SSO)

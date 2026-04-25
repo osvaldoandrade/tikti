@@ -1,14 +1,14 @@
 # 04 API Specification
 
-This document specifies the HTTP contract for Tikti. It describes endpoint behavior, payloads, validation rules, and error semantics. All endpoints accept and return JSON with UTF‑8 encoding. The base URL is environment‑specific but the path structure is stable. In this document, the base URL is `https://api.storifly.ai`.
+This document specifies the HTTP contract for Tikti. Every endpoint accepts and returns JSON with UTF-8 encoding unless stated otherwise. The base URL varies by environment; this document uses `https://api.storifly.ai`. Path structure does not change between environments.
 
 ## Conventions
 
-All request bodies are JSON. All responses are JSON. Time values are RFC3339 strings unless explicitly stated as epoch seconds.
+Request and response bodies use JSON. Time values use RFC 3339 strings unless stated as epoch seconds.
 
 ### Error shape
 
-Errors are returned using a consistent object shape:
+Every error response uses a single object shape:
 
 ```json
 {
@@ -18,19 +18,19 @@ Errors are returned using a consistent object shape:
 }
 ```
 
-The `error` field is mandatory to preserve compatibility with existing clients that only parse this string. `code` and `details` are additive.
+The `error` field is mandatory. Clients that predate the `code` and `details` fields parse only `error`, so the server must always populate it. The `code` and `details` fields are additive; their absence must not break existing parsers.
 
 ### Authentication
 
-Protected endpoints require an API key passed as a query parameter: `?key=API_KEY`. This is a compatibility requirement. API keys must be stored hashed and compared securely by the server.
+Protected endpoints require an API key as a query parameter (`?key=API_KEY`). The server stores API keys hashed and compares them in constant time.
 
-Admin endpoints require the caller to be authenticated with a token that includes `role=ADMIN` or a role that is equivalent by policy. This is enforced using the token claims in the `Authorization` header or in the `idToken` payload where specified.
+Admin endpoints require a token whose claims include `role=ADMIN` or a policy-equivalent role. The server reads this token from the `Authorization` header or from the `idToken` field in the request body, depending on the endpoint.
 
 ## Identity endpoints
 
 ### POST /v1/accounts/signIn
 
-Authenticates a user with email and password. This is a public endpoint and must not require an API key. The response is an identity token.
+Authenticates a user with email and password. This endpoint is public and does not require an API key.
 
 Request:
 
@@ -55,16 +55,18 @@ Response 200:
 
 Error cases:
 
-- 401 if credentials are invalid.
-- 400 if request is malformed.
+| Status | Condition |
+|--------|-----------|
+| 401 | Credentials are invalid. |
+| 400 | Request body is malformed. |
 
 ### POST /v1/accounts/signInWithPassword?key=API_KEY
 
-Identical to `/signIn`, but requires an API key. This endpoint exists to mimic Firebase APIs and to enforce API key usage for server‑to‑server usage.
+Behaves identically to `/signIn` but requires an API key. This endpoint exists to match the Firebase API surface and to enforce API key usage in server-to-server calls.
 
 ### POST /v1/accounts/signUp
 
-Creates a new user. The caller must include an admin token in the `Authorization` header. The token must be validated with issuer and expiration checks. For compatibility, the token is currently a raw JWT string rather than `Bearer` format; the service must accept both.
+Creates a user. The caller must supply an admin token in the `Authorization` header. The server validates the token issuer and expiration. For compatibility the server accepts both a raw JWT string and `Bearer <jwt>` format.
 
 Request:
 
@@ -86,14 +88,11 @@ Response 200:
 }
 ```
 
-Constraints:
-
-- `email` must be globally unique.
-- `role` defaults to `COMPANY_EMPLOYEE`.
+`email` must be globally unique. `role` defaults to `COMPANY_EMPLOYEE` when omitted.
 
 ### POST /v1/accounts/lookup?key=API_KEY
 
-Resolves an idToken to user identity metadata. This endpoint is required for codeQ producer validation. The token is provided in the request body.
+Resolves an idToken to user identity metadata. codeQ producers call this endpoint to validate tokens. The token is provided in the request body.
 
 Request:
 
@@ -103,7 +102,7 @@ Request:
 }
 ```
 
-Response 200 (target shape):
+Response 200:
 
 ```json
 {
@@ -119,11 +118,11 @@ Response 200 (target shape):
 }
 ```
 
-The response must always include `role` when available. If multi‑tenant is enabled, `tenantId` must be present. This allows downstream services to enforce admin operations and tenant scoping without additional calls.
+The response includes `role` when the user has one. When multi-tenant mode is active, `tenantId` is present. Downstream services use these two fields to enforce admin operations and tenant scoping without issuing further calls.
 
 ### POST /v1/accounts/update?key=API_KEY
 
-Updates email and/or password for the authenticated user. The user is authenticated by the idToken supplied in the payload.
+Updates email or password (or both) for the authenticated user. The idToken in the payload identifies the caller.
 
 Request:
 
@@ -143,7 +142,7 @@ Response 200:
 
 ### POST /v1/accounts/delete?key=API_KEY
 
-Deletes the authenticated user. The idToken provided in the request identifies the user.
+Deletes the authenticated user. The idToken in the request identifies the user.
 
 Request:
 
@@ -155,14 +154,12 @@ Response 200: empty JSON object.
 
 ### POST /v1/accounts/sendOobCode?key=API_KEY
 
-Generates an out‑of‑band code for password reset, email verification, or email sign‑in.
+Generates an out-of-band code for password reset or email sign-in. The `requestType` field binds the code to a consumption endpoint. The server persists this type alongside the code and rejects codes presented to the wrong endpoint.
 
-`requestType` binds the generated code to a specific flow. The server must persist this type alongside the code and must reject codes used with the wrong consumption endpoint.
-
-Supported `requestType` values:
-
-- `PASSWORD_RESET`: consumed by `/v1/accounts/resetPassword`.
-- `EMAIL_SIGNIN`: consumed by `/v1/accounts/signInWithOobCode`.
+| `requestType` | Consumed by |
+|---|---|
+| `PASSWORD_RESET` | `/v1/accounts/resetPassword` |
+| `EMAIL_SIGNIN` | `/v1/accounts/signInWithOobCode` |
 
 Request:
 
@@ -183,14 +180,13 @@ Response 200:
 }
 ```
 
-The code must be valid for 15 minutes by default.
-The code must be single‑use: after a successful consumption, it must be deleted and subsequent uses must fail.
+The code expires after 15 minutes. The code is single-use: after consumption the server deletes it, and subsequent attempts fail with 401.
 
-For `EMAIL_SIGNIN`, the server should return 200 regardless of whether the email exists or is eligible (anti‑enumeration). Clients must not treat a successful response as proof that an account exists.
+For `EMAIL_SIGNIN` the server returns 200 regardless of whether the email maps to an account. This prevents account enumeration. Clients must not treat a 200 as proof that an account exists.
 
 ### POST /v1/accounts/signInWithOobCode
 
-Authenticates a user using an out‑of‑band code previously generated by `/v1/accounts/sendOobCode` with `requestType=EMAIL_SIGNIN`. This enables passwordless sign‑in flows (for example, users arriving from a landing page and confirming a token sent to their email inbox).
+Authenticates a user with an out-of-band code generated by `/v1/accounts/sendOobCode` using `requestType=EMAIL_SIGNIN`. This enables passwordless sign-in: a user follows a link containing the code and obtains an idToken without entering a password.
 
 Request:
 
@@ -215,14 +211,16 @@ Response 200:
 
 Error cases:
 
-- 401 if the OOB code is invalid, expired, already consumed, bound to a different email, or has a different `requestType`.
-- 400 if request is malformed.
+| Status | Condition |
+|--------|-----------|
+| 401 | Code is invalid, expired, consumed, bound to a different email, or has a mismatched `requestType`. |
+| 400 | Request body is malformed. |
 
 ### POST /v1/tenants/{tenantId}/oob/send?key=API_KEY
 
-Generates and persists an OOB code for the given tenant and returns the `oobCode` so that an external orchestrator can deliver it (for example, a Cadence workflow that calls Tikti and then calls the Notifications Service to send the email).
+Generates and persists an OOB code scoped to a tenant, then returns the `oobCode` so that an external orchestrator (for example a Cadence workflow) can deliver it through the Notifications Service.
 
-For `EMAIL_SIGNIN`, the server may create a user record when the email does not yet exist, and should scope the user to the tenant provided in the path.
+For `EMAIL_SIGNIN`, the server creates a user record when the email does not yet exist and scopes the user to the tenant in the path.
 
 Request:
 
@@ -247,15 +245,16 @@ Response 200:
 
 Error cases:
 
-- 400 if tenantId or request is invalid.
-- 403 if user is suspended or not allowed for the tenant.
-- 404 for `PASSWORD_RESET` when the user does not exist.
-- 500 if the server cannot persist the OOB code.
+| Status | Condition |
+|--------|-----------|
+| 400 | `tenantId` or request body is invalid. |
+| 403 | User is suspended or not allowed for the tenant. |
+| 404 | `PASSWORD_RESET` and the user does not exist. |
+| 500 | Server cannot persist the OOB code. |
 
 ### POST /v1/accounts/resetPassword?key=API_KEY
 
-Resets password using an out‑of‑band code.
-The OOB code must have been issued with `requestType=PASSWORD_RESET`.
+Resets a password using an out-of-band code. The code must have been issued with `requestType=PASSWORD_RESET`.
 
 Request:
 
@@ -270,11 +269,11 @@ Response 200: empty JSON object.
 
 ## Administrative user lifecycle
 
-Administrative operations on user status and token revocation are required for operational safety. These endpoints are new and are intended for admin tokens only. They are distinct from `delete` because they must apply to arbitrary users rather than the caller.
+Admin endpoints for user status and token revocation operate on arbitrary users, unlike `delete` which operates on the caller. These endpoints require an admin token.
 
 ### POST /v1/accounts/status?key=API_KEY
 
-Sets the status of a user. Valid statuses are `ACTIVE`, `INACTIVE`, and `SUSPENDED`. A suspended user cannot sign in and cannot exchange tokens.
+Sets user status. Valid values are `ACTIVE`, `INACTIVE`, and `SUSPENDED`. A suspended user cannot sign in and cannot exchange tokens.
 
 Request:
 
@@ -295,11 +294,11 @@ Response 200:
 }
 ```
 
-The server must log the actor, tenant context (if applicable), and the status transition.
+The server logs the actor, the tenant context when applicable, and the status transition.
 
 ### POST /v1/accounts/revoke?key=API_KEY
 
-Revokes tokens for a user by incrementing the token version. Tokens carry a `ver` claim and are rejected if `ver` does not match the current version stored for the user (and optionally for membership).
+Revokes tokens for a user by incrementing the stored token version. Tokens carry a `ver` claim; the server rejects tokens whose `ver` does not match the stored version.
 
 Request:
 
@@ -321,13 +320,13 @@ Response 200:
 }
 ```
 
-If `scope` is `tenant`, the request must include `tenantId` and only tenant‑scoped tokens are invalidated. This operation is O(1) because it updates a single record in storage.
+When `scope` is `tenant`, the request must include `tenantId`; only tokens scoped to that tenant are invalidated. The operation updates a single record and runs in O(1).
 
 ## Token exchange
 
 ### POST /v1/accounts/token/exchange?key=API_KEY
 
-Exchanges an identity token for an access token. This endpoint is the mechanism by which codeQ workers obtain RS256 tokens with scopes and event types.
+Exchanges an identity token for an RS256 access token. codeQ workers use this endpoint to obtain tokens carrying scopes and event types.
 
 Request:
 
@@ -343,13 +342,7 @@ Request:
 }
 ```
 
-Semantics:
-
-- `idToken` is verified using HS256 or RS256 depending on configuration.
-- `tenantId` must refer to a membership belonging to the token subject.
-- `audience` must be a registered client identifier.
-- `scopes` must be a subset of the union of role permissions and client allowed scopes.
-- `eventTypes` must be validated against tenant or client policy.
+The server verifies the `idToken` using HS256 or RS256 depending on configuration. `tenantId` must reference a membership belonging to the token subject. `audience` must be a registered client identifier. `scopes` must be a subset of the union of role permissions and client-allowed scopes. `eventTypes` are validated against tenant or client policy.
 
 Response 200:
 
@@ -363,17 +356,19 @@ Response 200:
 
 Error cases:
 
-- 401 if idToken is invalid.
-- 403 if scopes exceed permissions or membership is missing.
-- 400 if audience is unknown or request is malformed.
+| Status | Condition |
+|--------|-----------|
+| 401 | idToken is invalid. |
+| 403 | Scopes exceed permissions or membership is missing. |
+| 400 | Audience is unknown or request body is malformed. |
 
 ## JWKS
 
 ### GET /.well-known/jwks.json
 
-Returns the public keys for RS256 token verification.
+Returns the RS256 public keys used to verify access tokens.
 
-Response:
+Response 200:
 
 ```json
 {
@@ -390,15 +385,157 @@ Response:
 }
 ```
 
-The JWKS response must include all active public keys and must be cacheable.
+The response includes all active public keys. The server sets cache headers so that relying parties do not fetch the key set on every request.
+
+## SAML 2.0 federation endpoints
+
+Tikti acts as a SAML 2.0 Service Provider. The SAML endpoints live outside the `/v1/` prefix because they follow the SAML HTTP binding specifications rather than the JSON API conventions used by the identity endpoints. These endpoints handle browser redirects and form posts; only `/saml/metadata` and `/saml/discover` return machine-readable responses directly.
+
+### GET /saml/metadata
+
+Returns the SP EntityDescriptor as XML. No authentication is required.
+
+The document contains the entity ID (`{issuerBaseUrl}/saml`), the Assertion Consumer Service URL (`{issuerBaseUrl}/saml/acs`), the Single Logout URL (`{issuerBaseUrl}/saml/slo`), and the SP signing certificate.
+
+Response content-type: `application/samlmetadata+xml`.
+
+Response 200: XML EntityDescriptor conforming to SAML 2.0 Metadata (OASIS saml-metadata-2.0-os).
+
+Error cases:
+
+| Status | Condition |
+|--------|-----------|
+| 500 | SP signing certificate cannot be loaded. |
+
+### GET /saml/login/:tid
+
+Initiates SP-initiated SSO for the tenant identified by `:tid`. The server loads the tenant IdP metadata from Redis at key `saml:idp:{tid}`, builds an AuthnRequest signed with RSA-SHA256 using HTTP-Redirect binding, stores the request ID in Redis at key `saml:req:{id}` with a 300-second TTL, and returns a 302 redirect to the IdP SSO URL.
+
+Query parameters:
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `RelayState` | No | URL to redirect the browser to after authentication completes. |
+
+Response 302 with the following query parameters appended to the IdP SSO URL:
+
+| Parameter | Value |
+|-----------|-------|
+| `SAMLRequest` | Deflated, base64-encoded AuthnRequest XML. |
+| `RelayState` | Passed through from the request, or a server default. |
+| `SigAlg` | `http://www.w3.org/2001/04/xmldsig-more#rsa-sha256` |
+| `Signature` | RSA-SHA256 signature over the query string. |
+
+Error cases:
+
+| Status | Condition |
+|--------|-----------|
+| 404 | No IdP metadata exists in Redis for the given tenant. |
+| 500 | AuthnRequest signing fails. |
+
+### POST /saml/acs
+
+Assertion Consumer Service. Receives the SAML Response via HTTP-POST binding. The browser submits this request as a form post generated by the IdP.
+
+Form parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `SAMLResponse` | Base64-encoded SAML Response XML. |
+| `RelayState` | URL passed through from the login request. |
+
+The server validates the assertion in 10 steps, in order:
+
+1. InResponseTo matches a request ID stored in Redis (`saml:req:{id}`).
+2. Destination matches the ACS URL (`{issuerBaseUrl}/saml/acs`).
+3. Status code is `urn:oasis:names:tc:SAML:2.0:status:Success`.
+4. Response XML signature is verified against the IdP signing certificate.
+5. If the assertion is encrypted, the server decrypts it with the SP private key.
+6. Assertion XML signature is verified against the IdP signing certificate.
+7. Issuer matches the IdP entity ID stored for the tenant.
+8. Audience restriction includes the SP entity ID.
+9. Time bounds (NotBefore, NotOnOrAfter) are checked with a 120-second clock skew tolerance.
+10. SubjectConfirmationData is validated (Recipient, NotOnOrAfter, InResponseTo).
+
+On success the server:
+
+- Deletes the request ID from Redis (`saml:req:{id}`).
+- Records the assertion ID for replay protection (`saml:seen:{AssertionID}`, TTL 3600 seconds).
+- Provisions the user via JIT if the user does not yet exist in the tenant.
+- Stores the session index in Redis for Single Logout.
+- Issues an HS256 idToken with the `amr` claim set to `saml`.
+- Returns 302 to the RelayState URL with the idToken in a `Set-Cookie` header.
+
+Error cases:
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `SAMLResponse` is missing or cannot be decoded. |
+| 401 | Any of the 10 validation steps fails. |
+| 403 | Assertion ID has been seen before (replay). |
+| 500 | idToken signing fails. |
+
+### GET /saml/logout/:tid
+
+Initiates SP-initiated Single Logout for the tenant identified by `:tid`. The server builds a LogoutRequest signed with RSA-SHA256 and redirects the browser to the IdP SLO URL.
+
+Response 302 to the IdP SLO URL with a signed LogoutRequest in query parameters.
+
+Error cases:
+
+| Status | Condition |
+|--------|-----------|
+| 404 | No IdP metadata exists for the given tenant. |
+| 500 | LogoutRequest signing fails. |
+
+### GET|POST /saml/slo
+
+Handles IdP-initiated logout. GET receives a LogoutRequest from the IdP. POST receives a LogoutResponse after an SP-initiated logout round-trip. In both cases the server validates the signature, clears the session index from Redis, and returns a response to the IdP.
+
+For GET (LogoutRequest): the server parses the request, terminates the session, and responds with a signed LogoutResponse via redirect.
+
+For POST (LogoutResponse): the server validates the response status and clears local session state.
+
+Error cases:
+
+| Status | Condition |
+|--------|-----------|
+| 400 | SLO message cannot be parsed. |
+| 401 | Signature validation fails. |
+
+### GET /saml/discover
+
+Email-domain discovery. Given an email address, returns the tenant ID whose IdP is configured for that email domain. Login hint flows use this endpoint to route users to the correct IdP without requiring them to select a tenant.
+
+Query parameters:
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `email` | Yes | Email address to look up. |
+
+Response 200:
+
+```json
+{
+  "tenantId": "tenant-1",
+  "idpEntityId": "https://idp.example.com/saml"
+}
+```
+
+Error cases:
+
+| Status | Condition |
+|--------|-----------|
+| 400 | `email` parameter is missing or malformed. |
+| 404 | No tenant is configured for the email domain. |
 
 ## Tenant management (admin)
 
-Tenant management endpoints are required for multi‑tenant support. These endpoints are not implemented in the current baseline and are defined for the target system.
+These endpoints support multi-tenant operations. They require an ADMIN token.
 
 ### POST /v1/tenants
 
-Creates a tenant. Requires ADMIN token.
+Creates a tenant.
 
 Request:
 
@@ -409,7 +546,7 @@ Request:
 }
 ```
 
-Response:
+Response 200:
 
 ```json
 {
@@ -429,7 +566,7 @@ Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 
 ### POST /v1/tenants/{tenantId}/users
 
-Creates a membership for a user within a tenant. If the user does not exist, the endpoint may create the user with a generated password or return a 400, based on policy.
+Creates a membership for a user within a tenant. If the user does not exist, the endpoint creates the user with a generated password or returns 400, depending on policy.
 
 Request:
 
@@ -442,7 +579,7 @@ Request:
 
 ### POST /v1/tenants/{tenantId}/users/remove
 
-Removes a membership for a user within a tenant. The user record remains, but the tenant association is deleted. This endpoint is used for access revocation without deleting the account.
+Removes a membership for a user within a tenant. The user record persists; only the tenant association is deleted.
 
 Request:
 
@@ -452,7 +589,7 @@ Request:
 }
 ```
 
-Response:
+Response 200:
 
 ```json
 {
@@ -467,7 +604,7 @@ Response:
 
 ### POST /v1/tenants/{tenantId}/clients
 
-Creates a client for token exchange.
+Creates a client for token exchange. The response includes the generated client secret. The secret is returned once; subsequent reads do not expose it.
 
 Request:
 
@@ -479,8 +616,6 @@ Request:
   "defaultScopes": ["codeq:claim","codeq:result"]
 }
 ```
-
-Response includes a generated client secret. The secret must be returned only once.
 
 ## Role management (admin)
 
@@ -497,6 +632,6 @@ Request:
 }
 ```
 
-## Notes on backward compatibility
+## Backward compatibility
 
-All new endpoints are additive. Existing endpoints must remain unchanged in path and payload shape. The server must accept legacy tokens and continue to support lookup responses that omit newer fields, but it should include them when available.
+All endpoints added after the initial release are additive. Existing endpoints retain their paths and payload shapes. The server accepts legacy tokens and supports lookup responses that omit fields added later, but includes those fields when the data is available.

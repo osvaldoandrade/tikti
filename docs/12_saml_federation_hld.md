@@ -1,26 +1,26 @@
 # 12 SAML 2.0 Federation HLD
 
-This document captures the proposed SAML 2.0 federation design for Tikti in Service Provider mode. It is an additive, feature-specific high-level design that complements the core platform specification under `docs/00_index.md`.
+This document defines the SAML 2.0 federation design for Tikti operating in Service Provider mode. It is an additive, feature-specific high-level design that complements the core platform specification under `docs/00_index.md`.
 
 ## 1. Context
 
-Tikti is a headless multi-tenant IdP written in Go. It authenticates callers against its own credential store, issues an HS256 idToken, and exchanges that idToken for an RS256 access token. Tenant isolation rests on the `tid` claim; relying parties verify access tokens offline via JWKS. Enterprise buyers require SAML 2.0 to reuse their corporate identity provider (Azure AD, Okta, Ping, ADFS, Google Workspace, OneLogin). Without SAML, Tikti cannot enter 6 out of 10 deals in the current pipeline and forces duplicated user provisioning.
+Tikti is a headless multi-tenant IdP written in Go. It authenticates callers against its own credential store, issues an HS256 idToken, and exchanges that idToken for an RS256 access token. Tenant isolation rests on the `tid` claim; relying parties verify access tokens offline via JWKS. Enterprise buyers require SAML 2.0 to reuse their corporate identity provider (Azure AD, Okta, Ping, ADFS, Google Workspace, OneLogin). Without SAML, Tikti cannot enter 6 of 10 deals in the current pipeline and forces duplicated user provisioning.
 
-This design adds SAML 2.0 Web Browser SSO Profile with Tikti in the Service Provider (SP) role, delegating authentication to 1..N external Identity Providers, 1 binding per tenant. The output of a successful SAML flow is the same HS256 idToken the password path issues today, so every downstream path - token exchange, `tid` enforcement, JWKS consumers - keeps working with 0 code change.
+This design adds the SAML 2.0 Web Browser SSO Profile with Tikti in the Service Provider (SP) role, delegating authentication to 1..N external Identity Providers with one binding per tenant. A successful SAML flow produces the same HS256 idToken that the password path issues today, so every downstream path (token exchange, `tid` enforcement, JWKS consumers) continues to work with zero code changes.
 
 ## 2. Scope
 
-**In scope (v1) - all delivered by this design.** Login to Tikti via **any SAML 2.0 IdP**: Azure AD / Entra ID, Okta, Ping, ADFS, **Google Workspace** (administered at `admin.google.com` -> Apps -> Web and mobile apps -> SAML app), OneLogin, JumpCloud, Auth0 acting as SAML IdP, Shibboleth, Keycloak, SimpleSAMLphp. SP-initiated SSO (Tikti -> IdP -> Tikti); Single Logout (SP-initiated round-trip and IdP-initiated receive); signed `AuthnRequest`; signed and optionally encrypted assertions; per-tenant IdP metadata and trust pinning; attribute mapping to Tikti user and `tid`; Just-In-Time provisioning; HS256 idToken issuance preserving the existing token-exchange contract; admin CLI for metadata and key lifecycle; Helm values for SP keys; Prometheus metrics; structured audit log.
+**In scope (v1).** This design delivers login to Tikti via any SAML 2.0 IdP: Azure AD / Entra ID, Okta, Ping, ADFS, Google Workspace (administered at `admin.google.com` -> Apps -> Web and mobile apps -> SAML app), OneLogin, JumpCloud, Auth0 acting as SAML IdP, Shibboleth, Keycloak, and SimpleSAMLphp. The scope covers SP-initiated SSO (Tikti -> IdP -> Tikti), Single Logout (SP-initiated round-trip and IdP-initiated receive), signed `AuthnRequest` messages, signed and optionally encrypted assertions, per-tenant IdP metadata and trust pinning, attribute mapping to the Tikti user model and `tid`, Just-In-Time provisioning, HS256 idToken issuance preserving the existing token-exchange contract, an admin CLI for metadata and key lifecycle, Helm values for SP keys, Prometheus metrics, and a structured audit log.
 
-**Out of scope (v1) - separate tracks, not blocked by this design.** Consumer OIDC buttons ("Sign in with Google" for `@gmail.com` personal accounts, "Sign in with Apple", "Sign in with Microsoft" personal) - those speak OIDC, not SAML, and land on a separate roadmap item (OIDC federation, v2). IdP-initiated SSO without `InResponseTo` (v1.1 once the hardened validator ships). SCIM provisioning (v2; login works without it). SAML ECP, WS-Fed, HTTP-Artifact binding, SAML 1.1 inbound - legacy profiles, no demand in current pipeline. Tikti acting as SAML IdP for third-party SPs - inverse direction, different product.
+**Out of scope (v1).** Consumer OIDC buttons ("Sign in with Google" for `@gmail.com` personal accounts, "Sign in with Apple", "Sign in with Microsoft" personal) speak OIDC, not SAML, and land on a separate roadmap item (OIDC federation, v2). IdP-initiated SSO without `InResponseTo` is deferred to v1.1 when the hardened validator ships. SCIM provisioning is deferred to v2; login works without it. SAML ECP, WS-Fed, HTTP-Artifact binding, and SAML 1.1 inbound are legacy profiles with no demand in the current pipeline. Tikti acting as a SAML IdP for third-party SPs is the inverse direction and a separate product.
 
-> **Reading note.** "OIDC federation" in this document means _adding OIDC as a second federation protocol alongside SAML_. It does **not** mean blocking Google. Any Google Workspace tenant authenticates via the SAML path above in v1. The consumer "Sign in with Google" button (personal gmail.com accounts, OAuth consent screen) is the v2 item.
+> **Reading note.** "OIDC federation" in this document means _adding OIDC as a second federation protocol alongside SAML_. It does **not** mean blocking Google. Any Google Workspace tenant authenticates via the SAML path described above in v1. The consumer "Sign in with Google" button (personal `gmail.com` accounts, OAuth consent screen) is the v2 item.
 
 ## 3. Goals and Non-Goals
 
-**Goals:** 1 shared SP entity, N tenant-scoped IdP trust relationships; 0 changes to relying parties that verify RS256 tokens; assertion-to-idToken latency P95 < 150 ms (excluding IdP redirect); key rotation with 0 request failures; 1 audit record per assertion decision.
+The design targets one shared SP entity with N tenant-scoped IdP trust relationships, zero changes to relying parties that verify RS256 tokens, assertion-to-idToken latency at P95 below 150 ms (excluding IdP redirect time), key rotation with zero failed requests, and one audit record per assertion decision.
 
-**Non-goals:** building a SAML IdP; supporting SAML 1.1; supporting unsigned assertions; supporting HTTP-Artifact; replacing the existing password flow.
+Non-goals include building a SAML IdP, supporting SAML 1.1, supporting unsigned assertions, supporting HTTP-Artifact binding, and replacing the existing password flow.
 
 ## 4. Current State (as inferred)
 
@@ -123,11 +123,11 @@ flowchart LR
     style CLI fill:#cfe8ff,stroke:#2a6fbf
 ```
 
-Only blue boxes are new. `internal/auth.issueIDToken` is an existing function **`[verify against repo]`**; this design requires calling it from the SAML handler instead of the password handler.
+Only blue boxes represent new code. `internal/auth.issueIDToken` is an existing function **`[verify against repo]`**; this design calls it from the SAML handler instead of the password handler.
 
 ## 7. Actors and Trust Model
 
-3 actors: User Agent (browser), Tikti (SP), External IdP. Trust is asymmetric per tenant: Tikti trusts IdP X for tenant A, IdP Y for tenant B, 0 default trust. Trust material is the IdP signing certificate extracted from IdP metadata and pinned at registration time. SP signing and decryption keys are tenant-agnostic in v1 (1 SP entity, 1 RSA key pair) to keep the cryptographic surface small; per-tenant SP keys are deferred to v2 without schema break (see section 28).
+Three actors participate in the federation: the User Agent (browser), Tikti (SP), and the External IdP. Trust is asymmetric and scoped per tenant: Tikti trusts IdP X for tenant A and IdP Y for tenant B, with no default trust. The trust material is the IdP signing certificate extracted from IdP metadata and pinned at registration time. SP signing and decryption keys are tenant-agnostic in v1 (one SP entity, one RSA key pair) to keep the cryptographic surface area constrained. Per-tenant SP keys are deferred to v2 without a schema break (see section 28).
 
 ## 8. Endpoints and Bindings
 
@@ -199,7 +199,7 @@ stateDiagram-v2
     REJECT --> [*] : reason in closed set
 ```
 
-After ACCEPT: delete `saml:req:{InResponseTo}`, write `saml:seen:{AssertionID}` with TTL 3600 s, map attributes, JIT-provision user, write `saml:idx:{NameID}`, call `auth.issueIDToken`.
+After ACCEPT the handler deletes `saml:req:{InResponseTo}`, writes `saml:seen:{AssertionID}` with TTL 3600 s, maps attributes, JIT-provisions the user, writes `saml:idx:{NameID}`, and calls `auth.issueIDToken`.
 
 ## 10. Attribute Mapping and JIT Provisioning
 
@@ -217,7 +217,7 @@ flowchart TD
     G --> Z["END"]
 ```
 
-`tid` is taken from the URL path, never from the assertion, to prevent tenant escalation via a compromised IdP. Default attribute map, per IdP record:
+The `tid` value is taken from the URL path, never from the assertion, to prevent tenant escalation through a compromised IdP. The default attribute map for each IdP record is:
 
 ```yaml
 attributeMap:
@@ -229,7 +229,7 @@ attributeMap:
 
 ## 11. Session Issuance - Bridging SAML to Tikti's Existing Model
 
-The ACS handler calls `auth.issueIDToken(ctx, user, tid, amr=["saml"])` **`[verify against repo]`**. No SAML-specific claims appear in the idToken other than `amr`. The RS256 access token produced by the existing exchange endpoint is identical in shape to the password-issued path except for `amr`. Relying parties ignoring `amr` are unaffected.
+The ACS handler calls `auth.issueIDToken(ctx, user, tid, amr=["saml"])` **`[verify against repo]`**. No SAML-specific claims appear in the idToken beyond `amr`. The RS256 access token produced by the existing exchange endpoint is identical in shape to the password-issued path except for `amr`. Relying parties that ignore `amr` are unaffected.
 
 ```mermaid
 sequenceDiagram
@@ -278,9 +278,9 @@ sequenceDiagram
 
 ## 13. Cryptography and Key Management
 
-Signature: RSASSA-PKCS1-v1_5 with SHA-256 (`rsa-sha256`). Digest: SHA-256. Canonicalization: Exclusive C14N (`xml-exc-c14n`). Encryption: AES-256-GCM for assertion; RSA-OAEP with SHA-256 for key transport.
+All signatures use RSASSA-PKCS1-v1_5 with SHA-256 (`rsa-sha256`) and a SHA-256 digest over Exclusive C14N (`xml-exc-c14n`) canonicalization. Assertion encryption uses AES-256-GCM for the content and RSA-OAEP with SHA-256 for key transport.
 
-SP keys: 2048-bit RSA (3072 supported at `saml.sp.keyBits=3072`). Loaded once at process start from disk, held in memory, never written to Redis. Key rotation is 2 steps:
+SP keys are 2048-bit RSA (3072-bit supported via `saml.sp.keyBits=3072`). The process loads keys once at startup from disk, holds them in memory, and never writes them to Redis. Key rotation follows a two-step procedure:
 
 ```mermaid
 stateDiagram-v2
@@ -378,11 +378,11 @@ erDiagram
 |`saml:idx:{nameID}`|msgpack of session link|`notOnOrAfter` bounded|write on ACS, delete on SLO|
 |`saml:seen:{assertionID}`|`1`|3600 s|replay guard|
 
-Values are msgpack-encoded to cut payload ~30% vs JSON; library: `github.com/vmihailenco/msgpack/v5`.
+Values are msgpack-encoded, reducing payload size by 30% compared to JSON. The library is `github.com/vmihailenco/msgpack/v5`.
 
 ### 15.3 User record migration
 
-`authSource` (enum `password|saml`, default `password`) and `externalSubject` (string, default `""`) are added to the user record. Migration tool adds the fields with defaults. The field list lives in `internal/user/model.go` **`[verify against repo]`**.
+Two fields are added to the user record: `authSource` (enum `password|saml`, default `password`) and `externalSubject` (string, default `""`). The migration tool adds both fields with their defaults. The field list lives in `internal/user/model.go` **`[verify against repo]`**.
 
 ## 16. Configuration Surface
 
@@ -425,7 +425,7 @@ saml:
     subsystem: "saml"
 ```
 
-Per-tenant IdP records are not in YAML; they live in Redis and are managed by CLI. This keeps YAML static at deploy time and the trust table mutable at runtime.
+Per-tenant IdP records are not stored in YAML. They reside in Redis and are managed through the CLI. This separation keeps YAML static at deploy time and the trust table mutable at runtime.
 
 ## 17. Admin CLI Additions
 
@@ -451,9 +451,9 @@ tikti saml domain remove --domain EXAMPLE.COM
 
 **Gauges:** `tikti_saml_idp_cert_expiry_seconds{tid,subject}`, `tikti_saml_sp_cert_expiry_seconds`.
 
-**Audit log:** 1 record per assertion decision, schema `{event:"saml.assertion", tid, requestID, nameID, issuer, decision:"accept|reject", reason, durationMs, ts}`, sink is the existing Tikti audit writer **`[verify against repo]`**.
+**Audit log:** Each assertion decision emits one record with schema `{event:"saml.assertion", tid, requestID, nameID, issuer, decision:"accept|reject", reason, durationMs, ts}`. The sink is the existing Tikti audit writer **`[verify against repo]`**.
 
-**Tracing:** 1 span per inbound request, attributes `saml.tid`, `saml.issuer`, `saml.request_id`, `saml.result`.
+**Tracing:** Each inbound request creates one span carrying attributes `saml.tid`, `saml.issuer`, `saml.request_id`, and `saml.result`.
 
 ## 19. Error Taxonomy (closed set)
 
@@ -470,29 +470,29 @@ xxe_detected                 signature_wrapping_detected
 internal_error
 ```
 
-Internal reasons are logged; user-facing page renders 1 of 4 neutral messages to avoid oracle behavior.
+Internal reasons are logged server-side. The user-facing page renders one of four neutral messages to prevent oracle behavior.
 
 ## 20. Security Controls
 
-**Replay:** `InResponseTo` must exist in `saml:req:{id}`; record is deleted on use. `saml:seen:{assertionID}` blocks duplicate assertions within 1 h regardless of request correlation.
+Replay protection operates at two layers. The `InResponseTo` value must exist in `saml:req:{id}`, and the record is deleted on first use. Independently, `saml:seen:{assertionID}` blocks duplicate assertions for 3600 s regardless of request correlation.
 
-**Signature wrapping:** all signature `Reference` URIs validated against `ID` attributes under the signed `Assertion` element using the ancestor-walk algorithm; unresolved references rejected; extra signed elements outside the asserted scope rejected.
+Signature wrapping defense validates every signature `Reference` URI against `ID` attributes under the signed `Assertion` element using the ancestor-walk algorithm. The validator rejects unresolved references and rejects extra signed elements outside the asserted scope.
 
-**XXE:** DTD parsing disabled, external entities disabled, `encoding/xml` with `Strict=true` and custom `xml.Decoder` that rejects `!DOCTYPE`.
+XXE prevention disables DTD parsing and external entities. The XML parser uses `encoding/xml` with `Strict=true` and a custom `xml.Decoder` that rejects `!DOCTYPE` declarations.
 
-**Algorithm allowlist:** `rsa-sha1`, `sha1`, `xml-c14n` (non-exclusive), `des-*`, `md5`, unsigned assertions - all rejected.
+The algorithm allowlist rejects `rsa-sha1`, `sha1`, `xml-c14n` (non-exclusive), `des-*`, `md5`, and unsigned assertions.
 
-**Request TTL:** 300 s. **Clock skew:** 120 s. Maximum window from `AuthnRequest` to accepted Response: 420 s.
+Request TTL is 300 s. Clock skew tolerance is 120 s. The maximum window from `AuthnRequest` to accepted Response is 420 s.
 
-**Transport:** HTTPS enforced at ingress; `SameSite=Lax` on the idToken cookie (required so the IdP's POST-back carries the cookie on first-party redirect chain); `HttpOnly=true`, `Secure=true`.
+Transport security enforces HTTPS at ingress. The idToken cookie carries `SameSite=Lax` (required for the IdP's POST-back to carry the cookie on the first-party redirect chain), `HttpOnly=true`, and `Secure=true`.
 
-**CSRF on ACS:** the `InResponseTo` + signature chain replaces traditional CSRF tokens (the POST has a cryptographically bound correlation); a state cookie is additionally set at `/saml/login/{tid}` and checked at `/saml/acs` to defend against cross-tenant submission.
+CSRF protection on the ACS endpoint relies on the `InResponseTo` and signature chain in place of a traditional CSRF token, since the POST contains a cryptographically bound correlation. A state cookie is additionally set at `/saml/login/{tid}` and checked at `/saml/acs` to defend against cross-tenant submission.
 
-**Session binding:** idToken cookie is bound to `tid` via the path `/` and is rotated on every successful SAML login.
+Session binding ties the idToken cookie to `tid` via the path `/` and rotates the cookie on every successful SAML login.
 
 ## 21. Library Choice
 
-`github.com/crewjam/saml` is the Go SAML library with the largest production deployment count in public datasets and a commit in the last 30 days. It supports HTTP-Redirect and HTTP-POST bindings, assertion encryption, signed `AuthnRequest`, and SLO. 2 alternatives considered: `github.com/russellhaering/gosaml2` (no SLO, no assertion encryption) and a hand-rolled implementation (cost: ~8 engineer-weeks plus audit). Decision: adopt `crewjam/saml` wrapped behind `tiktisaml.Provider` so the dependency is replaceable.
+`github.com/crewjam/saml` is the Go SAML library with the highest production deployment count in public datasets and an active commit history. It supports HTTP-Redirect and HTTP-POST bindings, assertion encryption, signed `AuthnRequest`, and SLO. Two alternatives were considered: `github.com/russellhaering/gosaml2` (no SLO, no assertion encryption) and a from-scratch implementation (cost: 8 engineer-weeks plus audit). The decision is to adopt `crewjam/saml` wrapped behind `tiktisaml.Provider` so the dependency remains replaceable.
 
 Transitive dependencies introduced: `github.com/beevik/etree` (XML DOM), `github.com/russellhaering/goxmldsig` (XML-DSig), `github.com/mattermost/xml-roundtrip-validator` (canonicalization safety check).
 
@@ -589,7 +589,7 @@ tikti/
         └── saml_acs_bench.go              # NEW - k6 or vegeta script
 ```
 
-New file count: **~45**. Edited existing files: **~10**. Tests colocated with the package; integration and load isolated under `test/`.
+The layout introduces approximately 45 new files and edits approximately 10 existing files. Tests are colocated with the package; integration and load tests are isolated under `test/`.
 
 ## 23. Interfaces and Function Signatures
 
@@ -725,24 +725,21 @@ func (h *Handler) SLO(w http.ResponseWriter, r *http.Request)       // /saml/slo
 func (h *Handler) Discover(w http.ResponseWriter, r *http.Request)  // /saml/discover
 ```
 
-Each handler is <= 80 lines; the `validate` function holds ~200 lines with subfunctions per step in `validator.go`.
+Each handler stays within 80 lines. The `validate` function spans approximately 200 lines with subfunctions per step in `validator.go`.
 
 ## 24. Testing Strategy
 
-**Unit:** colocated per file, `go test ./internal/saml/...`. Redis replaced by `github.com/alicebob/miniredis/v2`. Clock replaced by a fake `Clock`.
+Unit tests are colocated per file and run via `go test ./internal/saml/...`. Redis is replaced by `github.com/alicebob/miniredis/v2` and the clock is replaced by a fake `Clock` implementation.
 
-**Conformance:** 60 canned `SAMLResponse` documents covering:
+Conformance testing uses 60 canned `SAMLResponse` documents: 15 covering the rejection branches from section 19 (one document per reason) and 45 covering accept cases across 9 flavors and 5 IdP vendors (Azure AD, Okta, Ping, ADFS, Google Workspace).
 
-- 15 rejection branches from section 19 - 1 document each.
-- 45 accept cases: 9 flavors x 5 IdP vendors (Azure AD, Okta, Ping, ADFS, Google Workspace).
+Integration testing runs one end-to-end test that spins up `crewjam/saml`'s reference IdP against the full Tikti process with a `miniredis` backend, exercises SP-SSO and SLO, and asserts both the idToken and the RS256 access token.
 
-**Integration:** 1 end-to-end test spins up `crewjam/saml`'s reference IdP against the full Tikti process with a `miniredis` backend; runs SP-SSO + SLO; asserts idToken and RS256 access token end to end.
+Load testing uses a k6 script that emits 500 `POST /saml/acs` requests per second for 5 minutes with pre-generated signed responses. The targets are P95 latency below 150 ms and error rate below 0.01%.
 
-**Load:** k6 script emits 500 `POST /saml/acs` per second for 5 minutes with pre-generated signed responses; target P95 < 150 ms, error rate < 0.01%.
+The coverage target for `internal/saml` is 90% line coverage, with 100% branch coverage on all 15 rejection reasons.
 
-**Coverage target:** `internal/saml` lines >= 90%, branches on the 15 rejection reasons = 100%.
-
-**Fuzz:** `go test -fuzz=FuzzParseResponse` on the XML parser with 1 M iterations in CI on a nightly job.
+Fuzz testing runs `go test -fuzz=FuzzParseResponse` on the XML parser with 1 million iterations in CI on a nightly schedule.
 
 ## 25. Rollout Plan
 
@@ -760,7 +757,7 @@ gantt
     GA flip in Helm chart          :milestone, m1, after c1, 1d
 ```
 
-Rollback: set `saml.enabled=false`; all `/saml/*` routes return 404; password flow unchanged at every phase.
+Rollback at any phase consists of setting `saml.enabled=false`. All `/saml/*` routes then return 404, and the password flow remains unchanged.
 
 ## 26. Risks and Mitigations
 
@@ -793,23 +790,23 @@ Rollback: set `saml.enabled=false`; all `/saml/*` routes return 404; password fl
 
 ## 29. Technical FAQ
 
-**Q1. Why SAML and not OIDC federation? Does this block Google login?** No - Google Workspace is a SAML IdP and is a first-class target in v1 (see section 2, section 24, section 27). What is deferred to v2 is adding **OIDC as a second federation protocol** for consumer flows: the "Sign in with Google" / "Sign in with Apple" buttons that use personal accounts via OAuth consent. Enterprise buyers drive this release; their IAM teams operate SAML for 100% of their other SaaS, procurement checklists name SAML 2.0 explicitly, and Google Workspace, Azure AD/Entra, Okta, Ping, ADFS all expose a SAML IdP endpoint that this design consumes unchanged.
+**Q1. Why SAML and not OIDC federation? Does this block Google login?** No. Google Workspace is a SAML IdP and is a first-class target in v1 (see section 2, section 24, section 27). What is deferred to v2 is adding **OIDC as a second federation protocol** for consumer flows: the "Sign in with Google" / "Sign in with Apple" buttons that use personal accounts via OAuth consent. Enterprise buyers drive this release. Their IAM teams operate SAML for 100% of their SaaS integrations, procurement checklists name SAML 2.0 explicitly, and Google Workspace, Azure AD/Entra, Okta, Ping, and ADFS all expose a SAML IdP endpoint that this design consumes unchanged.
 
-**Q2. Why is `tid` taken from the URL path, not from the assertion?** A compromised or misconfigured IdP could issue an assertion with a `tid` attribute pointing to a tenant it has no right to. Binding `tid` to the path means the routing is authenticated by Tikti's own URL structure; the IdP cannot cross the tenant boundary.
+**Q2. Why is `tid` taken from the URL path, not from the assertion?** A compromised or misconfigured IdP can issue an assertion with a `tid` attribute pointing to a tenant it has no right to. Binding `tid` to the path means the routing is governed by Tikti's own URL structure, and the IdP cannot cross the tenant boundary.
 
 **Q3. Why HS256 in-band and RS256 out-of-band?** This matches the existing Tikti split. HS256 is a local, short-lived artifact consumed only inside Tikti. RS256 is the publication contract for relying parties verifying offline via JWKS. The SAML flow produces the same HS256 artifact, so 0 downstream code changes.
 
-**Q4. How is replay protection handled across N Tikti replicas?** Redis is the single source of truth. `saml:req:{id}` is written on the emitter replica and consumed (with `DEL`) on any replica that receives the POST-back. `saml:seen:{assertionID}` is written via `SETNX` on the consumer replica; a concurrent duplicate on another replica gets a `0` and is rejected. 1 Redis round-trip, sub-millisecond.
+**Q4. How is replay protection handled across N Tikti replicas?** Redis is the single source of truth. `saml:req:{id}` is written on the emitter replica and consumed (via `DEL`) on whichever replica receives the POST-back. `saml:seen:{assertionID}` is written via `SETNX` on the consumer replica; a concurrent duplicate on another replica receives a `0` and is rejected. Each operation requires one Redis round-trip at sub-millisecond latency.
 
-**Q5. What happens when Redis is unreachable?** The handler returns 503 with reason `internal_error`. The error is not retried on the user's behalf - the user clicks again. The existing Tikti health probe already gates Redis; SAML reuses it. No partial state is written because the handler sequence is "read IdP -> write request record -> redirect"; each step is atomic.
+**Q5. What happens when Redis is unreachable?** The handler returns 503 with reason `internal_error`. The error is not retried on the user's behalf; the user clicks again. The existing Tikti health probe gates on Redis availability, and SAML reuses that probe. No partial state is written because the handler executes a linear sequence (read IdP, write request record, redirect) where each step is atomic.
 
-**Q6. How does Tikti prevent XML Signature Wrapping?** Using an ancestor-walk validator: for every `ds:Signature`, enumerate each `Reference`'s `URI`, resolve it to an `Element` by `ID`, and verify the resolved element is the unique descendant of the signed scope (`Assertion` for an assertion signature, `Response` for a response signature). Any `ID` collision, any `Reference` targeting a node outside the signed scope, or any unsigned `Assertion` sibling triggers `signature_wrapping_detected`.
+**Q6. How does Tikti prevent XML Signature Wrapping?** Tikti uses an ancestor-walk validator. For every `ds:Signature`, the validator enumerates each `Reference`'s `URI`, resolves it to an `Element` by `ID`, and verifies that the resolved element is the unique descendant of the signed scope (`Assertion` for an assertion signature, `Response` for a response signature). An `ID` collision, a `Reference` targeting a node outside the signed scope, or an unsigned `Assertion` sibling triggers `signature_wrapping_detected`.
 
 **Q7. Why AES-GCM and not AES-CBC for assertion encryption?** GCM is authenticated encryption; CBC requires a separate HMAC and is the vector for multiple padding-oracle attacks (see CVE-2017-11427). `crewjam/saml` supports both; the config pins GCM.
 
-**Q8. Why SHA-256 only? What about SHA-512 or SHA-384?** 3 IdP vendors in the target set do not emit SHA-384/512 by default; SHA-256 is the common denominator. The allowlist is a config value; a customer needing SHA-384 flips `saml.sp.allowedDigestAlgs`. SHA-1 is never on the list.
+**Q8. Why SHA-256 only? What about SHA-512 or SHA-384?** Three IdP vendors in the target set do not emit SHA-384/512 by default, making SHA-256 the common denominator. The allowlist is a config value; a customer needing SHA-384 adds it to `saml.sp.allowedDigestAlgs`. SHA-1 is never on the list.
 
-**Q9. How is the IdP certificate pinned?** Extracted from IdP metadata at registration, stored as a DER blob inside `saml:idp:{tid}`. Pin is renewed on `saml idp update`. During rotation, 2 certs are stored; a response signed by either is accepted for 24 h; the old cert is pruned after the overlap.
+**Q9. How is the IdP certificate pinned?** The certificate is extracted from IdP metadata at registration and stored as a DER blob inside `saml:idp:{tid}`. The pin is renewed on `saml idp update`. During rotation, two certificates are stored; a response signed by either is accepted for 24 hours, after which the old certificate is pruned.
 
 **Q10. Why Exclusive C14N and not Inclusive?** Inclusive C14N includes ancestor namespaces, producing signatures that break when an assertion is serialized inside a different XML context (e.g., wrapped by an HTTP layer). Exclusive C14N canonicalizes the signed subtree in isolation; this is the binding profile documented in SAML 2.0 core.
 
@@ -817,41 +814,41 @@ Rollback: set `saml.enabled=false`; all `/saml/*` routes return 404; password fl
 
 **Q12. What if the IdP's `NotOnOrAfter` is shorter than Tikti's session TTL?** Tikti picks `min(assertion.NotOnOrAfter, now + sessionTTL)` as the session upper bound. If the IdP says the assertion is good for 1 hour and Tikti's session TTL is 8 hours, the session expires in 1 hour. This aligns SAML session lifetime with IdP expectations and avoids zombie sessions surviving an IdP-initiated lockout.
 
-**Q13. How does the HTTP-POST binding coexist with `SameSite=Lax`?** SAML IdPs deliver the Response via a top-level form POST from the IdP's page back to `/saml/acs`. `SameSite=Lax` allows cookies on top-level navigations including form POSTs only if the method is GET - for POST, `Lax` **blocks** the cookie. The design sets `SameSite=Lax` on the **idToken** cookie, which is issued **after** `/saml/acs`, not before. The state cookie set at `/saml/login/{tid}` is `SameSite=None; Secure` because it must ride along with the IdP's POST-back. This is why 2 cookies exist: state cookie (`None; Secure`) for the round-trip, idToken cookie (`Lax; Secure; HttpOnly`) for post-login.
+**Q13. How does the HTTP-POST binding coexist with `SameSite=Lax`?** SAML IdPs deliver the Response via a top-level form POST from the IdP's page back to `/saml/acs`. `SameSite=Lax` allows cookies on top-level navigations for GET requests but **blocks** cookies on cross-site POST requests. The design sets `SameSite=Lax` on the **idToken** cookie, which is issued **after** `/saml/acs` processes the response, not before. The state cookie set at `/saml/login/{tid}` uses `SameSite=None; Secure` because it must accompany the IdP's POST-back. This is why two cookies exist: the state cookie (`None; Secure`) for the round-trip, and the idToken cookie (`Lax; Secure; HttpOnly`) for post-login.
 
-**Q14. What's the cold-start time for IdP metadata?** First request for a `tid` triggers a Redis `GET`; if the record is missing or stale (older than `refreshIntervalHours`), a background refresher re-fetches and re-validates the IdP metadata document. The user request blocks on the last-good record (it is not deleted until a new one validates). Cold miss when Redis is empty: 1 HTTP fetch + parse, budget 2 s; request fails with `idp_metadata_stale` if the source URL is down at that instant.
+**Q14. What is the cold-start time for IdP metadata?** The first request for a `tid` triggers a Redis `GET`. If the record is missing or stale (older than `refreshIntervalHours`), a background refresher re-fetches and re-validates the IdP metadata document. The user request blocks on the last-good record, which is not deleted until a new one validates. On a cold miss when Redis is empty, the cost is one HTTP fetch plus parse, budgeted at 2 s. The request fails with `idp_metadata_stale` if the source URL is down at that instant.
 
-**Q15. Why msgpack instead of JSON in Redis?** The IdP record holds X.509 certificate bytes; msgpack stores bytes directly, JSON requires base64 (33% overhead). msgpack on the full record is ~30% smaller and ~40% faster to unmarshal. JSON is kept for the audit sink and metrics - different consumers, different trade-offs.
+**Q15. Why msgpack instead of JSON in Redis?** The IdP record contains X.509 certificate bytes. msgpack stores bytes directly, whereas JSON requires base64 encoding (33% overhead). msgpack on the full record is 30% smaller and 40% faster to unmarshal. JSON is retained for the audit sink and metrics because those consumers have different serialization requirements.
 
-**Q16. What's the upgrade path for a password user who now needs SAML?** Admin runs `tikti saml idp register --tid X`. The next login from that tenant's user: Tikti sees `authSource=password` on the existing user record but the tenant has an IdP record, so it 302s to SAML. On ACS success, Tikti finds an existing user with matching email (configurable via `mergeStrategy: email|externalSubject|none`), sets `authSource=saml` and `externalSubject=NameID`, preserves `roles` and `sub`. Default strategy: `email`.
+**Q16. What is the upgrade path for a password user who transitions to SAML?** The admin runs `tikti saml idp register --tid X`. On the next login from that tenant, Tikti sees `authSource=password` on the existing user record but detects that the tenant has an IdP record, so it responds with a 302 redirect to the SAML login. On ACS success, Tikti locates the existing user with a matching email (configurable via `mergeStrategy: email|externalSubject|none`), sets `authSource=saml` and `externalSubject=NameID`, and preserves `roles` and `sub`. The default strategy is `email`.
 
-**Q17. What stops an attacker from replaying a captured AuthnRequest?** The `AuthnRequest` is not a secret; replaying it only causes the IdP to re-authenticate the same user and produce a new Response. The Response is what we guard: unique `InResponseTo` (deleted after use) + unique `AssertionID` (remembered for 1 h). A stolen AuthnRequest is useful only to force a user through an unwanted login, which is a Denial-of-Service against that user, not a privilege escalation.
+**Q17. What stops an attacker from replaying a captured AuthnRequest?** The `AuthnRequest` is not a secret. Replaying it causes the IdP to re-authenticate the same user and produce a new Response. The Response is the guarded artifact: its `InResponseTo` is unique and deleted after use, and its `AssertionID` is remembered for 3600 s. A stolen AuthnRequest is useful only to force a user through an unwanted login, which constitutes a denial-of-service against that user rather than a privilege escalation.
 
-**Q18. What stops an attacker with a leaked idToken cookie from extending the session?** The idToken is HS256-signed by Tikti's `jwtSecret`. An attacker with the cookie can impersonate the user until `exp`, same as the password path today. `jwtSecret` rotation + short idToken TTL + bound cookie (`HttpOnly`, `Secure`) are the existing controls; SAML does not widen this surface.
+**Q18. What stops an attacker with a leaked idToken cookie from extending the session?** The idToken is HS256-signed by Tikti's `jwtSecret`. An attacker with the cookie can impersonate the user until `exp`, identical to the password path. `jwtSecret` rotation, a short idToken TTL, and the bound cookie (`HttpOnly`, `Secure`) are the existing controls. SAML does not widen this surface.
 
 **Q19. How are SAML attributes exposed to relying parties?** They are not. SAML attributes are consumed by Tikti and mapped to the internal user model. The RS256 access token carries only the Tikti-native claim set (`sub`, `tid`, `iss`, `aud`, `exp`, `iat`, `roles`, `amr`). Custom claims remain a Tikti-configured concern, unchanged from today.
 
-**Q20. Why reject IdP-initiated SSO by default?** IdP-initiated flows lack `InResponseTo`, which removes the strongest replay binding and creates a well-known class of login CSRF. Rejecting them by default shrinks the attack surface; customers demanding the flow can opt in at tenant level once v2 ships the hardened validator (`SubjectConfirmationData.InResponseTo` absent, strict `NotBefore`, tenant-specific relay state HMAC).
+**Q20. Why reject IdP-initiated SSO by default?** IdP-initiated flows lack `InResponseTo`, which removes the strongest replay binding and creates a known class of login CSRF. Rejecting them by default reduces the attack surface. Customers requiring the flow can opt in at tenant level once v2 ships the hardened validator (`SubjectConfirmationData.InResponseTo` absent, strict `NotBefore`, tenant-specific relay state HMAC).
 
-**Q21. How is the 20-byte `AuthnRequest.ID` generated?** `crypto/rand.Read` into a 20-byte buffer, hex-encoded with the prefix `_` to satisfy the `xsd:ID` NCName rule (must not start with a digit). Collision probability across 1 M requests: ~5 x 10^-30.
+**Q21. How is the 20-byte `AuthnRequest.ID` generated?** `crypto/rand.Read` fills a 20-byte buffer, which is hex-encoded with the prefix `_` to satisfy the `xsd:ID` NCName rule (the first character must not be a digit). The collision probability across 1 million requests is approximately 5 x 10^-30.
 
-**Q22. How do we handle a SAMLResponse larger than the default HTTP body limit?** The router's body limit is raised to 1 MiB on `/saml/acs`. Real Responses hover at 20-80 KiB; 1 MiB covers encrypted assertions with multiple SessionNotOnOrAfter extensions and signed attribute lists. Requests above 1 MiB are rejected at the edge with 413; no work done in SAML code.
+**Q22. How does Tikti handle a SAMLResponse larger than the default HTTP body limit?** The router's body limit is raised to 1 MiB on `/saml/acs`. Observed responses range from 20 KiB to 80 KiB; 1 MiB covers encrypted assertions with multiple SessionNotOnOrAfter extensions and signed attribute lists. Requests above 1 MiB are rejected at the edge with HTTP 413 before any SAML code executes.
 
 **Q23. Can Tikti run without a persistent volume, keeping all state in Redis?** Yes. SP keys are the only disk artifact; they can be delivered via Kubernetes Secret mounted at `/etc/tikti/saml/`. Redis holds every runtime record.
 
-**Q24. Why not stash the SP private key in Redis?** Redis has a larger blast radius than a file mounted into the process. Restricting the private key to a file + mount + in-memory copy limits a Redis compromise to data loss, not impersonation of the SP.
+**Q24. Why not store the SP private key in Redis?** Redis has a larger blast radius than a file mounted into the process. Restricting the private key to a file mount and an in-memory copy limits a Redis compromise to data loss rather than SP impersonation.
 
-**Q25. What happens on `jwtSecret` rotation during an active SAML session?** An idToken signed with the old secret is rejected on next `/token` call; the browser is redirected to `/saml/login/{tid}` (existing behavior of the password flow). The SAML round-trip is fast enough (sub-5 s at P95) that this is acceptable during a scheduled rotation window.
+**Q25. What happens on `jwtSecret` rotation during an active SAML session?** An idToken signed with the old secret is rejected on the next `/token` call, and the browser is redirected to `/saml/login/{tid}` (matching the existing behavior of the password flow). The SAML round-trip completes in under 5 s at P95, making this acceptable during a scheduled rotation window.
 
 **Q26. Does the SAML flow interact with Tikti's `apiKey`?** No. `apiKey` gates the admin surface (CLI, management endpoints). SAML gates the user surface (`/saml/*`, `/authenticate` equivalent). They are orthogonal auth planes.
 
-**Q27. What's the test isolation strategy for the 60 canned responses?** Each canned file is a `.xml` in `internal/saml/testdata/{vendor}/{caseName}.xml`, paired with a `.json` of expected outcome (`accept|reject`, `reason`, extracted attributes). The test table loads all files, runs the validator with a pinned IdP cert and a fixed `now`, and asserts the outcome. Adding a new vendor quirk means adding 2 files, 0 Go code.
+**Q27. What is the test isolation strategy for the 60 canned responses?** Each canned file is a `.xml` stored at `internal/saml/testdata/{vendor}/{caseName}.xml`, paired with a `.json` containing the expected outcome (`accept|reject`, `reason`, extracted attributes). The test table loads all files, runs the validator with a pinned IdP certificate and a fixed `now`, and asserts the outcome. Adding a new vendor quirk requires adding two files and zero Go code.
 
-**Q28. How does the migration tool handle existing user records?** The migration is additive: it adds `authSource` (default `password`) and `externalSubject` (default `""`). Runs in place without downtime because all existing code paths tolerate the new fields (trivial struct tag addition). Rollback: drop the fields; no data depends on them until SAML is enabled.
+**Q28. How does the migration tool handle existing user records?** The migration is additive: it adds `authSource` (default `password`) and `externalSubject` (default `""`). It runs in place without downtime because all existing code paths tolerate the new fields as a struct tag addition. To roll back, drop the fields; no data depends on them until SAML is enabled.
 
-**Q29. What does a local developer need to test SAML end-to-end?** `make saml-dev` starts: 1 Redis, 1 Tikti with `saml.enabled=true` and test keys, 1 reference IdP from `crewjam/saml`, 1 seeded tenant and user. `curl http://localhost:8080/saml/login/dev` exercises the full loop. The fixtures are checked into `hack/saml/`.
+**Q29. What does a local developer need to test SAML end-to-end?** Running `make saml-dev` starts one Redis instance, one Tikti instance with `saml.enabled=true` and test keys, one reference IdP from `crewjam/saml`, and one seeded tenant with a user. `curl http://localhost:8080/saml/login/dev` exercises the full loop. The fixtures are checked into `hack/saml/`.
 
-**Q30. How will we handle a vulnerability in `crewjam/saml`?** The `Provider` interface isolates the dependency. On a disclosed CVE: pin the patched version, run the conformance suite, emergency release. Swap budget if the library goes unmaintained: 5 engineer-days to wire `gosaml2` or a minimal in-house impl behind the same interface.
+**Q30. How does Tikti handle a vulnerability in `crewjam/saml`?** The `Provider` interface isolates the dependency. On a disclosed CVE, the response is to pin the patched version, run the conformance suite, and issue an emergency release. If the library becomes unmaintained, the swap budget is 5 engineer-days to wire `gosaml2` or a minimal in-house implementation behind the same interface.
 
 ---
 
@@ -1168,7 +1165,7 @@ Order applied to `/saml/*`, outermost first:
 7. `TenantContext` - reads `chi.URLParam("tid")` when present and puts it on the context.
 8. Handler.
 
-No authentication middleware runs on `/saml/*` - SAML is the authentication. The idToken cookie is the output, not the input.
+No authentication middleware runs on `/saml/*` because SAML is the authentication mechanism. The idToken cookie is the output, not the input.
 
 ## Appendix C. Redis Command Reference
 
@@ -1187,13 +1184,13 @@ No authentication middleware runs on `/saml/*` - SAML is the authentication. The
 |`GetDomain`|`GET saml:discover:domain:{d}`|Discovery page|
 |`DeleteDomain`|`DEL saml:discover:domain:{d}`||
 
-Pipelining: the ACS handler batches `ConsumeRequest + GetIdP` with `redis.Pipeliner` to cut 1 round-trip; net latency budget drops from 4x1 ms to 3x1 ms.
+The ACS handler batches `ConsumeRequest` and `GetIdP` using `redis.Pipeliner` to eliminate one round-trip. The net latency budget drops from 4 ms (four sequential round-trips at 1 ms each) to 3 ms.
 
 ## Appendix D. Key Loading and Rotation Mechanics
 
 ### D.1 Boot
 
-`internal/saml/crypto.go` exposes `LoadKey(path string) (*rsa.PrivateKey, *x509.Certificate, error)`. Called once from `cmd/tikti/main.go` before the HTTP server starts. On failure: process exits non-zero; the SAML feature is not partially available. If `saml.enabled=false`, loading is skipped.
+`internal/saml/crypto.go` exposes `LoadKey(path string) (*rsa.PrivateKey, *x509.Certificate, error)`, called once from `cmd/tikti/main.go` before the HTTP server starts. On failure the process exits non-zero; the SAML feature is never partially available. When `saml.enabled=false`, loading is skipped entirely.
 
 ### D.2 Hot reload (SIGHUP)
 
@@ -1218,11 +1215,11 @@ func (k *KeyHolder) Start(ctx context.Context, path string) {
 }
 ```
 
-Swap is an atomic pointer replacement (`atomic.Pointer[keyPair]`); in-flight signers hold the old pointer and finish. 10-second grace before the old pointer is dropped via `runtime.KeepAlive` anchor.
+The swap is an atomic pointer replacement (`atomic.Pointer[keyPair]`). In-flight signers retain the old pointer and complete their work. A 10-second grace period elapses before the old pointer is released via a `runtime.KeepAlive` anchor.
 
 ### D.3 HSM / KMS forward-compat
 
-`crypto.Signer` is the boundary. `signingKeyProvider: file|aws-kms|gcp-kms|pkcs11` is parsed at boot; v1 supports `file`; v2 adds the rest behind the same interface, so tests and handlers do not change.
+The `crypto.Signer` interface is the abstraction boundary. The `signingKeyProvider` config field (`file|aws-kms|gcp-kms|pkcs11`) is parsed at boot. Version 1 supports `file`; version 2 adds the remaining providers behind the same interface, leaving tests and handlers unchanged.
 
 ## Appendix E. Kubernetes Manifests
 
@@ -1275,7 +1272,7 @@ saml:
     deliveryMode: cookie
 ```
 
-Secret delivery in production: `external-secrets-operator` with AWS Secrets Manager or Vault; the chart leaves the field blank and consumes a pre-provisioned Secret by name override (`saml.existingSecret`).
+In production, secrets are delivered via `external-secrets-operator` backed by AWS Secrets Manager or Vault. The chart leaves the field blank and consumes a pre-provisioned Secret through the name override (`saml.existingSecret`).
 
 ## Appendix F. Go Module Additions
 
@@ -1293,7 +1290,7 @@ require (
 )
 ```
 
-Net binary size delta: +4.1 MiB stripped (measured on `crewjam/saml` v0.4.14 + transitives). Startup RSS delta: +12 MiB (etree DOM buffers).
+The net binary size increase is 4.1 MiB stripped (measured with `crewjam/saml` v0.4.14 and transitives). The startup RSS increase is 12 MiB, attributable to etree DOM buffers.
 
 ## Appendix G. Performance Budget - 150 ms P95 Breakdown
 
@@ -1317,7 +1314,7 @@ Target `saml_response_validation_duration_seconds{tid}` buckets cover the mean +
 
 ## Appendix H. Audit Record JSON Schema
 
-`docs/saml/audit-schema.json` ships with the skill; enforced on emission by a `go-jsonschema` generated struct.
+`docs/saml/audit-schema.json` ships with the feature and is enforced at emission time by a `go-jsonschema`-generated struct.
 
 ```json
 {
@@ -1355,7 +1352,7 @@ Target `saml_response_validation_duration_seconds{tid}` buckets cover the mean +
 }
 ```
 
-`attrHash` is the SHA-256 of the sorted, canonicalized attribute map, hex-prefixed; PII is not persisted in the audit log, the hash enables forensic comparison without leaking values.
+`attrHash` is the SHA-256 digest of the sorted, canonicalized attribute map, hex-prefixed. PII is not persisted in the audit log; the hash enables forensic comparison without leaking values.
 
 ## Appendix I. Threat Model (STRIDE)
 
@@ -1430,12 +1427,12 @@ jobs:
 |---|---|---|---|
 |`saml.enabled`|global|`true`|Mounts `/saml/*` routes|
 |existence of `saml:idp:{tid}`|per-tenant|absent|Tenant eligible for SAML|
-|`saml.acs.deliveryMode`|global, per-tenant override|`cookie`|`cookie|
+|`saml.acs.deliveryMode`|global, per-tenant override|`cookie`|`cookie \| fragment \| form-post`|
 |`saml.requireEncryptedAssertion`|global, per-tenant override|`false`|Reject unencrypted assertions|
 |`saml.idp:{tid}.forceAuthn`|per-tenant|`false`|Set `ForceAuthn=true` on `AuthnRequest`|
 |`saml.idp:{tid}.allowPasswordFallback`|per-tenant|`false`|Keep `/authenticate` open for SAML users|
 
-Per-tenant overrides live inside the `IdPRecord` struct and are read on every request; the global is in YAML.
+Per-tenant overrides are stored inside the `IdPRecord` struct and are read on every request. Global flags reside in YAML.
 
 ## Appendix L. User Record State Machine
 
@@ -1510,7 +1507,7 @@ saml-integration:
 	go test -count=1 ./test/integration -run TestSAMLE2E
 ```
 
-Bootstrap: `make saml-dev` then `curl -sS -c cookies -b cookies http://localhost:8080/saml/login/dev` and complete the login at the IdP's test page; the final redirect carries `Set-Cookie: tikti_idt=...`.
+To bootstrap, run `make saml-dev`, then execute `curl -sS -c cookies -b cookies http://localhost:8080/saml/login/dev` and complete the login at the IdP's test page. The final redirect carries `Set-Cookie: tikti_idt=...`.
 
 ## Appendix O. SP Metadata XML Sample
 
@@ -1609,7 +1606,7 @@ HTTP-Redirect emission: `SAMLRequest=deflate(base64(xml))`, `SigAlg=http://www.w
 
 ## Appendix Q. Error Page Contract
 
-4 neutral pages, rendered by `internal/saml/http.go:renderError`. HTTP status follows the mapping:
+The error handler renders four neutral pages via `internal/saml/http.go:renderError`. HTTP status codes map to reason buckets as follows:
 
 |Bucket|HTTP status|Message shown to user|Maps from reasons|
 |---|--:|---|---|
@@ -1618,16 +1615,13 @@ HTTP-Redirect emission: `SAMLRequest=deflate(base64(xml))`, `SigAlg=http://www.w
 |`not_configured`|404|"Single sign-on is not configured for this workspace."|`tid_unknown`|
 |`internal`|500|"We could not complete your login. Try again in a few seconds."|`idp_metadata_stale, internal_error`|
 
-Each page contains a 12-char server-side error ID (`X-Tikti-Error-ID` header, UUIDv7 truncated) that support can grep in logs. No reason text on the page.
+Each page includes a 12-character server-side error ID (sent via the `X-Tikti-Error-ID` header, UUIDv7 truncated) that support staff can grep in logs. No reason text appears on the page.
 
 ## Appendix R. Concurrency Model and Graceful Shutdown
 
-1 goroutine per HTTP request - standard `net/http` model. Context cancellation propagates to Redis calls (`redis.Client` respects `ctx`).
+Each HTTP request runs in one goroutine following the standard `net/http` model. Context cancellation propagates to Redis calls because `redis.Client` respects `ctx`.
 
-Background workers:
-
-- **IdP metadata refresher** - 1 goroutine, ticker every `refreshIntervalHours` with 5-minute jitter; reads every `saml:idp:*` key, re-fetches source URL, validates, overwrites.
-- **Key holder watcher** - 1 goroutine for SIGHUP and 1 optional for fsnotify.
+Two background workers run alongside request handling. The IdP metadata refresher uses one goroutine with a ticker firing every `refreshIntervalHours` plus a 5-minute jitter; it reads every `saml:idp:*` key, re-fetches the source URL, validates the document, and overwrites the record. The key holder watcher uses one goroutine for SIGHUP handling and one optional goroutine for fsnotify.
 
 Shutdown sequence on SIGTERM:
 
@@ -1646,7 +1640,7 @@ sequenceDiagram
     H-->>K: exit 0
 ```
 
-No request is cut off if it completes within 30 s; after 30 s the process exits and Kubernetes replaces it. All Redis state is durable (AOF or RDB depending on deploy); no in-memory mutation is lost.
+No request is interrupted if it completes within 30 s. After 30 s the process exits and Kubernetes replaces it. All Redis state is durable (AOF or RDB depending on the deployment); no in-memory mutation is lost.
 
 ---
 
