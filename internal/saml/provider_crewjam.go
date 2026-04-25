@@ -202,6 +202,49 @@ func (p *CrewjamProvider) BuildLogoutRequest(_ context.Context, in BuildLogoutRe
 	}, nil
 }
 
+// BuildLogoutResponse produces a signed SAML LogoutResponse for the HTTP-POST
+// binding, acknowledging an IdP-initiated LogoutRequest per HLD §12.
+func (p *CrewjamProvider) BuildLogoutResponse(_ context.Context, in BuildLogoutResponseInput) (*LogoutResponseResult, error) {
+	sloURL, err := url.Parse(p.SLOURL)
+	if err != nil {
+		return nil, fmt.Errorf("saml: parse SLO URL: %w", err)
+	}
+
+	idpMeta := &crewjamsaml.EntityDescriptor{
+		EntityID: in.IdP.EntityID,
+		IDPSSODescriptors: []crewjamsaml.IDPSSODescriptor{
+			{
+				SSODescriptor: crewjamsaml.SSODescriptor{
+					SingleLogoutServices: []crewjamsaml.Endpoint{
+						{
+							Binding:  crewjamsaml.HTTPPostBinding,
+							Location: in.IdP.SLOURL,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	sp := crewjamsaml.ServiceProvider{
+		EntityID:        p.EntityID,
+		SloURL:          *sloURL,
+		Key:             p.Key,
+		Certificate:     p.Cert,
+		IDPMetadata:     idpMeta,
+		SignatureMethod: dsig.RSASHA256SignatureMethod,
+	}
+
+	resp, err := sp.MakeLogoutResponse(in.IdP.SLOURL, in.InResponseTo)
+	if err != nil {
+		return nil, fmt.Errorf("saml: make logout response: %w", err)
+	}
+
+	return &LogoutResponseResult{
+		PostBody: resp.Post(""),
+	}, nil
+}
+
 // ValidateLogoutMessage validates an incoming SAML LogoutRequest or LogoutResponse.
 // It supports both HTTP-Redirect (deflate+base64) and HTTP-POST (base64) bindings.
 func (p *CrewjamProvider) ValidateLogoutMessage(_ context.Context, in ValidateLogoutInput) (*VerifiedLogout, error) {

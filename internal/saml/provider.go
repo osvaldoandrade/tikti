@@ -5,12 +5,13 @@ import (
 	"time"
 )
 
-// Provider abstracts the SAML protocol library. 6 methods, interface
+// Provider abstracts the SAML protocol library. 7 methods, interface
 // segregation keeps the dependency replaceable (DIP).
 type Provider interface {
 	BuildAuthnRequest(ctx context.Context, in BuildAuthnRequestInput) (*AuthnRequest, error)
 	ValidateResponse(ctx context.Context, in ValidateResponseInput) (*VerifiedAssertion, error)
 	BuildLogoutRequest(ctx context.Context, in BuildLogoutRequestInput) (*LogoutRequest, error)
+	BuildLogoutResponse(ctx context.Context, in BuildLogoutResponseInput) (*LogoutResponseResult, error)
 	ValidateLogoutMessage(ctx context.Context, in ValidateLogoutInput) (*VerifiedLogout, error)
 	SPMetadata(ctx context.Context) ([]byte, error)
 	ParseIdPMetadata(ctx context.Context, raw []byte) (*IdPRecord, error)
@@ -77,4 +78,16 @@ type VerifiedLogout struct {
 	SessionIndex string
 	IsResponse   bool
 	Status       string
+}
+
+// BuildLogoutResponseInput carries the parameters needed to build a
+// SAML LogoutResponse (IdP-initiated SLO acknowledgement).
+type BuildLogoutResponseInput struct {
+	IdP          IdPRecord
+	InResponseTo string
+}
+
+// LogoutResponseResult is the output of BuildLogoutResponse.
+type LogoutResponseResult struct {
+	PostBody []byte // HTML auto-submit form for HTTP-POST binding
 }
