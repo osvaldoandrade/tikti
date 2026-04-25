@@ -13,7 +13,6 @@ import (
 const (
 	usersHash    = "users_v2"
 	scanCount    = 500
-	emitInterval = 1000
 )
 
 // Counter records the number of user records processed during migration 0007.
@@ -30,7 +29,6 @@ var Counter = prometheus.NewCounterVec(
 // fields are absent, and emits Prometheus counters per 1000 records.
 func Run(ctx context.Context, rdb redis.Cmdable, m *prometheus.CounterVec) error {
 	var cursor uint64
-	var processed int
 
 	for {
 		keys, nextCursor, err := rdb.HScan(ctx, usersHash, cursor, "*", scanCount).Result()
@@ -51,10 +49,6 @@ func Run(ctx context.Context, rdb redis.Cmdable, m *prometheus.CounterVec) error
 
 			if u.AuthSource != "" {
 				m.WithLabelValues("skipped").Inc()
-				processed++
-				if processed%emitInterval == 0 {
-					// counter already incremented above
-				}
 				continue
 			}
 
@@ -73,7 +67,6 @@ func Run(ctx context.Context, rdb redis.Cmdable, m *prometheus.CounterVec) error
 			}
 
 			m.WithLabelValues("updated").Inc()
-			processed++
 		}
 
 		cursor = nextCursor
