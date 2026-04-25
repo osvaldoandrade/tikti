@@ -4,16 +4,6 @@ import (
 	"net/http"
 )
 
-// Handler exposes SAML HTTP endpoints.
-type Handler struct {
-	prov Provider
-}
-
-// NewHandler creates a Handler backed by the given Provider.
-func NewHandler(prov Provider) *Handler {
-	return &Handler{prov: prov}
-}
-
 // Metadata serves the SP metadata XML document.
 //
 //	GET /saml/metadata
