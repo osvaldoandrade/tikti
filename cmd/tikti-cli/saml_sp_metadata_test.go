@@ -10,8 +10,12 @@ import (
 )
 
 func newTestRoot() *cobra.Command {
+	var (
+		profileName string
+		outputJSON  bool
+	)
 	root := &cobra.Command{Use: "tikti"}
-	root.AddCommand(samlCmd())
+	root.AddCommand(samlCmd(&profileName, &outputJSON))
 	return root
 }
 
