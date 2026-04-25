@@ -34,12 +34,7 @@ func parseXML(raw []byte) (*etree.Document, error) {
 // containsXXE scans raw XML bytes for DOCTYPE or ENTITY declarations
 // (case-insensitive) that signal an XXE attack attempt.
 func containsXXE(raw []byte) bool {
-	upper := bytes.ToUpper(raw)
-	if bytes.Contains(upper, []byte("<!DOCTYPE")) {
-		return true
-	}
-	if bytes.Contains(upper, []byte("<!ENTITY")) {
-		return true
-	}
-	return false
+	lower := bytes.ToLower(raw)
+	return bytes.Contains(lower, []byte("<!doctype")) ||
+		bytes.Contains(lower, []byte("<!entity"))
 }
