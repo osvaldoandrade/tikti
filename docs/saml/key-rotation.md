@@ -1,7 +1,18 @@
-# SP Key Rotation
+# SP Key Rotation Runbook
 
 This document describes the 2-step SP signing key rotation procedure
 implemented by the `tikti saml sp rotate` CLI command (see HLD §13, App. D).
+
+> **Alert playbook:** This runbook is referenced by the
+> [SAML alert playbook](alert-playbook.md) for the
+> `SAMLSPCertExpiringSoon` alert.
+
+## Prerequisites
+
+- CLI binary `tikti` available on `$PATH`.
+- Network access to the Redis instance used by the SP.
+- Read/write access to the SP signing key and certificate files on disk.
+- Ability to restart the SP service (or trigger a rolling deployment).
 
 ## Overview
 
@@ -59,7 +70,93 @@ This command:
 3. Deletes the rotation state from Redis.
 
 After committing, replace `sp.key` / `sp.crt` with the `.new` files and
-restart the SP service.
+restart the SP service:
+
+```bash
+cp sp.key.new sp.key
+cp sp.crt.new sp.crt
+# restart the SP (e.g. kubectl rollout or systemctl)
+kubectl rollout restart deployment/tikti -n tikti
+```
+
+## Verification
+
+After each step, verify the SP metadata endpoint returns the expected
+number of certificates:
+
+```bash
+# after --prepare: expect 2 KeyDescriptor elements
+curl -s https://auth.example.com/saml/metadata | grep -c '<KeyDescriptor'
+# expected: 2
+
+# after --commit: expect 1 KeyDescriptor element
+curl -s https://auth.example.com/saml/metadata | grep -c '<KeyDescriptor'
+# expected: 1
+```
+
+Confirm SSO still works by performing a test login:
+
+```bash
+tikti saml test --tid <TENANT_ID> --email user@example.com
+```
+
+Monitor the `tikti_saml_sp_cert_expiry_seconds` gauge to confirm the new
+certificate's expiry is in the future:
+
+```bash
+curl -s http://localhost:9090/api/v1/query?query=tikti_saml_sp_cert_expiry_seconds
+```
+
+## Rollback
+
+### During Step 1 (after `--prepare`, before `--commit`)
+
+If something goes wrong after `--prepare` but before `--commit`, remove
+the rotation state from Redis and delete the generated `.new` files:
+
+```bash
+# Remove rotation state from Redis
+redis-cli -h <REDIS_HOST> DEL saml:sp:rotation
+
+# Remove the generated key pair
+rm -f sp.key.new sp.crt.new
+```
+
+Re-publish the original single-cert metadata:
+
+```bash
+tikti saml sp metadata \
+  --entity-id https://auth.example.com/saml \
+  --signing-key sp.key \
+  --signing-cert sp.crt \
+  --out metadata.xml
+```
+
+No service restart is required — the SP is still using the old key.
+
+### After Step 2 (after `--commit`)
+
+If SSO breaks after `--commit` because some IdPs have not yet refreshed
+their cached metadata, revert to the old key:
+
+```bash
+# Restore the old key and certificate from backup
+cp sp.key.bak sp.key
+cp sp.crt.bak sp.crt
+
+# Restart the SP to load the restored key
+kubectl rollout restart deployment/tikti -n tikti
+
+# Re-publish single-cert metadata with the old certificate
+tikti saml sp metadata \
+  --entity-id https://auth.example.com/saml \
+  --signing-key sp.key \
+  --signing-cert sp.crt \
+  --out metadata.xml
+```
+
+> **Tip:** Always back up `sp.key` and `sp.crt` before starting the
+> rotation: `cp sp.key sp.key.bak && cp sp.crt sp.crt.bak`.
 
 ## State Guard
 
