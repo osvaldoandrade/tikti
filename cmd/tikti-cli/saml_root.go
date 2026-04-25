@@ -190,36 +190,97 @@ func samlIdPRemoveCmd(profileName *string, outputJSON *bool) *cobra.Command {
 }
 
 func samlIdPListCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var tid string
+	var redisAddr string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List registered IdPs",
-		RunE:  stubRunE("saml idp list", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, cleanup, err := newRedisStore(redisAddr)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			records, err := listIdPs(cmd.Context(), store)
+			if err != nil {
+				return &cliError{msg: err.Error(), exit: 1}
+			}
+
+			w := newSAMLWriter(outputJSON)
+			if w.isJSON {
+				return w.writeJSON(records)
+			}
+			return w.writeText(formatIdPTable(records))
+		},
 	}
-	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID (optional, lists all if omitted)")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis address (default: REDIS_ADDR env or localhost:6379)")
 	return cmd
 }
 
 func samlIdPShowCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var tid string
+	var (
+		tid       string
+		redisAddr string
+	)
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show details of a single IdP",
-		RunE:  stubRunE("saml idp show", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, cleanup, err := newRedisStore(redisAddr)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			result, err := showIdP(cmd.Context(), store, tid)
+			if err != nil {
+				return &cliError{msg: err.Error(), exit: 1}
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.writeJSON(result)
+		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis address (default: REDIS_ADDR env or localhost:6379)")
 	_ = cmd.MarkFlagRequired("tid")
 	return cmd
 }
 
 func samlIdPFetchCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var tid string
+	var (
+		tid         string
+		metadataURL string
+		redisAddr   string
+	)
 	cmd := &cobra.Command{
 		Use:   "fetch",
 		Short: "Force metadata refresh for an IdP",
-		RunE:  stubRunE("saml idp fetch", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, cleanup, err := newRedisStore(redisAddr)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			opts := fetchIdPOptions{
+				TID:         tid,
+				MetadataURL: metadataURL,
+				HTTPClient:  defaultHTTPGetter{},
+			}
+
+			rec, err := fetchIdPRefresh(cmd.Context(), store, opts)
+			if err != nil {
+				return &cliError{msg: err.Error(), exit: 1}
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.writeJSON(idpRecordToMap(*rec))
+		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")
+	cmd.Flags().StringVar(&metadataURL, "metadata-url", "", "Override metadata URL (uses stored URL if omitted)")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis address (default: REDIS_ADDR env or localhost:6379)")
 	_ = cmd.MarkFlagRequired("tid")
 	return cmd
 }

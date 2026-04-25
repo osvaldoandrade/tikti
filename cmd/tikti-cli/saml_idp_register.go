@@ -9,9 +9,6 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/spf13/cobra"
-
 	"github.com/osvaldoandrade/tikti/internal/saml"
 )
 
@@ -67,6 +64,7 @@ func registerIdP(ctx context.Context, store saml.Store, opts registerIdPOptions)
 		return nil, err
 	}
 	rec.TenantID = opts.TID
+	rec.MetadataURL = opts.MetadataURL
 
 	// Apply optional attribute map.
 	if opts.AttrMapFile != "" {
@@ -102,64 +100,4 @@ func fetchMetadata(client httpGetter, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// samlCmd returns the top-level "saml" command with its sub-tree.
-func samlCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	cmd := &cobra.Command{Use: "saml", Short: "SAML operations"}
 
-	idpCmd := &cobra.Command{Use: "idp", Short: "IdP operations"}
-
-	var tid, metadataURL, metadataFile, attrMapFile, redisAddr string
-
-	register := &cobra.Command{
-		Use:   "register",
-		Short: "Register an IdP for a tenant",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if redisAddr == "" {
-				redisAddr = os.Getenv("REDIS_ADDR")
-			}
-			if redisAddr == "" {
-				redisAddr = "localhost:6379"
-			}
-
-			rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
-			defer rdb.Close()
-			store := saml.NewRedisStore(rdb)
-
-			opts := registerIdPOptions{
-				TID:          tid,
-				MetadataURL:  metadataURL,
-				MetadataFile: metadataFile,
-				AttrMapFile:  attrMapFile,
-				HTTPClient:   http.DefaultClient,
-			}
-
-			rec, err := registerIdP(context.Background(), store, opts)
-			if err != nil {
-				return err
-			}
-
-			report := map[string]any{
-				"tenant_id":   rec.TenantID,
-				"entity_id":   rec.EntityID,
-				"sso_url":     rec.SSOURL,
-				"slo_url":     rec.SLOURL,
-				"name_id_fmt": rec.NameIDFormat,
-				"num_signing_certs":    len(rec.SigningCerts),
-				"num_encryption_certs": len(rec.EncryptionCerts),
-				"attribute_map":        rec.AttributeMap,
-				"last_fetched":         rec.LastFetched,
-			}
-			return printResult(*outputJSON, report)
-		},
-	}
-
-	register.Flags().StringVar(&tid, "tid", "", "Tenant ID (required)")
-	register.Flags().StringVar(&metadataURL, "metadata-url", "", "IdP metadata URL")
-	register.Flags().StringVar(&metadataFile, "metadata-file", "", "IdP metadata file path")
-	register.Flags().StringVar(&attrMapFile, "attr-map", "", "Attribute map JSON file")
-	register.Flags().StringVar(&redisAddr, "redis", "", "Redis address (default: REDIS_ADDR env or localhost:6379)")
-
-	idpCmd.AddCommand(register)
-	cmd.AddCommand(idpCmd)
-	return cmd
-}
