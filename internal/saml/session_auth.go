@@ -43,6 +43,8 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 		return "", fmt.Errorf("session bridge: upsert: %w", err)
 	}
 
+	// Set the tenant ID on the in-memory copy (returned by value from
+	// UpsertFromSAML) so the idToken includes the correct tid claim.
 	tid := in.TenantID
 	if tid != "" {
 		u.CompanyId = &tid

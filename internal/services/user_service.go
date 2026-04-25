@@ -125,7 +125,7 @@ func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain
 	if e := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(req.Password)); e != nil {
 		return nil, domain.ErrInvalidCreds
 	}
-	signed, expiresIn, e2 := s.issueIDToken(u)
+	signed, expiresIn, e2 := s.issueIDToken(u, nil)
 	if e2 != nil {
 		return nil, e2
 	}
@@ -161,7 +161,7 @@ func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWi
 		return nil, domain.ErrInvalidCreds
 	}
 
-	signed, expiresIn, tokenErr := s.issueIDToken(u)
+	signed, expiresIn, tokenErr := s.issueIDToken(u, nil)
 	if tokenErr != nil {
 		return nil, tokenErr
 	}
@@ -850,7 +850,7 @@ func (s *userService) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 	return s.repo.GetAllUsers(ctx)
 }
 
-func (s *userService) issueIDToken(u *domain.User, amr ...[]string) (string, int, error) {
+func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, error) {
 	if u == nil {
 		return "", 0, domain.ErrInvalidArgument
 	}
@@ -869,8 +869,8 @@ func (s *userService) issueIDToken(u *domain.User, amr ...[]string) (string, int
 			claims["tid"] = tid
 		}
 	}
-	if len(amr) > 0 && len(amr[0]) > 0 {
-		claims["amr"] = amr[0]
+	if len(amr) > 0 {
+		claims["amr"] = amr
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := tok.SignedString([]byte(s.jwtSecret))
