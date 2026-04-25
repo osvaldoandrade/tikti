@@ -931,6 +931,9 @@ func TestACS_ProtocolRelativeRelayState_FallsBackToPostLoginURL(t *testing.T) {
 	resp := w.Result()
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
 	loc := resp.Header.Get("Location")
 	if loc != "/dashboard" {
 		t.Errorf("Location = %q, want %q (PostLoginURL fallback for //)", loc, "/dashboard")
