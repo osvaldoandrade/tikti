@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tikti/audit/saml.assertion.v1.json",
+  "title": "saml.assertion",
+  "type": "object",
+  "required": ["event","schemaVersion","ts","tid","decision"],
+  "properties": {
+    "event":         {"const": "saml.assertion"},
+    "schemaVersion": {"const": 1},
+    "ts":            {"type":"string","format":"date-time"},
+    "tid":           {"type":"string","minLength":1,"maxLength":64},
+    "requestID":     {"type":"string","pattern":"^_[0-9a-f]{40}$"},
+    "assertionID":   {"type":"string"},
+    "nameID":        {"type":"string"},
+    "nameIDFormat":  {"type":"string"},
+    "issuer":        {"type":"string","format":"uri"},
+    "audience":      {"type":"string","format":"uri"},
+    "decision":      {"enum":["accept","reject"]},
+    "reason":        {"enum": [
+      "ok","request_not_found","request_replay","destination_mismatch",
+      "status_not_success","signature_invalid","decrypt_failed",
+      "assertion_signature_invalid","issuer_mismatch","audience_mismatch",
+      "clock_skew","subject_confirmation_mismatch","missing_attribute",
+      "tid_unknown","idp_metadata_stale","algorithm_disallowed",
+      "xxe_detected","signature_wrapping_detected","internal_error"
+    ]},
+    "attrHash":      {"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "durationMs":    {"type":"integer","minimum":0},
+    "replicaID":     {"type":"string"},
+    "buildSHA":      {"type":"string","pattern":"^[0-9a-f]{7,40}$"}
+  },
+  "additionalProperties": false
+}
