@@ -255,7 +255,7 @@ func TestLogin_UnknownTenant_404(t *testing.T) {
 	}
 
 	body := rr.Body.String()
-	if !strings.Contains(body, string(ReasonTIDUnknown)) {
-		t.Errorf("body = %q, want to contain %q", body, ReasonTIDUnknown)
+	if strings.Contains(body, string(ReasonTIDUnknown)) {
+		t.Errorf("body leaks reason %q", ReasonTIDUnknown)
 	}
 }

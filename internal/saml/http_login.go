@@ -61,12 +61,6 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authn.RedirectURL, http.StatusFound)
 }
 
-// renderError writes a plain-text error response for the given reason and
-// HTTP status code.
-func (h *Handler) renderError(w http.ResponseWriter, _ *http.Request, reason Reason, code int) {
-	http.Error(w, string(reason), code)
-}
-
 // hexRandom returns a hex-encoded string of n random bytes (2n hex chars).
 func hexRandom(n int) string {
 	b := make([]byte, n)
