@@ -87,36 +87,6 @@ func bucketToStatus(b ErrorBucket) int {
 	}
 }
 
-// setIDTokenCookie writes the idToken as an HTTP cookie per HLD App. A.9.
-func (h *Handler) setIDTokenCookie(w http.ResponseWriter, idt string) {
-	c := &http.Cookie{
-		Name:     h.cfg.ACS.CookieName,
-		Value:    idt,
-		Path:     "/",
-		Domain:   h.cfg.ACS.CookieDomain,
-		Secure:   h.cfg.ACS.CookieSecure,
-		HttpOnly: h.cfg.ACS.CookieHTTPOnly,
-		SameSite: parseSameSite(h.cfg.ACS.CookieSameSite),
-		MaxAge:   h.cfg.ACS.SessionTTL,
-	}
-	http.SetCookie(w, c)
-}
-
-// parseSameSite converts a string cookie SameSite value to http.SameSite.
-// Unrecognized or empty values return http.SameSiteDefaultMode.
-func parseSameSite(s string) http.SameSite {
-	switch strings.ToLower(s) {
-	case "strict":
-		return http.SameSiteStrictMode
-	case "lax":
-		return http.SameSiteLaxMode
-	case "none":
-		return http.SameSiteNoneMode
-	default:
-		return http.SameSiteDefaultMode
-	}
-}
-
 // firstAttr returns the first value of the named attribute from a
 // VerifiedAssertion, or "" if absent.
 func firstAttr(va *VerifiedAssertion, name string) string {
