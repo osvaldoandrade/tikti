@@ -210,13 +210,18 @@ func samlIdPRemoveCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			}
 
 			// Best-effort flush of pending requests tied to the tenant.
-			flushed, _ := flushTenantRequests(ctx, rdb, tid)
+			flushed, flushErr := flushTenantRequests(ctx, rdb, tid)
 
-			return printResult(*outputJSON, map[string]any{
+			result := map[string]any{
 				"tenant_id":        tid,
 				"status":           "removed",
 				"requests_flushed": flushed,
-			})
+			}
+			if flushErr != nil {
+				result["flush_warning"] = flushErr.Error()
+			}
+
+			return printResult(*outputJSON, result)
 		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")

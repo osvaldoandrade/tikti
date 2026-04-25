@@ -58,8 +58,9 @@ func flushTenantRequests(ctx context.Context, rdb *redis.Client, tid string) (in
 				continue
 			}
 			if rec.TenantID == tid {
-				rdb.Del(ctx, key)
-				deleted++
+				if err := rdb.Del(ctx, key).Err(); err == nil {
+					deleted++
+				}
 			}
 		}
 		cursor = next
