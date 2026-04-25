@@ -195,12 +195,10 @@ func pickSSOURL(services []singleSignOnService) (string, error) {
 		}
 		return s.Location, nil
 	}
-	// If we get here, check if there are services with unsupported bindings
-	// vs. no services at all.
-	for _, s := range services {
-		if !supportedBindings[s.Binding] {
-			return "", fmt.Errorf("%w: %s", ErrMetadataUnsupportedBind, s.Binding)
-		}
+	// No supported binding found. If services exist they all had unsupported
+	// bindings; otherwise the element is missing entirely.
+	if len(services) > 0 {
+		return "", fmt.Errorf("%w: %s", ErrMetadataUnsupportedBind, services[0].Binding)
 	}
 	return "", fmt.Errorf("%w: no SingleSignOnService element", ErrMetadataMalformedXML)
 }
