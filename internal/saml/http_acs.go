@@ -35,10 +35,7 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Clear the state cookie.
-	http.SetCookie(w, &http.Cookie{
-		Name: "tikti_saml_state", Path: "/saml", MaxAge: -1,
-		Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
-	})
+	h.clearStateCookie(w)
 
 	// 2. Look up IdP trust material.
 	idp, err := h.store.GetIdP(ctx, req.TenantID)

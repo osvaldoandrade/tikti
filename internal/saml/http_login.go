@@ -55,15 +55,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// State cookie — SameSite=None so the IdP POST-back carries it.
-	http.SetCookie(w, &http.Cookie{
-		Name:     "tikti_saml_state",
-		Value:    reqID,
-		Path:     "/saml",
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteNoneMode,
-		MaxAge:   int(h.cfg.SP.RequestTTL.Seconds()),
-	})
+	h.setStateCookie(w, reqID, h.cfg.SP.RequestTTL)
 
 	h.metrics.AuthnRequests.WithLabelValues(tid).Inc()
 	http.Redirect(w, r, authn.RedirectURL, http.StatusFound)
