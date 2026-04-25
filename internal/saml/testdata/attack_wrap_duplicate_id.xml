@@ -1,0 +1,13 @@
+<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol" ID="_resp1" Version="2.0">
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_dup">
+    <Issuer>https://idp.example.com</Issuer>
+    <Subject><NameID>legit@example.com</NameID></Subject>
+  </Assertion>
+  <!-- Duplicate ID: attacker injects an element with the same ID -->
+  <Wrapper>
+    <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_dup">
+      <Issuer>https://idp.example.com</Issuer>
+      <Subject><NameID>attacker@evil.com</NameID></Subject>
+    </Assertion>
+  </Wrapper>
+</Response>

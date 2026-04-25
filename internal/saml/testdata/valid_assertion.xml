@@ -1,0 +1,11 @@
+<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol" ID="_resp1" Version="2.0">
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a1">
+    <Issuer>https://idp.example.com</Issuer>
+    <Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
+      <SignedInfo>
+        <Reference URI="#_a1"/>
+      </SignedInfo>
+    </Signature>
+    <Subject><NameID>user@example.com</NameID></Subject>
+  </Assertion>
+</Response>

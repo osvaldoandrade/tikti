@@ -1,0 +1,11 @@
+<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol" ID="_resp1" Version="2.0">
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a1">
+    <Issuer>https://idp.example.com</Issuer>
+    <Subject><NameID>legit@example.com</NameID></Subject>
+  </Assertion>
+  <!-- Unsigned sibling assertion injected by attacker -->
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a2">
+    <Issuer>https://idp.example.com</Issuer>
+    <Subject><NameID>attacker@evil.com</NameID></Subject>
+  </Assertion>
+</Response>

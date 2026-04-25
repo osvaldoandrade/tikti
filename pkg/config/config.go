@@ -52,6 +52,7 @@ type SPConfig struct {
 	AllowedSigAlgs            []string      `yaml:"allowedSigAlgs"`
 	AllowedDigestAlgs         []string      `yaml:"allowedDigestAlgs"`
 	Canonicalization          string        `yaml:"canonicalization"`
+	WatchFile                 bool          `yaml:"watchFile"`
 	RequireAssertionSigned    bool          `yaml:"requireAssertionSigned"`
 	RequireEncryptedAssertion bool          `yaml:"requireEncryptedAssertion"`
 }
