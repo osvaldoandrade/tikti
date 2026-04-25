@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/spf13/cobra"
 )
@@ -178,13 +180,48 @@ func samlIdPUpdateCmd(profileName *string, outputJSON *bool) *cobra.Command {
 }
 
 func samlIdPRemoveCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var tid string
+	var (
+		tid       string
+		yes       bool
+		redisAddr string
+	)
 	cmd := &cobra.Command{
 		Use:   "remove",
 		Short: "Remove an IdP registration",
-		RunE:  stubRunE("saml idp remove", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !confirmRemove(tid, yes) {
+				return &cliError{msg: "aborted", exit: 1}
+			}
+
+			if redisAddr == "" {
+				redisAddr = os.Getenv("REDIS_ADDR")
+			}
+			if redisAddr == "" {
+				redisAddr = "localhost:6379"
+			}
+
+			rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+			defer rdb.Close()
+			store := saml.NewRedisStore(rdb)
+
+			ctx := context.Background()
+			if err := removeIdP(ctx, store, tid); err != nil {
+				return err
+			}
+
+			// Best-effort flush of pending requests tied to the tenant.
+			flushed, _ := flushTenantRequests(ctx, rdb, tid)
+
+			return printResult(*outputJSON, map[string]any{
+				"tenant_id":        tid,
+				"status":           "removed",
+				"requests_flushed": flushed,
+			})
+		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation prompt")
+	cmd.Flags().StringVar(&redisAddr, "redis", "", "Redis address (default: REDIS_ADDR env or localhost:6379)")
 	_ = cmd.MarkFlagRequired("tid")
 	return cmd
 }

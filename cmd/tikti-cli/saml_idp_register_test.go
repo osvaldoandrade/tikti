@@ -44,7 +44,10 @@ func (m *memStore) ConsumeRequest(_ context.Context, _ string) (saml.RequestReco
 	return saml.RequestRecord{}, false, nil
 }
 func (m *memStore) ListIdPs(_ context.Context) ([]saml.IdPRecord, error)  { return nil, nil }
-func (m *memStore) DeleteIdP(_ context.Context, _ string) error           { return nil }
+func (m *memStore) DeleteIdP(_ context.Context, tid string) error {
+	delete(m.idps, tid)
+	return nil
+}
 func (m *memStore) PutIndex(_ context.Context, _ string, _ saml.IndexRecord) error {
 	return nil
 }
