@@ -88,7 +88,7 @@ func subjectFromToken(token, secret string) (string, error) {
 func hexRandom(n int) string {
 	buf := make([]byte, n)
 	if _, err := rand.Read(buf); err != nil {
-		panic("saml: rand.Read failed: " + err.Error())
+		panic("saml: crypto/rand read failed (system entropy issue?): " + err.Error())
 	}
 	return hex.EncodeToString(buf)
 }
