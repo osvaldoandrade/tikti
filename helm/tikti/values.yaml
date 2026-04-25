@@ -79,42 +79,42 @@ saml:
   sp:
     key: ""  # PEM PKCS#8 private key; inject via --set-file or existingSecret
     crt: ""  # PEM X.509 certificate; inject via --set-file or existingSecret
-    # entityID: "https://sp.example.com/saml"
-    # acsURL: "https://sp.example.com/saml/acs"
-    # sloURL: "https://sp.example.com/saml/slo"
-    # signingKeyPath: "/etc/tikti/saml/sp.key"
-    # signingCertPath: "/etc/tikti/saml/sp.crt"
-    # encryptionKeyPath: "/etc/tikti/saml/sp.key"
-    # encryptionCertPath: "/etc/tikti/saml/sp.crt"
-    # keyBits: 2048
-    # clockSkewSeconds: 120
-    # requestTTLSeconds: 300
-    # allowedSigAlgs: ["rsa-sha256"]
-    # allowedDigestAlgs: ["sha256"]
-    # canonicalization: "xml-exc-c14n"
-    # requireAssertionSigned: true
-    # requireEncryptedAssertion: false
-  # acs:
-  #   postLoginURL: "/dashboard"
-  #   deliveryMode: "cookie"          # cookie | fragment | form-post
-  #   cookieName: "tikti_idt"
-  #   cookieSameSite: "Lax"
-  #   cookieSecure: true
-  #   cookieHTTPOnly: true
-  #   sessionTTL: 3600
-  # idp:
-  #   metadataURL: "https://idp.example.com/metadata"
-  #   refreshIntervalHours: 24
-  #   backgroundRefresh: true
-  #   trustedCertPaths:
-  #     - /etc/tikti/saml/idp-ca.pem
-  #   skipSignatureCheck: false
-  # discover:
-  #   enabled: true
-  #   protocolType: "SAML2Redirect"
-  #   serviceURL: "https://sp.example.com/discovery"
-  #   emailDomainIndexKey: "saml:discover:domain"
-  # metrics:
-  #   enabled: true
-  #   namespace: "tikti"
-  #   subsystem: "saml"
+    entityID: ""
+    acsURL: ""
+    sloURL: ""
+    signingKeyPath: /etc/tikti/saml/sp.key
+    signingCertPath: /etc/tikti/saml/sp.crt
+    encryptionKeyPath: ""
+    encryptionCertPath: ""
+    keyBits: 2048
+    clockSkewSeconds: 120
+    requestTTLSeconds: 300
+    allowedSigAlgs:
+      - rsa-sha256
+    allowedDigestAlgs:
+      - sha256
+    canonicalization: "xml-exc-c14n"
+    requireAssertionSigned: true
+    requireEncryptedAssertion: false
+  acs:
+    postLoginURL: /dashboard
+    deliveryMode: cookie
+    cookieName: tikti_idt
+    cookieDomain: ""
+    cookieSameSite: Lax
+    cookieSecure: true
+    cookieHTTPOnly: true
+    sessionTTL: 3600
+  idp:
+    metadataURL: ""
+    metadataPath: ""
+    refreshIntervalHours: 24
+    trustedCertPaths: []
+    skipSignatureCheck: false
+  discover:
+    enabled: false
+    protocolType: ""
+    serviceURL: ""
+  metrics:
+    enabled: true
+    namespace: tikti
