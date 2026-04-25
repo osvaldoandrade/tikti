@@ -48,7 +48,13 @@ func (m *memStore) PutRequest(_ context.Context, _ saml.RequestRecord) error { r
 func (m *memStore) ConsumeRequest(_ context.Context, _ string) (saml.RequestRecord, bool, error) {
 	return saml.RequestRecord{}, false, nil
 }
-func (m *memStore) ListIdPs(_ context.Context) ([]saml.IdPRecord, error)  { return nil, nil }
+func (m *memStore) ListIdPs(_ context.Context) ([]saml.IdPRecord, error) {
+	records := make([]saml.IdPRecord, 0, len(m.idps))
+	for _, rec := range m.idps {
+		records = append(records, rec)
+	}
+	return records, nil
+}
 func (m *memStore) DeleteIdP(_ context.Context, _ string) error           { return nil }
 func (m *memStore) PutIndex(_ context.Context, _ string, _ saml.IndexRecord) error {
 	return nil

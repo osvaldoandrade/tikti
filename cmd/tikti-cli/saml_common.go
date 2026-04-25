@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/spf13/cobra"
+
+	"github.com/osvaldoandrade/tikti/internal/saml"
 )
 
 // samlWriter wraps an io.Writer and output format for SAML subcommands.
@@ -60,4 +64,28 @@ func stubRunE(name string, jsonOut *bool) func(*cobra.Command, []string) error {
 			"status":  "not yet implemented",
 		})
 	}
+}
+
+// newRedisStore creates a Redis-backed SAML store. It resolves the address
+// from the flag, REDIS_ADDR env, or falls back to localhost:6379. The
+// returned cleanup function closes the Redis client.
+func newRedisStore(addr string) (saml.Store, func(), error) {
+	if addr == "" {
+		addr = os.Getenv("REDIS_ADDR")
+	}
+	if addr == "" {
+		addr = "localhost:6379"
+	}
+	rdb := redis.NewClient(&redis.Options{Addr: addr})
+	store := saml.NewRedisStore(rdb)
+	cleanup := func() { rdb.Close() }
+	return store, cleanup, nil
+}
+
+// defaultHTTPGetter wraps http.DefaultClient to satisfy the httpGetter
+// interface used by fetchMetadata.
+type defaultHTTPGetter struct{}
+
+func (defaultHTTPGetter) Get(url string) (*http.Response, error) {
+	return http.Get(url) //nolint:gosec // URL is admin-supplied
 }

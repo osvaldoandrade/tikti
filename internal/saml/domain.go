@@ -12,6 +12,7 @@ type IdPRecord struct {
 	EncryptionCerts [][]byte            `msgpack:"encryption_certs"`
 	NameIDFormat    string              `msgpack:"name_id_format"`
 	AttributeMap    map[string][]string `msgpack:"attribute_map"`
+	MetadataURL     string              `msgpack:"metadata_url"`
 	LastFetched     time.Time           `msgpack:"last_fetched"`
 }
 
