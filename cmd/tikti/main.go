@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/osvaldoandrade/tikti/internal/app"
+	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 )
 
@@ -20,6 +22,21 @@ func main() {
 	cfg, err := config.LoadConfig(*configFile)
 	if err != nil {
 		log.Fatalf("failed to load config: %v", err)
+	}
+
+	// Wire SAML KeyHolder if SAML is enabled.
+	if cfg.SAML.Enabled {
+		if err := cfg.SAML.Validate(); err != nil {
+			log.Fatalf("saml config invalid: %v", err)
+		}
+		kh := saml.NewKeyHolder(saml.KeyHolderConfig{
+			WatchFile: cfg.SAML.SP.WatchFile,
+		})
+		if err := kh.LoadKey(cfg.SAML.SP.SigningKeyPath, cfg.SAML.SP.SigningCertPath); err != nil {
+			log.Fatalf("saml: load SP key: %v", err)
+		}
+		ctx := context.Background()
+		kh.Start(ctx, cfg.SAML.SP.SigningKeyPath, cfg.SAML.SP.SigningCertPath)
 	}
 
 	application, err := app.NewApplication(cfg)
