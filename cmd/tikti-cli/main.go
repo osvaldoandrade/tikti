@@ -82,6 +82,7 @@ func main() {
 	root.AddCommand(clientCmd(&profileName, &outputJSON))
 	root.AddCommand(revokeCmd(&profileName, &outputJSON))
 	root.AddCommand(jwksCmd(&profileName, &outputJSON))
+	root.AddCommand(samlCmd(&profileName, &outputJSON))
 
 	if err := root.Execute(); err != nil {
 		var ce *cliError
