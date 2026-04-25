@@ -82,7 +82,7 @@ func main() {
 	root.AddCommand(clientCmd(&profileName, &outputJSON))
 	root.AddCommand(revokeCmd(&profileName, &outputJSON))
 	root.AddCommand(jwksCmd(&profileName, &outputJSON))
-	root.AddCommand(samlCmd(&outputJSON))
+	root.AddCommand(samlCmd(&profileName, &outputJSON))
 
 	if err := root.Execute(); err != nil {
 		var ce *cliError
@@ -831,7 +831,16 @@ func apiKeyCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	return cmd
 }
 
+// loadProfileFunc is the profile-loader used by CLI commands. It is a
+// package-level variable so that tests can inject a stub without touching
+// the config file system.
+var loadProfileFunc = loadProfileDefault
+
 func loadProfile(name string) (*profileEntry, error) {
+	return loadProfileFunc(name)
+}
+
+func loadProfileDefault(name string) (*profileEntry, error) {
 	cfg, _, err := loadConfig()
 	if err != nil {
 		return nil, err

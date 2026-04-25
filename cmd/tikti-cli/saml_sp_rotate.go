@@ -30,30 +30,10 @@ type rotationState struct {
 	PreparedAt time.Time `msgpack:"prepared_at"`
 }
 
-// samlCmd is the top-level `saml` command group.
-func samlCmd(outputJSON *bool) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "saml",
-		Short: "SAML administration commands",
-	}
-	cmd.AddCommand(spCmd(outputJSON))
-	return cmd
-}
-
-// spCmd is the `saml sp` command group.
-func spCmd(outputJSON *bool) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "sp",
-		Short: "SP key and metadata operations",
-	}
-	cmd.AddCommand(spRotateCmd(outputJSON))
-	return cmd
-}
-
-// spRotateCmd builds the `saml sp rotate` CLI sub-command tree.
+// samlSPRotateCmd builds the `saml sp rotate` CLI sub-command tree.
 // It requires --redis-addr, --signing-key, --signing-cert, and the SP
 // metadata parameters (--entity-id, --acs-url, --slo-url).
-func spRotateCmd(outputJSON *bool) *cobra.Command {
+func samlSPRotateCmd(_ *string, outputJSON *bool) *cobra.Command {
 	var (
 		redisAddr  string
 		keyPath    string
