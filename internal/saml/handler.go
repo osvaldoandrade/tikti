@@ -1,94 +1,127 @@
 package saml
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-	"errors"
+	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 )
 
-// Deps bundles all external dependencies for the SAML Handler.
+// Deps groups all dependencies needed to construct a Handler.
 type Deps struct {
-	Provider  Provider
-	Store     Store
-	Bridge    SessionBridge
-	Clock     Clock
-	Cfg       config.SAMLConfig
-	Metrics   *Metrics
-	Audit     Emitter
-	JwtSecret string
+	Provider Provider
+	Store    Store
+	Bridge   SessionBridge
+	Clock    Clock
+	Cfg      config.SAMLConfig
+	Metrics  *Metrics
+	Audit    Emitter
 }
 
-// Handler serves the SAML HTTP endpoints.
+// Handler implements the SAML HTTP handlers (ACS, Login, Metadata, etc.).
 type Handler struct {
-	prov      Provider
-	store     Store
-	bridge    SessionBridge
-	clock     Clock
-	cfg       config.SAMLConfig
-	metrics   *Metrics
-	audit     Emitter
-	jwtSecret string
+	prov    Provider
+	store   Store
+	bridge  SessionBridge
+	clock   Clock
+	cfg     config.SAMLConfig
+	metrics *Metrics
+	audit   Emitter
 }
 
-// NewHandler returns a Handler wired with the given dependencies.
+// NewHandler constructs a Handler from its dependencies.
 func NewHandler(d Deps) *Handler {
 	return &Handler{
-		prov:      d.Provider,
-		store:     d.Store,
-		bridge:    d.Bridge,
-		clock:     d.Clock,
-		cfg:       d.Cfg,
-		metrics:   d.Metrics,
-		audit:     d.Audit,
-		jwtSecret: d.JwtSecret,
+		prov:    d.Provider,
+		store:   d.Store,
+		bridge:  d.Bridge,
+		clock:   d.Clock,
+		cfg:     d.Cfg,
+		metrics: d.Metrics,
+		audit:   d.Audit,
 	}
 }
 
-// renderError writes a neutral error page. The bucket and HTTP status are
-// derived from the Reason per HLD Appendix Q.
-func (h *Handler) renderError(w http.ResponseWriter, _ *http.Request, _ Reason, status int) {
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+// ctxKeyType is an unexported type used for context keys to avoid collisions.
+type ctxKeyType int
+
+const ctxKeyT0 ctxKeyType = iota
+
+// reject writes an error response for a failed ACS request. It records
+// metrics and emits an audit record. The start time t0 must have been
+// stored in the request context via context.WithValue.
+func (h *Handler) reject(w http.ResponseWriter, r *http.Request, tid string, reason Reason) {
+	t0, _ := r.Context().Value(ctxKeyT0).(time.Time)
+	dur := h.clock.Since(t0)
+
+	if tid != "" {
+		h.metrics.Responses.WithLabelValues(tid, "reject").Inc()
+		h.metrics.ValidationFailures.WithLabelValues(tid, string(reason)).Inc()
+	}
+	_ = h.audit.Emit(r.Context(), NewRejectRecord(tid, "", reason, dur))
+
+	status := bucketToStatus(reason.Bucket())
 	http.Error(w, http.StatusText(status), status)
 }
 
-// subjectFromToken parses an HS256 idToken and returns the "sub" claim.
-func subjectFromToken(token, secret string) (string, error) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return "", errors.New("saml: empty token")
+// bucketToStatus maps an ErrorBucket to the corresponding HTTP status code.
+func bucketToStatus(b ErrorBucket) int {
+	switch b {
+	case BucketBadRequest:
+		return http.StatusBadRequest
+	case BucketForbidden:
+		return http.StatusForbidden
+	case BucketNotConfigured:
+		return http.StatusNotFound
+	case BucketInternal:
+		return http.StatusInternalServerError
+	default:
+		return http.StatusInternalServerError
 	}
-	if secret == "" {
-		secret = "supersecret"
-	}
-	parsed, err := jwt.Parse(token, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("saml: unexpected signing method")
-		}
-		return []byte(secret), nil
-	})
-	if err != nil || !parsed.Valid {
-		return "", errors.New("saml: invalid token")
-	}
-	claims, ok := parsed.Claims.(jwt.MapClaims)
-	if !ok {
-		return "", errors.New("saml: invalid claims")
-	}
-	sub, _ := claims["sub"].(string)
-	if sub == "" {
-		return "", errors.New("saml: no subject in token")
-	}
-	return sub, nil
 }
 
-// hexRandom returns n random bytes encoded as a hex string.
-func hexRandom(n int) string {
-	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		panic("saml: crypto/rand read failed (system entropy issue?): " + err.Error())
+// firstAttr returns the first value of the named attribute from a
+// VerifiedAssertion, or "" if absent.
+func firstAttr(va *VerifiedAssertion, name string) string {
+	if vals, ok := va.Attributes[name]; ok && len(vals) > 0 {
+		return vals[0]
 	}
-	return hex.EncodeToString(buf)
+	return ""
+}
+
+// allAttrs returns all values of the named attribute from a
+// VerifiedAssertion, or nil if absent.
+func allAttrs(va *VerifiedAssertion, name string) []string {
+	if vals, ok := va.Attributes[name]; ok {
+		return vals
+	}
+	return nil
+}
+
+// subjectFromToken extracts the "sub" claim from a JWT token string
+// by decoding the payload (second segment). It does not verify the
+// signature because the token was just issued by the local bridge.
+func subjectFromToken(token string) string {
+	parts := strings.SplitN(token, ".", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Sub
 }

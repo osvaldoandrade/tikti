@@ -2,6 +2,8 @@ package saml
 
 import (
 	"net/http"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // Logout initiates SP-initiated Single Logout (SLO).
@@ -13,21 +15,17 @@ import (
 // is received (P3.5).
 func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	tid := r.PathValue("tid")
+	tid := chi.URLParam(r, "tid")
 
 	// 1. Read idToken cookie → subject → saml:idx:{nameID}.
-	cookieName := h.cfg.ACS.CookieName
-	if cookieName == "" {
-		cookieName = "tikti_id"
-	}
-	ck, err := r.Cookie(cookieName)
+	ck, err := r.Cookie(h.cfg.ACS.CookieName)
 	if err != nil {
 		h.renderError(w, r, ReasonRequestNotFound, http.StatusBadRequest)
 		return
 	}
 
-	nameID, err := subjectFromToken(ck.Value, h.jwtSecret)
-	if err != nil {
+	nameID := subjectFromToken(ck.Value)
+	if nameID == "" {
 		h.renderError(w, r, ReasonRequestNotFound, http.StatusBadRequest)
 		return
 	}

@@ -2,13 +2,15 @@ package saml
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
+	"github.com/go-chi/chi/v5"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -17,38 +19,42 @@ import (
 // Test helpers — stubs
 // ---------------------------------------------------------------------------
 
-// testProvider stubs Provider for handler tests.
-type testProvider struct {
+// logoutTestProvider stubs Provider for logout handler tests.
+type logoutTestProvider struct {
 	logoutResult *LogoutRequest
 	logoutErr    error
 }
 
-func (p *testProvider) BuildAuthnRequest(_ context.Context, _ BuildAuthnRequestInput) (*AuthnRequest, error) {
+func (p *logoutTestProvider) BuildAuthnRequest(_ context.Context, _ BuildAuthnRequestInput) (*AuthnRequest, error) {
 	return nil, nil
 }
 
-func (p *testProvider) ValidateResponse(_ context.Context, _ ValidateResponseInput) (*VerifiedAssertion, error) {
+func (p *logoutTestProvider) ValidateResponse(_ context.Context, _ ValidateResponseInput) (*VerifiedAssertion, error) {
 	return nil, nil
 }
 
-func (p *testProvider) BuildLogoutRequest(_ context.Context, _ BuildLogoutRequestInput) (*LogoutRequest, error) {
+func (p *logoutTestProvider) BuildLogoutRequest(_ context.Context, _ BuildLogoutRequestInput) (*LogoutRequest, error) {
 	return p.logoutResult, p.logoutErr
 }
 
-func (p *testProvider) ValidateLogoutMessage(_ context.Context, _ ValidateLogoutInput) (*VerifiedLogout, error) {
+func (p *logoutTestProvider) BuildLogoutResponse(_ context.Context, _ BuildLogoutResponseInput) (*LogoutResponseResult, error) {
 	return nil, nil
 }
 
-func (p *testProvider) SPMetadata(_ context.Context) ([]byte, error) {
+func (p *logoutTestProvider) ValidateLogoutMessage(_ context.Context, _ ValidateLogoutInput) (*VerifiedLogout, error) {
 	return nil, nil
 }
 
-func (p *testProvider) ParseIdPMetadata(_ context.Context, _ []byte) (*IdPRecord, error) {
+func (p *logoutTestProvider) SPMetadata(_ context.Context) ([]byte, error) {
 	return nil, nil
 }
 
-// testStore stubs Store for handler tests.
-type testStore struct {
+func (p *logoutTestProvider) ParseIdPMetadata(_ context.Context, _ []byte) (*IdPRecord, error) {
+	return nil, nil
+}
+
+// logoutTestStore stubs Store for logout handler tests.
+type logoutTestStore struct {
 	stubStore
 	idp      IdPRecord
 	idpErr   error
@@ -56,43 +62,47 @@ type testStore struct {
 	indexErr error
 }
 
-func (s *testStore) GetIdP(_ context.Context, _ string) (IdPRecord, error) {
+func (s *logoutTestStore) GetIdP(_ context.Context, _ string) (IdPRecord, error) {
 	return s.idp, s.idpErr
 }
 
-func (s *testStore) GetIndex(_ context.Context, _ string) (IndexRecord, error) {
+func (s *logoutTestStore) GetIndex(_ context.Context, _ string) (IndexRecord, error) {
 	return s.index, s.indexErr
 }
 
-// signTestToken creates a valid HS256 JWT with the given subject.
-func signTestToken(t *testing.T, sub, secret string) string {
-	t.Helper()
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": sub,
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(time.Hour).Unix(),
-	})
-	signed, err := tok.SignedString([]byte(secret))
-	if err != nil {
-		t.Fatalf("sign test token: %v", err)
-	}
-	return signed
+// fakeJWT builds a minimal JWT (header.payload.signature) whose payload
+// contains the given subject. The token is not cryptographically signed;
+// subjectFromToken only decodes the payload segment.
+func fakeJWT(sub string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	payload, _ := json.Marshal(map[string]string{"sub": sub})
+	payloadB64 := base64.RawURLEncoding.EncodeToString(payload)
+	return header + "." + payloadB64 + ".fakesig"
 }
 
-// newTestHandler builds a Handler wired with the given stubs.
-func newTestHandler(prov Provider, store Store) *Handler {
+// newLogoutTestHandler builds a Handler wired with the given stubs.
+func newLogoutTestHandler(prov Provider, store Store) *Handler {
 	return NewHandler(Deps{
-		Provider:  prov,
-		Store:     store,
-		Bridge:    &stubSessionBridge{},
-		Clock:     NewFakeClock(),
+		Provider: prov,
+		Store:    store,
+		Bridge:   &stubSessionBridge{},
+		Clock:    NewFakeClock(),
 		Cfg: config.SAMLConfig{
-			ACS: config.ACSConfig{CookieName: "tikti_id"},
+			ACS: config.ACSConfig{CookieName: "tikti_idt"},
 		},
-		Metrics:   NewMetrics(prometheus.NewRegistry()),
-		Audit:     LogEmitter{},
-		JwtSecret: "test-secret",
+		Metrics: NewMetrics(prometheus.NewRegistry()),
+		Audit:   LogEmitter{},
 	})
+}
+
+// serveLogout sets up a chi router and dispatches a single request through
+// the Logout handler so that chi.URLParam works correctly in tests.
+func serveLogout(h *Handler, req *http.Request) *httptest.ResponseRecorder {
+	r := chi.NewRouter()
+	r.Get("/saml/logout/{tid}", h.Logout)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	return rr
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +110,7 @@ func newTestHandler(prov Provider, store Store) *Handler {
 // ---------------------------------------------------------------------------
 
 func TestLogout_302ToIdP(t *testing.T) {
-	store := &testStore{
+	store := &logoutTestStore{
 		idp: IdPRecord{
 			TenantID: "t-001",
 			EntityID: "https://idp.example.com",
@@ -114,22 +124,20 @@ func TestLogout_302ToIdP(t *testing.T) {
 		},
 	}
 
-	prov := &testProvider{
+	prov := &logoutTestProvider{
 		logoutResult: &LogoutRequest{
 			ID:          "_abc123",
 			RedirectURL: "https://idp.example.com/slo?SAMLRequest=xxx",
 		},
 	}
 
-	h := newTestHandler(prov, store)
-	token := signTestToken(t, "user@example.com", "test-secret")
+	h := newLogoutTestHandler(prov, store)
+	token := fakeJWT("user@example.com")
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/logout/t-001", nil)
-	req.SetPathValue("tid", "t-001")
-	req.AddCookie(&http.Cookie{Name: "tikti_id", Value: token})
+	req.AddCookie(&http.Cookie{Name: "tikti_idt", Value: token})
 
-	rr := httptest.NewRecorder()
-	h.Logout(rr, req)
+	rr := serveLogout(h, req)
 
 	if rr.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
@@ -143,15 +151,10 @@ func TestLogout_302ToIdP(t *testing.T) {
 
 func TestLogout_NoSession_400(t *testing.T) {
 	t.Run("no cookie", func(t *testing.T) {
-		store := &testStore{}
-		prov := &testProvider{}
-		h := newTestHandler(prov, store)
+		h := newLogoutTestHandler(&logoutTestProvider{}, &logoutTestStore{})
 
 		req := httptest.NewRequest(http.MethodGet, "/saml/logout/t-001", nil)
-		req.SetPathValue("tid", "t-001")
-
-		rr := httptest.NewRecorder()
-		h.Logout(rr, req)
+		rr := serveLogout(h, req)
 
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -159,16 +162,11 @@ func TestLogout_NoSession_400(t *testing.T) {
 	})
 
 	t.Run("invalid token", func(t *testing.T) {
-		store := &testStore{}
-		prov := &testProvider{}
-		h := newTestHandler(prov, store)
+		h := newLogoutTestHandler(&logoutTestProvider{}, &logoutTestStore{})
 
 		req := httptest.NewRequest(http.MethodGet, "/saml/logout/t-001", nil)
-		req.SetPathValue("tid", "t-001")
-		req.AddCookie(&http.Cookie{Name: "tikti_id", Value: "not-a-jwt"})
-
-		rr := httptest.NewRecorder()
-		h.Logout(rr, req)
+		req.AddCookie(&http.Cookie{Name: "tikti_idt", Value: "not-a-jwt"})
+		rr := serveLogout(h, req)
 
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
@@ -176,19 +174,15 @@ func TestLogout_NoSession_400(t *testing.T) {
 	})
 
 	t.Run("index not found", func(t *testing.T) {
-		store := &testStore{
+		store := &logoutTestStore{
 			indexErr: errors.New("saml: index not found"),
 		}
-		prov := &testProvider{}
-		h := newTestHandler(prov, store)
-		token := signTestToken(t, "user@example.com", "test-secret")
+		h := newLogoutTestHandler(&logoutTestProvider{}, store)
+		token := fakeJWT("user@example.com")
 
 		req := httptest.NewRequest(http.MethodGet, "/saml/logout/t-001", nil)
-		req.SetPathValue("tid", "t-001")
-		req.AddCookie(&http.Cookie{Name: "tikti_id", Value: token})
-
-		rr := httptest.NewRecorder()
-		h.Logout(rr, req)
+		req.AddCookie(&http.Cookie{Name: "tikti_idt", Value: token})
+		rr := serveLogout(h, req)
 
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
