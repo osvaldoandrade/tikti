@@ -147,20 +147,49 @@ func samlIdPCmd(profileName *string, outputJSON *bool) *cobra.Command {
 
 func samlIdPRegisterCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	var (
-		tid         string
-		metadataURL string
-		attrMapFile string
+		tid          string
+		metadataURL  string
+		metadataFile string
+		attrMapFile  string
+		redisAddr    string
 	)
 	cmd := &cobra.Command{
 		Use:   "register",
 		Short: "Register an IdP for a tenant",
-		RunE:  stubRunE("saml idp register", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if metadataURL == "" && metadataFile == "" {
+				return &cliError{msg: "--metadata-url or --metadata-file is required", exit: 1}
+			}
+
+			store, cleanup, err := newRedisStore(redisAddr)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			opts := registerIdPOptions{
+				TID:          tid,
+				MetadataURL:  metadataURL,
+				MetadataFile: metadataFile,
+				AttrMapFile:  attrMapFile,
+				HTTPClient:   defaultHTTPGetter{},
+			}
+
+			rec, err := registerIdP(cmd.Context(), store, opts)
+			if err != nil {
+				return &cliError{msg: err.Error(), exit: 1}
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.writeJSON(idpRecordToMap(*rec))
+		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")
 	cmd.Flags().StringVar(&metadataURL, "metadata-url", "", "IdP metadata URL")
+	cmd.Flags().StringVar(&metadataFile, "metadata-file", "", "Path to local IdP metadata XML file")
 	cmd.Flags().StringVar(&attrMapFile, "attr-map", "", "Path to attribute-mapping file")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis address (default: REDIS_ADDR env or localhost:6379)")
 	_ = cmd.MarkFlagRequired("tid")
-	_ = cmd.MarkFlagRequired("metadata-url")
 	return cmd
 }
 
