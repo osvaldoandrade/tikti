@@ -42,16 +42,14 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 
 	// No email supplied — render the blank form.
 	if email == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		discoverTmpl.Execute(w, discoverData{})
+		renderDiscover(w, discoverData{})
 		return
 	}
 
 	// Extract domain from email address.
 	domain := normalizeDomain(email)
 	if domain == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		discoverTmpl.Execute(w, discoverData{
+		renderDiscover(w, discoverData{
 			Email: email,
 			Error: "Please enter a valid email address.",
 		})
@@ -62,8 +60,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	tid, err := h.store.GetDomain(r.Context(), domain)
 	if err != nil || tid == "" {
 		// Unknown domain — re-render with a neutral message.
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		discoverTmpl.Execute(w, discoverData{
+		renderDiscover(w, discoverData{
 			Email: email,
 			Error: "Workspace not found.",
 		})
@@ -82,4 +79,13 @@ func normalizeDomain(email string) string {
 		return ""
 	}
 	return strings.ToLower(email[at+1:])
+}
+
+// renderDiscover writes the discover HTML page to w. If template execution
+// fails (e.g. the writer is closed), it falls back to a 500 error.
+func renderDiscover(w http.ResponseWriter, data discoverData) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := discoverTmpl.Execute(w, data); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
 }
