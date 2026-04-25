@@ -1,0 +1,22 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+  idp:
+    image: kristophjunge/test-saml-idp:1.15
+    environment:
+      SIMPLESAMLPHP_SP_ENTITY_ID: http://localhost:8080/saml
+      SIMPLESAMLPHP_SP_ASSERTION_CONSUMER_SERVICE: http://localhost:8080/saml/acs
+      SIMPLESAMLPHP_SP_SINGLE_LOGOUT_SERVICE: http://localhost:8080/saml/slo
+    ports: ["8081:8080"]
+  tikti:
+    build: ../..
+    environment:
+      TIKTI_CONFIG: /etc/tikti/tikti.yaml
+      SAML_SP_SIGNING_KEY_PATH: /etc/tikti/saml/sp.key
+    volumes:
+      - ./tikti.dev.yaml:/etc/tikti/tikti.yaml
+      - ./sp.key:/etc/tikti/saml/sp.key
+      - ./sp.crt:/etc/tikti/saml/sp.crt
+    depends_on: [redis, idp]
+    ports: ["8080:8080"]

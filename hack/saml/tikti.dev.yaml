@@ -1,0 +1,39 @@
+port: 8080
+redisAddr: "redis:6379"
+jwtSecret: "dev-secret"
+apiKey: "dev-api-key"
+issuerBaseUrl: "http://localhost:8080"
+defaultAudience: "tikti"
+jwksKeyId: "tikti-local-1"
+
+saml:
+  enabled: true
+  sp:
+    entityID: "http://localhost:8080/saml"
+    acsURL: "http://localhost:8080/saml/acs"
+    sloURL: "http://localhost:8080/saml/slo"
+    signingKeyPath: "/etc/tikti/saml/sp.key"
+    signingCertPath: "/etc/tikti/saml/sp.crt"
+    keyBits: 2048
+    clockSkewSeconds: 5
+    requestTTLSeconds: 300
+    allowedSigAlgs: ["rsa-sha256"]
+    allowedDigestAlgs: ["sha256"]
+    requireAssertionSigned: true
+    requireEncryptedAssertion: false
+  acs:
+    deliveryMode: cookie
+    cookieName: tikti_idt
+    cookieSameSite: Lax
+    cookieSecure: false
+    cookieHTTPOnly: true
+    sessionTTL: 3600
+    postLoginURL: "/dashboard"
+  idp:
+    metadataURL: "http://idp:8080/simplesaml/saml2/idp/metadata.php"
+    skipSignatureCheck: true
+  discover:
+    enabled: false
+  metrics:
+    enabled: true
+    namespace: "tikti_saml"

@@ -15,3 +15,15 @@ docker-push:
 
 lint:
 	go vet ./...
+
+.PHONY: saml-dev saml-integration saml-keys
+
+saml-keys:
+	openssl req -x509 -newkey rsa:2048 -keyout hack/saml/sp.key -out hack/saml/sp.crt \
+	  -nodes -days 365 -subj "/CN=tikti-sp"
+
+saml-dev: saml-keys
+	docker compose -f hack/saml/docker-compose.yaml up --build
+
+saml-integration:
+	go test -count=1 ./test/integration -run TestSAMLE2E
