@@ -7,37 +7,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/osvaldoandrade/tikti/pkg/config"
 )
-
-// Handler serves the SAML HTTP endpoints (login, ACS, SLO, metadata).
-type Handler struct {
-	store   Store
-	prov    Provider
-	clock   Clock
-	cfg     config.SAMLConfig
-	metrics *Metrics
-}
-
-// Deps bundles the dependencies needed to construct a Handler.
-type Deps struct {
-	Store    Store
-	Provider Provider
-	Clock    Clock
-	Cfg      config.SAMLConfig
-	Metrics  *Metrics
-}
-
-// NewHandler returns a Handler wired with the given dependencies.
-func NewHandler(d Deps) *Handler {
-	return &Handler{
-		store:   d.Store,
-		prov:    d.Provider,
-		clock:   d.Clock,
-		cfg:     d.Cfg,
-		metrics: d.Metrics,
-	}
-}
 
 // Login handles GET /saml/login/{tid}. It builds an AuthnRequest, persists
 // the request record, sets a state cookie, and 302-redirects to the IdP.
