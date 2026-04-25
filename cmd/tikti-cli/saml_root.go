@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"time"
 
 	"github.com/go-redis/redis/v8"
-	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/spf13/cobra"
+
+	"github.com/osvaldoandrade/tikti/internal/saml"
 )
 
 // samlCmd returns the "tikti saml" root command with all subcommand groups
@@ -268,20 +271,96 @@ func samlIdPFetchCmd(profileName *string, outputJSON *bool) *cobra.Command {
 
 // --- test command ---
 
-func samlTestCmd(profileName *string, outputJSON *bool) *cobra.Command {
+func samlTestCmd(_ *string, outputJSON *bool) *cobra.Command {
 	var (
-		tid   string
-		email string
+		tid        string
+		email      string
+		redisAddr  string
+		signingKey string
+		signingCrt string
+		entityID   string
+		acsURL     string
 	)
 	cmd := &cobra.Command{
 		Use:   "test",
 		Short: "Emit an AuthnRequest URL for manual validation",
-		RunE:  stubRunE("saml test", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if redisAddr == "" {
+				redisAddr = os.Getenv("REDIS_ADDR")
+			}
+			if redisAddr == "" {
+				redisAddr = "localhost:6379"
+			}
+
+			rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+			defer rdb.Close()
+			store := saml.NewRedisStore(rdb)
+
+			keyPEM, err := os.ReadFile(signingKey)
+			if err != nil {
+				return &cliError{msg: fmt.Sprintf("read signing key: %v", err), exit: 1}
+			}
+			certPEM, err := os.ReadFile(signingCrt)
+			if err != nil {
+				return &cliError{msg: fmt.Sprintf("read signing cert: %v", err), exit: 1}
+			}
+
+			block, _ := pem.Decode(keyPEM)
+			if block == nil {
+				return &cliError{msg: "signing key: no PEM block found", exit: 1}
+			}
+			key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+			if err != nil {
+				return &cliError{msg: fmt.Sprintf("parse signing key: %v", err), exit: 1}
+			}
+
+			block, _ = pem.Decode(certPEM)
+			if block == nil {
+				return &cliError{msg: "signing cert: no PEM block found", exit: 1}
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return &cliError{msg: fmt.Sprintf("parse signing cert: %v", err), exit: 1}
+			}
+
+			provider := &saml.CrewjamProvider{
+				EntityID: entityID,
+				ACSURL:   acsURL,
+				Key:      key,
+				Cert:     cert,
+			}
+
+			authn, err := buildTestAuthnURL(context.Background(), store, provider, samlTestOptions{
+				TID:    tid,
+				Email:  email,
+				ACSURL: acsURL,
+			})
+			if err != nil {
+				return &cliError{msg: fmt.Sprintf("build AuthnRequest: %v", err), exit: 1}
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.write(map[string]any{
+				"tid":          tid,
+				"email":        email,
+				"request_id":   authn.ID,
+				"redirect_url": authn.RedirectURL,
+			})
+		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")
 	cmd.Flags().StringVar(&email, "email", "", "User email")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis address (default: REDIS_ADDR env or localhost:6379)")
+	cmd.Flags().StringVar(&signingKey, "signing-key", "", "Path to SP signing private key PEM")
+	cmd.Flags().StringVar(&signingCrt, "signing-cert", "", "Path to SP signing certificate PEM")
+	cmd.Flags().StringVar(&entityID, "entity-id", "", "SP entity ID")
+	cmd.Flags().StringVar(&acsURL, "acs-url", "", "Assertion Consumer Service URL")
 	_ = cmd.MarkFlagRequired("tid")
 	_ = cmd.MarkFlagRequired("email")
+	_ = cmd.MarkFlagRequired("signing-key")
+	_ = cmd.MarkFlagRequired("signing-cert")
+	_ = cmd.MarkFlagRequired("entity-id")
+	_ = cmd.MarkFlagRequired("acs-url")
 	return cmd
 }
 
@@ -299,29 +378,80 @@ func samlDomainCmd(profileName *string, outputJSON *bool) *cobra.Command {
 
 func samlDomainAddCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	var (
-		tid    string
-		domain string
+		tid       string
+		domain    string
+		redisAddr string
 	)
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Map an email domain to a tenant for SAML discovery",
-		RunE:  stubRunE("saml domain add", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if redisAddr == "" {
+				redisAddr = os.Getenv("REDIS_ADDR")
+			}
+			if redisAddr == "" {
+				redisAddr = "localhost:6379"
+			}
+
+			rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+			defer rdb.Close()
+			store := saml.NewRedisStore(rdb)
+
+			if err := domainAdd(context.Background(), store, domain, tid); err != nil {
+				return err
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.write(map[string]any{
+				"command": "saml domain add",
+				"domain":  domain,
+				"tid":     tid,
+				"status":  "ok",
+			})
+		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")
 	cmd.Flags().StringVar(&domain, "domain", "", "Email domain (e.g. example.com)")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis server address (host:port)")
 	_ = cmd.MarkFlagRequired("tid")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }
 
 func samlDomainRemoveCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var domain string
+	var (
+		domain    string
+		redisAddr string
+	)
 	cmd := &cobra.Command{
 		Use:   "remove",
 		Short: "Remove an email-domain mapping",
-		RunE:  stubRunE("saml domain remove", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if redisAddr == "" {
+				redisAddr = os.Getenv("REDIS_ADDR")
+			}
+			if redisAddr == "" {
+				redisAddr = "localhost:6379"
+			}
+
+			rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+			defer rdb.Close()
+			store := saml.NewRedisStore(rdb)
+
+			if err := domainRemove(context.Background(), store, domain); err != nil {
+				return err
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.write(map[string]any{
+				"command": "saml domain remove",
+				"domain":  domain,
+				"status":  "ok",
+			})
+		},
 	}
 	cmd.Flags().StringVar(&domain, "domain", "", "Email domain (e.g. example.com)")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis server address (host:port)")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }
