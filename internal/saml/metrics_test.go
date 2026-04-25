@@ -40,6 +40,7 @@ func TestMetrics_AllPresent(t *testing.T) {
 	m.IdPRoundtrip.WithLabelValues("t1").Observe(0.15)
 	m.IdPCertExpiry.WithLabelValues("t1", "CN=idp").Set(86400)
 	m.SPCertExpiry.Set(172800)
+	m.RefreshConsecFailures.WithLabelValues("t1").Set(0)
 
 	fams := gather(t, reg)
 
@@ -56,6 +57,7 @@ func TestMetrics_AllPresent(t *testing.T) {
 		"tikti_saml_idp_roundtrip_duration_seconds",
 		"tikti_saml_idp_cert_expiry_seconds",
 		"tikti_saml_sp_cert_expiry_seconds",
+		"tikti_saml_metadata_refresh_consec_failures",
 	}
 
 	if len(fams) != len(want) {
