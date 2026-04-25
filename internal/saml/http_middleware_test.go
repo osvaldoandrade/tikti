@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -99,7 +100,7 @@ func TestLogger_FieldsPresent(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	log.SetFlags(0) // no timestamp prefix
-	defer log.SetOutput(nil)
+	defer log.SetOutput(os.Stderr)
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
