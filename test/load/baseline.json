@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-04-25T00:00:00.000Z",
+  "target_rps": 500,
+  "duration": "5m",
+  "p50_ms": null,
+  "p90_ms": null,
+  "p95_ms": null,
+  "p99_ms": null,
+  "error_rate": null,
+  "total_requests": 0,
+  "thresholds_passed": false,
+  "_comment": "Initial baseline placeholder — run k6 to populate with real values."
+}
