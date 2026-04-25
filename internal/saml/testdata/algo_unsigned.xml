@@ -1,0 +1,8 @@
+<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+                xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+                ID="_resp006" Version="2.0" IssueInstant="2026-01-01T00:00:00Z"
+                Destination="https://sp.example.com/saml/acs">
+  <saml:Assertion ID="_a006" Version="2.0" IssueInstant="2026-01-01T00:00:00Z">
+    <saml:Issuer>https://idp.example.com</saml:Issuer>
+  </saml:Assertion>
+</samlp:Response>
