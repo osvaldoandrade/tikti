@@ -18,14 +18,6 @@ import (
 // signing certificates are accepted after an update. HLD §Q9.
 const certOverlapDuration = 24 * time.Hour
 
-func samlCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	cmd := &cobra.Command{Use: "saml", Short: "SAML federation management"}
-	idpCmd := &cobra.Command{Use: "idp", Short: "IdP lifecycle commands"}
-	idpCmd.AddCommand(samlIdpUpdateCmd(profileName, outputJSON))
-	cmd.AddCommand(idpCmd)
-	return cmd
-}
-
 func samlIdpUpdateCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	var (
 		tid         string

@@ -124,21 +124,6 @@ func samlSPMetadataCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	return cmd
 }
 
-func samlSPRotateCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var (
-		prepare bool
-		commit  bool
-	)
-	cmd := &cobra.Command{
-		Use:   "rotate",
-		Short: "Two-step SP signing-key rotation",
-		RunE:  stubRunE("saml sp rotate", outputJSON),
-	}
-	cmd.Flags().BoolVar(&prepare, "prepare", false, "Prepare new key (publish both old and new in metadata)")
-	cmd.Flags().BoolVar(&commit, "commit", false, "Commit rotation (remove old key)")
-	return cmd
-}
-
 // --- idp subgroup ---
 
 func samlIdPCmd(profileName *string, outputJSON *bool) *cobra.Command {
