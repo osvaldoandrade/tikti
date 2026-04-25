@@ -70,3 +70,9 @@ secrets:
   apiKey: ""
   redisPassword: ""
   jwksPrivateKey: ""
+
+saml:
+  enabled: false
+  sp:
+    key: ""
+    cert: ""

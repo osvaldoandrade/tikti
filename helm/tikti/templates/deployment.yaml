@@ -81,6 +81,11 @@ spec:
             - name: config
               mountPath: /app/etc/tikti.yaml
               subPath: tikti.yaml
+            {{- if .Values.saml.enabled }}
+            - name: saml-keys
+              mountPath: /etc/tikti/saml
+              readOnly: true
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
 {{ toYaml . | indent 12 }}
             {{- end }}
@@ -102,6 +107,12 @@ spec:
         - name: config
           configMap:
             name: {{ include "tikti.fullname" . }}-config
+        {{- if .Values.saml.enabled }}
+        - name: saml-keys
+          secret:
+            secretName: {{ include "tikti.fullname" . }}-saml
+            defaultMode: 0400
+        {{- end }}
         {{- with .Values.extraVolumes }}
 {{ toYaml . | indent 8 }}
         {{- end }}
