@@ -43,21 +43,21 @@ func TestTID_AssertionOverride_Ignored(t *testing.T) {
 		"name":      {"Test User"},
 	}
 
-	out := MapAttributes(attrs, "url-tenant", m)
+	SanitizeAttributes(attrs, "url-tenant", m)
 
 	// tid-like keys must be absent.
 	for _, k := range []string{"tid", "tenant_id", "tenantId"} {
-		if _, ok := out[k]; ok {
+		if _, ok := attrs[k]; ok {
 			t.Errorf("expected %q to be stripped, but it is present", k)
 		}
 	}
 
 	// Legitimate attributes must survive.
-	if out["email"][0] != "user@example.com" {
-		t.Errorf("email = %v, want [user@example.com]", out["email"])
+	if attrs["email"][0] != "user@example.com" {
+		t.Errorf("email = %v, want [user@example.com]", attrs["email"])
 	}
-	if out["name"][0] != "Test User" {
-		t.Errorf("name = %v, want [Test User]", out["name"])
+	if attrs["name"][0] != "Test User" {
+		t.Errorf("name = %v, want [Test User]", attrs["name"])
 	}
 }
 
@@ -72,7 +72,7 @@ func TestTID_Metric_Increments(t *testing.T) {
 		"email": {"a@b.com"},
 	}
 
-	_ = MapAttributes(attrs, "t-123", m)
+	SanitizeAttributes(attrs, "t-123", m)
 
 	val := counterValue(t, reg, "tikti_saml_tid_override_ignored_total", "t-123")
 	if val != 1 {
@@ -91,7 +91,7 @@ func TestTID_NoAttribute_NoMetric(t *testing.T) {
 		"name":  {"User"},
 	}
 
-	_ = MapAttributes(attrs, "t-456", m)
+	SanitizeAttributes(attrs, "t-456", m)
 
 	// Gather and check that the metric family either does not exist
 	// or has no series for tid=t-456.

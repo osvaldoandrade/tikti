@@ -78,7 +78,7 @@ func (f *fakeMembershipUserRepo) ConsumeOobCode(ctx context.Context, code string
 func (f *fakeMembershipUserRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 	return nil, nil
 }
-func (f *fakeMembershipUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string) (domain.User, bool, error) {
+func (f *fakeMembershipUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error) {
 	return domain.User{}, false, nil
 }
 

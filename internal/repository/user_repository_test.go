@@ -417,7 +417,7 @@ func TestUpsertFromSAML_Create(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 
-	u, created, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice@example.com", "Alice", []string{"ADMIN"})
+	u, created, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice@example.com", "Alice", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestUpsertFromSAML_UpdateSame(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 
-	u1, created1, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice@example.com", "Alice", []string{"ADMIN"})
+	u1, created1, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice@example.com", "Alice", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestUpsertFromSAML_UpdateSame(t *testing.T) {
 		t.Fatalf("expected first call to create")
 	}
 
-	u2, created2, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice-new@example.com", "Alice New", []string{"COMPANY_ADMIN"})
+	u2, created2, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "alice-new@example.com", "Alice New", []string{"COMPANY_ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
 	}
 
 	// SAML upsert with same email should merge.
-	u, created, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-bob", "bob@example.com", "Bob", []string{"ADMIN"})
+	u, created, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-bob", "bob@example.com", "Bob", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
@@ -513,7 +513,7 @@ func TestUpsertFromSAML_NoMergeCrossTenant(t *testing.T) {
 	ctx := context.Background()
 
 	// Create user in tenant-1.
-	u1, created1, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "carol@example.com", "Carol", nil)
+	u1, created1, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-1", "carol@example.com", "Carol", nil, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("first upsert: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestUpsertFromSAML_NoMergeCrossTenant(t *testing.T) {
 	}
 
 	// Same external subject but different tenant creates a new user.
-	u2, created2, err := repo.UpsertFromSAML(ctx, "tenant-2", "ext-sub-1", "carol2@example.com", "Carol 2", nil)
+	u2, created2, err := repo.UpsertFromSAML(ctx, "tenant-2", "ext-sub-1", "carol2@example.com", "Carol 2", nil, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("second upsert: %v", err)
 	}
@@ -580,5 +580,136 @@ func TestExistingPasswordFlow_Unaffected(t *testing.T) {
 	}
 	if updated.Status != domain.UserStatusSuspended {
 		t.Fatalf("expected suspended status, got %s", updated.Status)
+	}
+}
+
+func TestMerge_Email_FromPassword(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	// Seed a password-based user.
+	pwUser := &domain.User{
+		Id:         "pw-merge-1",
+		Email:      "merge@example.com",
+		Password:   "hashed",
+		Role:       domain.RoleCompanyEmployee,
+		Status:     domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword,
+		CreatedAt:  time.Now(),
+	}
+	if err := repo.CreateUser(ctx, pwUser); err != nil {
+		t.Fatalf("create password user: %v", err)
+	}
+
+	// Merge via email strategy — the SAML-supplied roles (["ADMIN"]) must be
+	// ignored so the original password user's role is preserved.
+	u, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-1", "merge@example.com", "Merge User", []string{"ADMIN"}, domain.MergeStrategyEmail)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if created {
+		t.Fatalf("expected merge (created=false)")
+	}
+	if u.AuthSource != domain.AuthSourceSAML {
+		t.Fatalf("authSource should flip to saml, got %s", u.AuthSource)
+	}
+	if u.ExternalSubject != "saml-sub-1" {
+		t.Fatalf("externalSubject should be set, got %s", u.ExternalSubject)
+	}
+	// Roles must be preserved from the original password user.
+	if u.Role != domain.RoleCompanyEmployee {
+		t.Fatalf("role should be preserved as COMPANY_EMPLOYEE, got %s", u.Role)
+	}
+}
+
+func TestMerge_None_CreatesDup(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	// Seed a password-based user.
+	pwUser := &domain.User{
+		Id:         "pw-dup-1",
+		Email:      "dup@example.com",
+		Password:   "hashed",
+		Role:       domain.RoleCompanyEmployee,
+		Status:     domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword,
+		CreatedAt:  time.Now(),
+	}
+	if err := repo.CreateUser(ctx, pwUser); err != nil {
+		t.Fatalf("create password user: %v", err)
+	}
+
+	// With none strategy a new user must be created (no email merge).
+	u, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-dup", "dup@example.com", "Dup User", []string{"ADMIN"}, domain.MergeStrategyNone)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected new user (created=true) with none strategy")
+	}
+	if u.Id == "pw-dup-1" {
+		t.Fatalf("should have created a separate user, got same ID")
+	}
+	if u.AuthSource != domain.AuthSourceSAML {
+		t.Fatalf("new user should be SAML, got %s", u.AuthSource)
+	}
+}
+
+func TestMerge_ExternalSubject_Matches(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	// Create a SAML user first via email strategy.
+	u1, created1, err := repo.UpsertFromSAML(ctx, "t1", "ext-prior", "prior@example.com", "Prior", []string{"ADMIN"}, domain.MergeStrategyEmail)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if !created1 {
+		t.Fatalf("expected first call to create")
+	}
+
+	// Second call with externalSubject strategy and same (tid, externalSubject)
+	// should match via externalSubject (Case 1) and update.
+	u2, created2, err := repo.UpsertFromSAML(ctx, "t1", "ext-prior", "prior-new@example.com", "Prior Updated", []string{"COMPANY_ADMIN"}, domain.MergeStrategyExternalSubject)
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if created2 {
+		t.Fatalf("expected update (created=false) when externalSubject matches")
+	}
+	if u2.Id != u1.Id {
+		t.Fatalf("expected same user ID, got %s vs %s", u1.Id, u2.Id)
+	}
+	if u2.Email != "prior-new@example.com" {
+		t.Fatalf("expected updated email, got %s", u2.Email)
+	}
+}
+
+func TestMerge_SubPreserved(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	// Seed a password user.
+	pwUser := &domain.User{
+		Id:         "preserve-sub-1",
+		Email:      "preserve@example.com",
+		Password:   "hashed",
+		Role:       domain.RoleCompanyAdmin,
+		Status:     domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword,
+		CreatedAt:  time.Now(),
+	}
+	if err := repo.CreateUser(ctx, pwUser); err != nil {
+		t.Fatalf("create password user: %v", err)
+	}
+
+	// Email merge must preserve the original sub (Id).
+	u, _, err := repo.UpsertFromSAML(ctx, "t1", "ext-preserve", "preserve@example.com", "Preserve", []string{"ADMIN"}, domain.MergeStrategyEmail)
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if u.Id != "preserve-sub-1" {
+		t.Fatalf("sub (Id) must be preserved after merge, got %s", u.Id)
 	}
 }
