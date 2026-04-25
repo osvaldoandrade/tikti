@@ -24,10 +24,10 @@ names are tried left-to-right; the first attribute present with a non-empty
 value wins. For `roles`, all values of the first matched attribute are
 collected.
 
-> **Security note:** the attributes `tid`, `tenant_id`, and `tenantId` are
-> **always stripped** from every assertion before mapping. The tenant
-> identifier is taken exclusively from the URL path to prevent cross-tenant
-> escalation via a compromised IdP.
+> **Security note:** the attributes `tid`, `tenant_id`, and `tenantId`
+> (exact matches only) are **always stripped** from every assertion before
+> mapping. The tenant identifier is taken exclusively from the URL path to
+> prevent cross-tenant escalation via a compromised IdP.
 
 ## Override Syntax
 
