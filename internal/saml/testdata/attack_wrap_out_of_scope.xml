@@ -1,0 +1,10 @@
+<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol" ID="_resp1" Version="2.0">
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a1">
+    <Issuer>https://idp.example.com</Issuer>
+    <Subject><NameID>legit@example.com</NameID></Subject>
+  </Assertion>
+  <!-- Reference URI targets an element outside the signed scope -->
+  <Extensions>
+    <Payload ID="_outside">attacker-controlled content</Payload>
+  </Extensions>
+</Response>
