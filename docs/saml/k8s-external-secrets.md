@@ -8,7 +8,7 @@ instead of letting the Helm chart manage the Secret directly.
 
 | Component | Minimum version |
 |---|---|
-| external-secrets-operator | 0.9+ |
+| `external-secrets-operator` | 0.9+ |
 | Helm chart `tikti` | 0.1.0+ |
 
 You also need a configured `SecretStore` or `ClusterSecretStore` pointing at
