@@ -26,16 +26,28 @@ const (
 	RoleCompanyEmployee UserRole = "COMPANY_EMPLOYEE"
 )
 
+// AuthSource distinguishes how a user was provisioned.
+type AuthSource string
+
+const (
+	// AuthSourcePassword is the default for users created via the password sign-up flow.
+	AuthSourcePassword AuthSource = "password"
+	// AuthSourceSAML marks users provisioned through a SAML identity provider.
+	AuthSourceSAML AuthSource = "saml"
+)
+
 // User represents the canonical user document stored in Redis and exposed to clients.
 type User struct {
-	Id           string     `json:"localId"`
-	Email        string     `json:"email"`
-	Password     string     `json:"password"`
-	Role         UserRole   `json:"role"`
-	Status       UserStatus `json:"status"`
-	CompanyId    *string    `json:"companyId,omitempty"`
-	TokenVersion int        `json:"tokenVersion,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
+	Id              string     `json:"localId"`
+	Email           string     `json:"email"`
+	Password        string     `json:"password"`
+	Role            UserRole   `json:"role"`
+	Status          UserStatus `json:"status"`
+	CompanyId       *string    `json:"companyId,omitempty"`
+	TokenVersion    int        `json:"tokenVersion,omitempty"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	AuthSource      AuthSource `json:"authSource"`
+	ExternalSubject string     `json:"externalSubject"`
 }
 
 // SignUpReq holds the payload expected when an admin creates a new user.
