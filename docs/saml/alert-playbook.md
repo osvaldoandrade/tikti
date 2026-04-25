@@ -8,7 +8,7 @@ the recommended operator response for each.
 | Field | Value |
 |---|---|
 | **Metric** | `tikti_saml_sp_cert_expiry_seconds` |
-| **Condition** | Value falls below 30 days (2 592 000 seconds) |
+| **Condition** | Value falls below 30 days (2592000 seconds) |
 | **Severity** | warning |
 
 **Runbook:** [SP Key Rotation Runbook](key-rotation.md)
@@ -29,7 +29,7 @@ the recommended operator response for each.
 | Field | Value |
 |---|---|
 | **Metric** | `tikti_saml_idp_cert_expiry_seconds{tid,subject}` |
-| **Condition** | Value falls below 14 days (1 209 600 seconds) |
+| **Condition** | Value falls below 14 days (1209600 seconds) |
 | **Severity** | warning |
 
 ### Response
