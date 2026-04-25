@@ -38,7 +38,7 @@ func TestMap_AzureFormat(t *testing.T) {
 		},
 	}
 
-	email, name, roles, err := MapAttributes(va, rec)
+	email, name, roles, err := MapAttributes(va, rec, "test-tid", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestMap_Okta(t *testing.T) {
 		},
 	}
 
-	email, name, _, err := MapAttributes(va, rec)
+	email, name, _, err := MapAttributes(va, rec, "test-tid", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestMap_GoogleGroups(t *testing.T) {
 		},
 	}
 
-	email, _, roles, err := MapAttributes(va, rec)
+	email, _, roles, err := MapAttributes(va, rec, "test-tid", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestMap_MissingEmail_Reject(t *testing.T) {
 		},
 	}
 
-	_, _, _, err := MapAttributes(va, rec)
+	_, _, _, err := MapAttributes(va, rec, "test-tid", nil)
 	if err == nil {
 		t.Fatal("expected error for missing email")
 	}
@@ -146,7 +146,7 @@ func TestMap_FirstMatchWins(t *testing.T) {
 		},
 	}
 
-	email, _, _, err := MapAttributes(va, rec)
+	email, _, _, err := MapAttributes(va, rec, "test-tid", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestMap_NoRoles_NilSlice(t *testing.T) {
 		},
 	}
 
-	_, _, roles, err := MapAttributes(va, rec)
+	_, _, roles, err := MapAttributes(va, rec, "test-tid", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -196,7 +196,7 @@ func BenchmarkMapAttributes(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		email, name, roles, err := MapAttributes(va, rec)
+		email, name, roles, err := MapAttributes(va, rec, "test-tid", nil)
 		if err != nil || email == "" || name == "" || roles == nil {
 			b.Fatal("unexpected result")
 		}

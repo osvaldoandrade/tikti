@@ -38,6 +38,7 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 		in.Email,
 		in.Name,
 		in.Roles,
+		domain.MergeStrategyEmail,
 	)
 	if err != nil {
 		return "", fmt.Errorf("session bridge: upsert: %w", err)

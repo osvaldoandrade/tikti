@@ -35,7 +35,7 @@ func (f *fakeRepo) SaveOobCode(context.Context, string, string, string) error { 
 func (f *fakeRepo) ConsumeOobCode(context.Context, string, string) (string, error) {
 	return "", nil
 }
-func (f *fakeRepo) UpsertFromSAML(_ context.Context, _, _, _, _ string, _ []string) (domain.User, bool, error) {
+func (f *fakeRepo) UpsertFromSAML(_ context.Context, _, _, _, _ string, _ []string, _ domain.MergeStrategy) (domain.User, bool, error) {
 	return f.user, f.created, f.err
 }
 

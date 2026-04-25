@@ -17,6 +17,7 @@ type Metrics struct {
 	LogoutResponses    *prometheus.CounterVec
 	MetadataRefresh    *prometheus.CounterVec
 	ReplayBlocked      *prometheus.CounterVec
+	TIDOverrideIgnored *prometheus.CounterVec
 
 	// Histograms — 2 per HLD §18.
 	ValidationDuration *prometheus.HistogramVec
@@ -73,6 +74,11 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		ReplayBlocked: f.NewCounterVec(prometheus.CounterOpts{
 			Name: "tikti_saml_replay_blocked_total",
 			Help: "Total assertion replays blocked.",
+		}, []string{"tid"}),
+
+		TIDOverrideIgnored: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "tikti_saml_tid_override_ignored_total",
+			Help: "Total assertion-supplied tid attributes ignored.",
 		}, []string{"tid"}),
 
 		// ── Histograms ──────────────────────────────────────────────
