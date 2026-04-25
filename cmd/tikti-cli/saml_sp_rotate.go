@@ -149,7 +149,7 @@ func rotatePrepare(
 		ACSURL:               acsURL,
 		SLOURL:               sloURL,
 		SigningCertPEM:        oldCertPEM,
-		EncryptCertPEM:       oldCertPEM, // encryption cert stays the same during rotation
+		EncryptCertPEM:       oldCertPEM, // encryption uses old cert in prepare phase; updated in commit
 		ExtraSigningCertPEMs: [][]byte{newCertPEM},
 		ValidUntil:           time.Now().AddDate(1, 0, 0),
 	}
@@ -255,6 +255,10 @@ func writeOutput(path string, data []byte) error {
 // generateSelfSignedKeyPair generates a new RSA key pair and self-signed
 // X.509 certificate valid for 1 year with CN=tikti-sp.
 func generateSelfSignedKeyPair(bits int) (keyPEM, certPEM []byte, err error) {
+	if bits < 2048 {
+		return nil, nil, fmt.Errorf("RSA key size must be at least 2048 bits, got %d", bits)
+	}
+
 	priv, err := rsa.GenerateKey(rand.Reader, bits)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generate RSA key: %w", err)

@@ -7,7 +7,8 @@ implemented by the `tikti saml sp rotate` CLI command (see HLD §13, App. D).
 
 SAML IdPs cache the SP metadata (including the signing certificate). To
 rotate the SP signing key without breaking SSO, the rotation is split into
-two steps with a grace period in between.
+two steps with a 72-hour grace period in between for IdPs to refresh their
+cached metadata.
 
 ```
 ┌──────────┐   --prepare   ┌──────────┐   IdPs refresh   ┌──────────┐   --commit   ┌──────────┐
