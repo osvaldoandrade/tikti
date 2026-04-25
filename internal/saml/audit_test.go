@@ -177,20 +177,20 @@ func TestAudit_NoPIIPersisted(t *testing.T) {
 	// Attribute values must NOT appear in the serialised record.
 	for _, vals := range attrs {
 		for _, v := range vals {
-			if contains(jsonStr, v) {
+			if strings.Contains(jsonStr, v) {
 				t.Errorf("PII value %q found in audit record: %s", v, jsonStr)
 			}
 		}
 	}
 
 	// nameID, issuer, audience are allowed.
-	if !contains(jsonStr, "user@example.com") {
+	if !strings.Contains(jsonStr, "user@example.com") {
 		t.Error("nameID should be present in audit record")
 	}
-	if !contains(jsonStr, "https://idp.example.com") {
+	if !strings.Contains(jsonStr, "https://idp.example.com") {
 		t.Error("issuer should be present in audit record")
 	}
-	if !contains(jsonStr, "https://sp.example.com") {
+	if !strings.Contains(jsonStr, "https://sp.example.com") {
 		t.Error("audience should be present in audit record")
 	}
 
@@ -206,18 +206,4 @@ func TestAudit_LogEmitter(t *testing.T) {
 	if err := emitter.Emit(context.Background(), rec); err != nil {
 		t.Fatalf("Emit error: %v", err)
 	}
-}
-
-// contains reports whether s contains substr.
-func contains(s, substr string) bool {
-	return len(substr) > 0 && len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
