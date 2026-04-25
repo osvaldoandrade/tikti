@@ -283,3 +283,236 @@ func mustQueryUnescape(t *testing.T, s string) string {
 	}
 	return v
 }
+
+// logoutRequestXML is a minimal struct for parsing the LogoutRequest XML.
+type logoutRequestXML struct {
+	XMLName      xml.Name `xml:"LogoutRequest"`
+	ID           string   `xml:"ID,attr"`
+	Version      string   `xml:"Version,attr"`
+	IssueInstant string   `xml:"IssueInstant,attr"`
+	Destination  string   `xml:"Destination,attr"`
+	Issuer       string   `xml:"Issuer"`
+	NameID       struct {
+		Value  string `xml:",chardata"`
+		Format string `xml:"Format,attr"`
+	} `xml:"NameID"`
+	SessionIndex string `xml:"SessionIndex"`
+}
+
+// decodeSAMLMessageFromURL extracts and decodes a SAMLRequest or SAMLResponse
+// from a redirect URL.
+func decodeSAMLMessageFromURL(t *testing.T, rawURL, param string) []byte {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse redirect URL: %v", err)
+	}
+	encoded := u.Query().Get(param)
+	if encoded == "" {
+		for _, pair := range strings.Split(u.RawQuery, "&") {
+			parts := strings.SplitN(pair, "=", 2)
+			if parts[0] == param && len(parts) == 2 {
+				decoded, err := url.QueryUnescape(parts[1])
+				if err != nil {
+					t.Fatalf("unescape %s: %v", param, err)
+				}
+				encoded = decoded
+				break
+			}
+		}
+	}
+	if encoded == "" {
+		t.Fatalf("%s not found in URL: %s", param, rawURL)
+	}
+
+	compressed, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("base64 decode %s: %v", param, err)
+	}
+	reader := flate.NewReader(strings.NewReader(string(compressed)))
+	defer reader.Close()
+	xmlBytes, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("deflate decompress %s: %v", param, err)
+	}
+	return xmlBytes
+}
+
+// testLogoutInput returns a BuildLogoutRequestInput with common test values.
+func testLogoutInput(idpCert *x509.Certificate) BuildLogoutRequestInput {
+	var signingCerts [][]byte
+	if idpCert != nil {
+		signingCerts = [][]byte{idpCert.Raw}
+	}
+	return BuildLogoutRequestInput{
+		TenantID: "t-001",
+		IdP: IdPRecord{
+			TenantID:    "t-001",
+			EntityID:    "https://idp.example.com",
+			SLOURL:      "https://idp.example.com/slo",
+			SigningCerts: signingCerts,
+		},
+		NameID:       "user@example.com",
+		SessionIndex: "session-idx-001",
+		RequestID:    "b1c2d3e4f5a6b1c2d3e4b1c2d3e4f5a6b1c2d3e4",
+		IssueInstant: time.Date(2026, 4, 24, 18, 0, 0, 0, time.UTC),
+		NameIDFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+	}
+}
+
+// TestSLO_SPInitiated_RoundTrip tests SP-initiated SLO: build a LogoutRequest,
+// simulate an IdP LogoutResponse, and validate the response.
+func TestSLO_SPInitiated_RoundTrip(t *testing.T) {
+	prov := newTestProvider(t)
+	in := testLogoutInput(nil)
+
+	// Step 1: Build the outbound LogoutRequest.
+	result, err := prov.BuildLogoutRequest(context.Background(), in)
+	if err != nil {
+		t.Fatalf("BuildLogoutRequest: %v", err)
+	}
+
+	// Verify ID format.
+	expectedID := "_" + in.RequestID
+	if result.ID != expectedID {
+		t.Errorf("ID mismatch: got %q, want %q", result.ID, expectedID)
+	}
+
+	// Decode and verify XML payload.
+	xmlBytes := decodeSAMLMessageFromURL(t, result.RedirectURL, "SAMLRequest")
+	var req logoutRequestXML
+	if err := xml.Unmarshal(xmlBytes, &req); err != nil {
+		t.Fatalf("unmarshal LogoutRequest XML: %v", err)
+	}
+	if req.ID != expectedID {
+		t.Errorf("XML ID mismatch: got %q, want %q", req.ID, expectedID)
+	}
+	if req.Destination != "https://idp.example.com/slo" {
+		t.Errorf("Destination = %q, want %q", req.Destination, "https://idp.example.com/slo")
+	}
+	if req.NameID.Value != "user@example.com" {
+		t.Errorf("NameID = %q, want %q", req.NameID.Value, "user@example.com")
+	}
+	if req.SessionIndex != "session-idx-001" {
+		t.Errorf("SessionIndex = %q, want %q", req.SessionIndex, "session-idx-001")
+	}
+	if req.Version != "2.0" {
+		t.Errorf("Version = %q, want %q", req.Version, "2.0")
+	}
+
+	// Step 2: Simulate an inbound LogoutResponse (as the IdP would send back).
+	respXML := `<samlp:LogoutResponse xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+		xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+		ID="resp-001" Version="2.0" IssueInstant="2026-04-24T18:00:01Z"
+		Destination="https://auth.example.com/saml/slo"
+		InResponseTo="` + expectedID + `">
+		<saml:Issuer>https://idp.example.com</saml:Issuer>
+		<samlp:Status>
+			<samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
+		</samlp:Status>
+	</samlp:LogoutResponse>`
+	encodedResp := base64.StdEncoding.EncodeToString([]byte(respXML))
+
+	verified, err := prov.ValidateLogoutMessage(context.Background(), ValidateLogoutInput{
+		TenantID:   "t-001",
+		IdP:        in.IdP,
+		RawMessage: encodedResp,
+		Binding:    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+	})
+	if err != nil {
+		t.Fatalf("ValidateLogoutMessage (response): %v", err)
+	}
+	if !verified.IsResponse {
+		t.Error("expected IsResponse=true for LogoutResponse")
+	}
+	if verified.Status != "urn:oasis:names:tc:SAML:2.0:status:Success" {
+		t.Errorf("Status = %q, want Success", verified.Status)
+	}
+}
+
+// TestSLO_IdPInitiated_RoundTrip tests IdP-initiated SLO: simulate an inbound
+// LogoutRequest from the IdP, validate it, then build a signed LogoutResponse.
+func TestSLO_IdPInitiated_RoundTrip(t *testing.T) {
+	prov := newTestProvider(t)
+
+	// Step 1: Simulate an inbound IdP-initiated LogoutRequest.
+	reqXML := `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
+		xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
+		ID="_idp-req-001" Version="2.0" IssueInstant="2026-04-24T18:00:00Z"
+		Destination="https://auth.example.com/saml/slo">
+		<saml:Issuer>https://idp.example.com</saml:Issuer>
+		<saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">user@example.com</saml:NameID>
+		<samlp:SessionIndex>session-idx-002</samlp:SessionIndex>
+	</samlp:LogoutRequest>`
+	encodedReq := base64.StdEncoding.EncodeToString([]byte(reqXML))
+
+	verified, err := prov.ValidateLogoutMessage(context.Background(), ValidateLogoutInput{
+		TenantID: "t-001",
+		IdP: IdPRecord{
+			TenantID: "t-001",
+			EntityID: "https://idp.example.com",
+			SLOURL:   "https://idp.example.com/slo",
+		},
+		RawMessage: encodedReq,
+		Binding:    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+	})
+	if err != nil {
+		t.Fatalf("ValidateLogoutMessage (request): %v", err)
+	}
+	if verified.IsResponse {
+		t.Error("expected IsResponse=false for LogoutRequest")
+	}
+	if verified.NameID != "user@example.com" {
+		t.Errorf("NameID = %q, want %q", verified.NameID, "user@example.com")
+	}
+	if verified.SessionIndex != "session-idx-002" {
+		t.Errorf("SessionIndex = %q, want %q", verified.SessionIndex, "session-idx-002")
+	}
+
+	// Step 2: Build a signed outbound LogoutRequest to verify signing works.
+	respResult, err := prov.BuildLogoutRequest(context.Background(), BuildLogoutRequestInput{
+		TenantID: "t-001",
+		IdP: IdPRecord{
+			TenantID: "t-001",
+			EntityID: "https://idp.example.com",
+			SLOURL:   "https://idp.example.com/slo",
+		},
+		NameID:       "user@example.com",
+		RequestID:    "c1d2e3f4a5b6c1d2e3f4c1d2e3f4a5b6c1d2e3f4",
+		IssueInstant: time.Date(2026, 4, 24, 18, 0, 2, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("BuildLogoutRequest (for response verification): %v", err)
+	}
+
+	// Verify the outbound redirect URL is valid and contains SAMLRequest.
+	u, err := url.Parse(respResult.RedirectURL)
+	if err != nil {
+		t.Fatalf("parse redirect URL: %v", err)
+	}
+	if u.Host != "idp.example.com" {
+		t.Errorf("redirect host = %q, want idp.example.com", u.Host)
+	}
+
+	// Verify the decoded LogoutRequest XML contains an embedded signature
+	// (crewjam signs the XML body for LogoutRequest).
+	outboundXML := decodeSAMLMessageFromURL(t, respResult.RedirectURL, "SAMLRequest")
+	if !strings.Contains(string(outboundXML), "Signature") {
+		t.Error("outbound LogoutRequest XML does not contain a Signature element")
+	}
+	if !strings.Contains(string(outboundXML), "SignatureValue") {
+		t.Error("outbound LogoutRequest XML does not contain a SignatureValue element")
+	}
+
+	// Verify the XML can be parsed as a valid LogoutRequest.
+	var outReq logoutRequestXML
+	if err := xml.Unmarshal(outboundXML, &outReq); err != nil {
+		t.Fatalf("unmarshal outbound LogoutRequest XML: %v", err)
+	}
+	if outReq.NameID.Value != "user@example.com" {
+		t.Errorf("outbound NameID = %q, want %q", outReq.NameID.Value, "user@example.com")
+	}
+	if outReq.Destination != "https://idp.example.com/slo" {
+		t.Errorf("outbound Destination = %q, want %q", outReq.Destination, "https://idp.example.com/slo")
+	}
+}
