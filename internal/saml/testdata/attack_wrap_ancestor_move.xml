@@ -1,0 +1,14 @@
+<Response xmlns="urn:oasis:names:tc:SAML:2.0:protocol" ID="_resp1" Version="2.0">
+  <!-- Attacker moves the signed assertion into a nested wrapper and
+       adds a malicious assertion at top level (ancestor-move attack) -->
+  <Wrapper>
+    <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_a1">
+      <Issuer>https://idp.example.com</Issuer>
+      <Subject><NameID>legit@example.com</NameID></Subject>
+    </Assertion>
+  </Wrapper>
+  <Assertion xmlns="urn:oasis:names:tc:SAML:2.0:assertion" ID="_evil">
+    <Issuer>https://idp.example.com</Issuer>
+    <Subject><NameID>attacker@evil.com</NameID></Subject>
+  </Assertion>
+</Response>
