@@ -42,16 +42,10 @@ func CheckSignedScope(doc *etree.Document, signedRoot *etree.Element,
 
 // isDescendantOrSelf returns true if target is root itself or a descendant of root.
 func isDescendantOrSelf(root, target *etree.Element) bool {
-	for cur := target; cur != nil; cur = parentElement(cur) {
+	for cur := target; cur != nil; cur = cur.Parent() {
 		if cur == root {
 			return true
 		}
 	}
 	return false
-}
-
-// parentElement returns the parent *etree.Element of el, or nil if the parent
-// is the Document root.
-func parentElement(el *etree.Element) *etree.Element {
-	return el.Parent()
 }
