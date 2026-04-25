@@ -47,9 +47,7 @@ data:
         metadataURL: {{ .Values.saml.idp.metadataURL | quote }}
         metadataPath: {{ .Values.saml.idp.metadataPath | quote }}
         refreshIntervalHours: {{ .Values.saml.idp.refreshIntervalHours }}
-        {{- with .Values.saml.idp.trustedCertPaths }}
-        trustedCertPaths: {{ toJson . }}
-        {{- end }}
+        trustedCertPaths: {{ .Values.saml.idp.trustedCertPaths | toJson }}
         skipSignatureCheck: {{ .Values.saml.idp.skipSignatureCheck }}
       discover:
         enabled: {{ .Values.saml.discover.enabled }}
