@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Provider abstracts the SAML protocol library. 7 methods, interface
+// Provider abstracts the SAML protocol library. Interface
 // segregation keeps the dependency replaceable (DIP).
 type Provider interface {
 	BuildAuthnRequest(ctx context.Context, in BuildAuthnRequestInput) (*AuthnRequest, error)
