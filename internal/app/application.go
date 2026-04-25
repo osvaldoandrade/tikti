@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/osvaldoandrade/tikti/internal/providers"
 	"github.com/osvaldoandrade/tikti/internal/repository"
@@ -17,6 +18,7 @@ import (
 type Application struct {
 	Config *config.Config
 	Engine *gin.Engine
+	Redis  *redis.Client
 
 	UserService services.UserService
 	TenantSvc   services.TenantService
@@ -62,6 +64,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	return &Application{
 		Config:      cfg,
 		Engine:      engine,
+		Redis:       redisClient,
 		UserService: userService,
 		TenantSvc:   tenantService,
 		MemberSvc:   membershipService,
