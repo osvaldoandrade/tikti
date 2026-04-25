@@ -64,6 +64,7 @@ func registerIdP(ctx context.Context, store saml.Store, opts registerIdPOptions)
 		return nil, err
 	}
 	rec.TenantID = opts.TID
+	rec.MetadataURL = opts.MetadataURL
 
 	// Apply optional attribute map.
 	if opts.AttrMapFile != "" {
