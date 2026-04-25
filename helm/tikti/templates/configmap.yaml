@@ -16,3 +16,45 @@ data:
     defaultAudience: {{ .Values.config.defaultAudience | quote }}
     jwksPrivateKey: {{- if .Values.secrets.enabled }} "${JWKS_PRIVATE_KEY}"{{- else }} {{ .Values.config.jwksPrivateKey | quote }}{{- end }}
     jwksKeyId: {{ .Values.config.jwksKeyId | quote }}
+    saml:
+      enabled: {{ .Values.saml.enabled }}
+      sp:
+        entityID: {{ .Values.saml.sp.entityID | quote }}
+        acsURL: {{ .Values.saml.sp.acsURL | quote }}
+        sloURL: {{ .Values.saml.sp.sloURL | quote }}
+        signingKeyPath: {{ .Values.saml.sp.signingKeyPath | quote }}
+        signingCertPath: {{ .Values.saml.sp.signingCertPath | quote }}
+        encryptionKeyPath: {{ .Values.saml.sp.encryptionKeyPath | quote }}
+        encryptionCertPath: {{ .Values.saml.sp.encryptionCertPath | quote }}
+        keyBits: {{ .Values.saml.sp.keyBits }}
+        clockSkewSeconds: {{ .Values.saml.sp.clockSkewSeconds }}
+        requestTTLSeconds: {{ .Values.saml.sp.requestTTLSeconds }}
+        allowedSigAlgs: {{ .Values.saml.sp.allowedSigAlgs | toJson }}
+        allowedDigestAlgs: {{ .Values.saml.sp.allowedDigestAlgs | toJson }}
+        canonicalization: {{ .Values.saml.sp.canonicalization | quote }}
+        requireAssertionSigned: {{ .Values.saml.sp.requireAssertionSigned }}
+        requireEncryptedAssertion: {{ .Values.saml.sp.requireEncryptedAssertion }}
+      acs:
+        postLoginURL: {{ .Values.saml.acs.postLoginURL | quote }}
+        deliveryMode: {{ .Values.saml.acs.deliveryMode | quote }}
+        cookieName: {{ .Values.saml.acs.cookieName | quote }}
+        cookieDomain: {{ .Values.saml.acs.cookieDomain | quote }}
+        cookieSameSite: {{ .Values.saml.acs.cookieSameSite | quote }}
+        cookieSecure: {{ .Values.saml.acs.cookieSecure }}
+        cookieHTTPOnly: {{ .Values.saml.acs.cookieHTTPOnly }}
+        sessionTTL: {{ .Values.saml.acs.sessionTTL }}
+      idp:
+        metadataURL: {{ .Values.saml.idp.metadataURL | quote }}
+        metadataPath: {{ .Values.saml.idp.metadataPath | quote }}
+        refreshIntervalHours: {{ .Values.saml.idp.refreshIntervalHours }}
+        {{- with .Values.saml.idp.trustedCertPaths }}
+        trustedCertPaths: {{ toJson . }}
+        {{- end }}
+        skipSignatureCheck: {{ .Values.saml.idp.skipSignatureCheck }}
+      discover:
+        enabled: {{ .Values.saml.discover.enabled }}
+        protocolType: {{ .Values.saml.discover.protocolType | quote }}
+        serviceURL: {{ .Values.saml.discover.serviceURL | quote }}
+      metrics:
+        enabled: {{ .Values.saml.metrics.enabled }}
+        namespace: {{ .Values.saml.metrics.namespace | quote }}
