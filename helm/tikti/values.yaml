@@ -72,7 +72,7 @@ secrets:
   jwksPrivateKey: ""
 
 saml:
-  enabled: false
+  enabled: true
   # existingSecret: name of a pre-existing Secret containing sp.key and sp.crt.
   # When set, no Secret is rendered by this chart (use external-secrets or Vault).
   existingSecret: ""

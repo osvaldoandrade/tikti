@@ -1266,7 +1266,7 @@ stringData:
 
 ```yaml
 saml:
-  enabled: false
+  enabled: true
   sp:
     key: ""   # PEM PKCS#8; inject via --set-file or external-secrets
     cert: ""  # PEM X.509
@@ -1428,7 +1428,7 @@ jobs:
 
 |Flag|Scope|Default|Effect|
 |---|---|---|---|
-|`saml.enabled`|global|`false`|Mounts `/saml/*` routes|
+|`saml.enabled`|global|`true`|Mounts `/saml/*` routes|
 |existence of `saml:idp:{tid}`|per-tenant|absent|Tenant eligible for SAML|
 |`saml.acs.deliveryMode`|global, per-tenant override|`cookie`|`cookie|
 |`saml.requireEncryptedAssertion`|global, per-tenant override|`false`|Reject unencrypted assertions|
