@@ -5,9 +5,10 @@ package redis
 
 // SAML key prefixes — see HLD §15 / Appendix C.
 const (
-	SAMLRequestPrefix  = "saml:req:"
-	SAMLIdPPrefix      = "saml:idp:"
-	SAMLIndexPrefix    = "saml:idx:"
-	SAMLSeenPrefix     = "saml:seen:"
-	SAMLDomainPrefix   = "saml:discover:domain:"
+	SAMLRequestPrefix    = "saml:req:"
+	SAMLIdPPrefix        = "saml:idp:"
+	SAMLIndexPrefix      = "saml:idx:"
+	SAMLSeenPrefix       = "saml:seen:"
+	SAMLDomainPrefix     = "saml:discover:domain:"
+	SAMLSPRotationKey    = "saml:sp:rotation"
 )

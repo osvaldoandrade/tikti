@@ -44,6 +44,10 @@ type SPMetadataConfig struct {
 	SigningCertPEM []byte
 	EncryptCertPEM []byte
 	ValidUntil     time.Time
+
+	// ExtraSigningCertPEMs holds additional signing certificates to publish
+	// in SP metadata during a 2-step key rotation (--prepare phase).
+	ExtraSigningCertPEMs [][]byte
 }
 
 // SPMetadataFromConfig builds SAML SP metadata XML bytes per HLD Appendix O.
@@ -75,6 +79,15 @@ func SPMetadataFromConfig(cfg SPMetadataConfig) ([]byte, error) {
 
 	// Signing KeyDescriptor
 	addKeyDescriptor(spd, "signing", sigB64, nil)
+
+	// Extra signing KeyDescriptors (used during key rotation).
+	for i, extra := range cfg.ExtraSigningCertPEMs {
+		extraB64, err := certPEMToBase64(extra)
+		if err != nil {
+			return nil, fmt.Errorf("saml: extra signing cert %d: %w", i, err)
+		}
+		addKeyDescriptor(spd, "signing", extraB64, nil)
+	}
 
 	// Encryption KeyDescriptor
 	addKeyDescriptor(spd, "encryption", encB64, []string{
