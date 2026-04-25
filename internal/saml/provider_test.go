@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"bytes"
 	"compress/flate"
 	"context"
 	"crypto"
@@ -329,7 +330,7 @@ func decodeSAMLMessageFromURL(t *testing.T, rawURL, param string) []byte {
 	if err != nil {
 		t.Fatalf("base64 decode %s: %v", param, err)
 	}
-	reader := flate.NewReader(strings.NewReader(string(compressed)))
+	reader := flate.NewReader(bytes.NewReader(compressed))
 	defer reader.Close()
 	xmlBytes, err := io.ReadAll(reader)
 	if err != nil {
