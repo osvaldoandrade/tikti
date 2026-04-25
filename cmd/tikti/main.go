@@ -55,11 +55,13 @@ func main() {
 			defer rdb.Close()
 			store := saml.NewRedisStore(rdb)
 			m := saml.NewMetrics(prometheus.DefaultRegisterer)
+			spCert, _ := saml.LoadCertFile(cfg.SAML.SP.SigningCertPath)
 			saml.NewRefresher(saml.RefresherConfig{
 				Store:     store,
 				Metrics:   m,
 				Interval:  cfg.SAML.IdP.RefreshInterval,
 				MaxJitter: saml.DefaultJitter,
+				SPCertPEM: spCert,
 			}).Start(rootCtx)
 		}
 	}

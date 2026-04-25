@@ -62,6 +62,7 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !fresh {
+		h.metrics.ReplayBlocked.WithLabelValues(req.TenantID).Inc()
 		h.reject(w, r, req.TenantID, ReasonRequestReplay)
 		return
 	}

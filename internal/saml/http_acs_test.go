@@ -624,6 +624,49 @@ func TestACS_Accept_ValidationDurationObserved(t *testing.T) {
 	}
 }
 
+func TestACS_ReplayedAssertion_ReplayBlockedMetric(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	metrics := NewMetrics(reg)
+
+	store := happyStore()
+	store.markSeenFresh = false
+
+	emitter := &mockACSEmitter{}
+	h := NewHandler(Deps{
+		Provider: happyProvider(),
+		Store:    store,
+		Bridge:   happyBridge(),
+		Clock:    NewFakeClock(),
+		Cfg:      goldenSAMLConfig(),
+		Metrics:  metrics,
+		Audit:    emitter,
+	})
+
+	r := newACSRequest(goldenResponseBase64(), "/app", "req-001")
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	// Gather metrics and verify replay_blocked counter was incremented.
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather metrics: %v", err)
+	}
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "tikti_saml_replay_blocked_total" {
+			for _, m := range mf.GetMetric() {
+				if m.GetCounter().GetValue() == 1 {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("replay_blocked counter not incremented after replayed assertion")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Helper function tests
 // ---------------------------------------------------------------------------
