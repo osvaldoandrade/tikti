@@ -11,10 +11,10 @@
 
 ### Reviewer Checklist
 
-- [ ] Reviewer identified and NDA executed.
-- [ ] This threat-model document shared and acknowledged.
-- [ ] Severity scale agreed (see below).
-- [ ] 3-day pentest calendar invite confirmed for Week 5.
+- [x] Reviewer identified and NDA executed.
+- [x] This threat-model document shared and acknowledged.
+- [x] Severity scale agreed (see below).
+- [x] 3-day pentest calendar invite confirmed for Week 5.
 
 ---
 
@@ -50,6 +50,7 @@ All findings will be classified using the following severity levels:
 | **S**poofing — stolen idToken cookie | XSS, infostealer | `HttpOnly`, `Secure`, short TTL, rotation on login | Medium (same as today) |
 | **T**ampering — assertion mutation | Man-in-the-middle | TLS at ingress; XML-DSig over the assertion | Low |
 | **T**ampering — signature wrapping | Layered XML | Ancestor-walk validator, ID-collision rejection | Low |
+| **T**ampering — open redirect via RelayState | Attacker-crafted login URL | `isSafeRedirect` rejects absolute/protocol-relative URLs | Blocked |
 | **R**epudiation — who logged in | Insider dispute | Immutable audit record per assertion | Low |
 | **I**nfo disclosure — raw XML in logs | Debug log leaks PII | Raw XML behind feature flag off in prod | Low |
 | **I**nfo disclosure — error oracle | Attacker probes reasons | 4 neutral pages, reasons only in logs | Low |

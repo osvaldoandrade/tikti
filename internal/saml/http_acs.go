@@ -3,6 +3,8 @@ package saml
 import (
 	"context"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -97,8 +99,40 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	_ = h.audit.Emit(ctx, NewAcceptRecord(req.TenantID, *va, req.ID, h.cfg.SP.EntityID, h.clock.Since(t0)))
 
 	redirectURL := relay
-	if redirectURL == "" {
+	if redirectURL == "" || !isSafeRedirect(redirectURL) {
 		redirectURL = h.cfg.ACS.PostLoginURL
 	}
 	http.Redirect(w, r, redirectURL, http.StatusFound)
+}
+
+// isSafeRedirect returns true when uri is a relative path safe from open-
+// redirect attacks.  It rejects absolute URLs, protocol-relative URLs
+// (//evil.com), backslash tricks (\evil.com), and data/javascript URIs.
+func isSafeRedirect(uri string) bool {
+	// Must be non-empty and start with a single forward slash.
+	if uri == "" || uri[0] != '/' {
+		return false
+	}
+	// Reject protocol-relative URLs  "//evil.com/…"
+	if len(uri) > 1 && uri[1] == '/' {
+		return false
+	}
+	// Reject backslash after leading slash  "/\evil.com"
+	if len(uri) > 1 && uri[1] == '\\' {
+		return false
+	}
+	// Parse to ensure the result is indeed relative (no scheme, no host).
+	u, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "" || u.Host != "" {
+		return false
+	}
+	// Reject userinfo tricks ("/@evil.com") — not dangerous for Location
+	// headers, but a defence-in-depth measure.
+	if strings.HasPrefix(uri, "/@") {
+		return false
+	}
+	return true
 }

@@ -845,3 +845,94 @@ func TestACS_AllRejectPaths_EmitAudit(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// isSafeRedirect — unit tests
+// ---------------------------------------------------------------------------
+
+func TestIsSafeRedirect(t *testing.T) {
+	tests := []struct {
+		uri  string
+		want bool
+	}{
+		// Safe relative paths
+		{"/dashboard", true},
+		{"/app", true},
+		{"/app/settings?tab=profile", true},
+		{"/", true},
+
+		// Absolute URLs — open redirect
+		{"https://evil.com", false},
+		{"http://evil.com/path", false},
+
+		// Protocol-relative — open redirect
+		{"//evil.com", false},
+		{"//evil.com/path", false},
+
+		// Backslash trick
+		{"/\\evil.com", false},
+
+		// Userinfo trick
+		{"/@evil.com", false},
+
+		// Empty
+		{"", false},
+
+		// No leading slash
+		{"evil.com", false},
+		{"relative/path", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.uri, func(t *testing.T) {
+			got := isSafeRedirect(tc.uri)
+			if got != tc.want {
+				t.Errorf("isSafeRedirect(%q) = %v, want %v", tc.uri, got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ACS open-redirect protection
+// ---------------------------------------------------------------------------
+
+func TestACS_AbsoluteRelayState_FallsBackToPostLoginURL(t *testing.T) {
+	emitter := &mockACSEmitter{}
+	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+
+	// Attacker-controlled RelayState pointing to an external site.
+	r := newACSRequest(goldenResponseBase64(), "https://evil.com/phish", "req-001")
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	loc := resp.Header.Get("Location")
+	if loc != "/dashboard" {
+		t.Errorf("Location = %q, want %q (PostLoginURL fallback)", loc, "/dashboard")
+	}
+}
+
+func TestACS_ProtocolRelativeRelayState_FallsBackToPostLoginURL(t *testing.T) {
+	emitter := &mockACSEmitter{}
+	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+
+	r := newACSRequest(goldenResponseBase64(), "//evil.com", "req-001")
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	loc := resp.Header.Get("Location")
+	if loc != "/dashboard" {
+		t.Errorf("Location = %q, want %q (PostLoginURL fallback for //)", loc, "/dashboard")
+	}
+}
