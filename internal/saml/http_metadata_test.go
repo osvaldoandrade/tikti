@@ -28,7 +28,7 @@ func TestMetadata_200_WithCorrectContentType(t *testing.T) {
 		t.Fatalf("read golden file: %v", err)
 	}
 
-	h := NewHandler(&metadataStubProvider{data: golden})
+	h := NewHandler(Deps{Provider: &metadataStubProvider{data: golden}})
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/metadata", nil)
 	rec := httptest.NewRecorder()
@@ -57,7 +57,7 @@ func TestMetadata_BytesGolden(t *testing.T) {
 		t.Fatalf("read golden file: %v", err)
 	}
 
-	h := NewHandler(&metadataStubProvider{data: golden})
+	h := NewHandler(Deps{Provider: &metadataStubProvider{data: golden}})
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/metadata", nil)
 	rec := httptest.NewRecorder()

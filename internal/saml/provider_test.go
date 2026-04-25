@@ -39,6 +39,10 @@ func (s *stubProvider) BuildLogoutRequest(_ context.Context, _ BuildLogoutReques
 	return nil, nil
 }
 
+func (s *stubProvider) BuildLogoutResponse(_ context.Context, _ BuildLogoutResponseInput) (*LogoutResponseResult, error) {
+	return nil, nil
+}
+
 func (s *stubProvider) ValidateLogoutMessage(_ context.Context, _ ValidateLogoutInput) (*VerifiedLogout, error) {
 	return nil, nil
 }
