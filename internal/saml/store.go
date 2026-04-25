@@ -2,8 +2,12 @@ package saml
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrIdPNotFound is returned when a requested IdP record does not exist.
+var ErrIdPNotFound = errors.New("saml: idp not found")
 
 // Store abstracts the persistence layer for SAML state. 13 methods across
 // four record families: requests, IdPs, session indexes, and replay marks.
@@ -25,23 +29,4 @@ type Store interface {
 	PutDomain(ctx context.Context, domain, tid string) error
 	GetDomain(ctx context.Context, domain string) (string, error)
 	DeleteDomain(ctx context.Context, domain string) error
-}
-
-// RequestRecord represents a pending SAML AuthnRequest stored until the
-// corresponding Response arrives at the ACS endpoint.
-type RequestRecord struct {
-	ID           string
-	TenantID     string
-	RelayState   string
-	ACSURL       string
-	IssueInstant time.Time
-}
-
-// IndexRecord maps a SAML NameID to local session data, used for
-// Single Logout to correlate the IdP session with the local session.
-type IndexRecord struct {
-	TenantID     string
-	Subject      string
-	SessionIndex string
-	NotOnOrAfter time.Time
 }

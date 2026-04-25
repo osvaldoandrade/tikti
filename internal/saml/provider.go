@@ -45,30 +45,6 @@ type ValidateResponseInput struct {
 	ClockSkew            time.Duration
 }
 
-// VerifiedAssertion is the validated output of a SAML Response.
-type VerifiedAssertion struct {
-	AssertionID    string
-	NameID         string
-	NameIDFormat   string
-	SessionIndex   string
-	NotOnOrAfter   time.Time
-	Attributes     map[string][]string
-	IssuerEntityID string
-}
-
-// IdPRecord holds the persisted metadata for an external Identity Provider.
-type IdPRecord struct {
-	TenantID        string
-	EntityID        string
-	SSOURL          string
-	SLOURL          string
-	SigningCerts    [][]byte
-	EncryptionCerts [][]byte
-	NameIDFormat    string
-	AttributeMap    map[string][]string
-	LastFetched     time.Time
-}
-
 // BuildLogoutRequestInput carries the parameters needed to build a SAML LogoutRequest.
 type BuildLogoutRequestInput struct {
 	TenantID     string
