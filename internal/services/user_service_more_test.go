@@ -765,10 +765,10 @@ func TestUserService_IssueIDTokenAndGetRSAPrivateKey(t *testing.T) {
 	repo := &mockUserRepo{}
 	svc := NewUserService(repo, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
 
-	if _, _, err := svc.issueIDToken(nil); err != domain.ErrInvalidArgument {
+	if _, _, err := svc.issueIDToken(nil, nil); err != domain.ErrInvalidArgument {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
-	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u1", Email: "u@x.com", Role: domain.RoleCompanyEmployee})
+	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u1", Email: "u@x.com", Role: domain.RoleCompanyEmployee}, nil)
 	if err != nil || tok == "" || exp != 3600 {
 		t.Fatalf("unexpected token response: tok=%q exp=%d err=%v", tok, exp, err)
 	}
@@ -798,7 +798,7 @@ func TestUserService_IssueIDTokenAndGetRSAPrivateKey(t *testing.T) {
 		Email:     "u2@x.com",
 		Role:      domain.RoleCompanyEmployee,
 		CompanyId: &tenantID,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("issue id token with tenant: %v", err)
 	}
@@ -826,5 +826,53 @@ func TestUserService_IssueIDTokenAndGetRSAPrivateKey(t *testing.T) {
 	missing.rsaOnce.Do(func() { missing.rsaKey = nil })
 	if _, err := missing.getRSAPrivateKey(); err == nil || !strings.Contains(err.Error(), "missing") {
 		t.Fatalf("expected missing key error, got %v", err)
+	}
+}
+
+func TestIDToken_AMR_Password(t *testing.T) {
+	svc := NewUserService(&mockUserRepo{}, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
+
+	// Password path: nil amr → token must not contain amr.
+	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u-pwd", Email: "pwd@example.com", Role: domain.RoleCompanyEmployee}, nil)
+	if err != nil || tok == "" || exp != 3600 {
+		t.Fatalf("unexpected: tok=%q exp=%d err=%v", tok, exp, err)
+	}
+	claims, err := utils.ParseToken(tok, "secret")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, ok := claims["amr"]; ok {
+		t.Fatalf("password path must not include amr claim, got %v", claims["amr"])
+	}
+	if claims["email"] != "pwd@example.com" {
+		t.Fatalf("expected email=pwd@example.com, got %v", claims["email"])
+	}
+}
+
+func TestIDToken_AMR_SAML(t *testing.T) {
+	svc := NewUserService(&mockUserRepo{}, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
+
+	// SAML path: amr=["saml"] → token must include that claim.
+	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u-saml", Email: "saml@example.com", Role: domain.RoleCompanyEmployee}, []string{"saml"})
+	if err != nil || tok == "" || exp != 3600 {
+		t.Fatalf("unexpected: tok=%q exp=%d err=%v", tok, exp, err)
+	}
+	claims, err := utils.ParseToken(tok, "secret")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	amrRaw, ok := claims["amr"]
+	if !ok {
+		t.Fatalf("expected amr claim to be present")
+	}
+	amrSlice, ok := amrRaw.([]interface{})
+	if !ok {
+		t.Fatalf("expected amr to be a slice, got %T", amrRaw)
+	}
+	if len(amrSlice) != 1 || amrSlice[0] != "saml" {
+		t.Fatalf("expected amr=[saml], got %v", amrSlice)
+	}
+	if claims["email"] != "saml@example.com" {
+		t.Fatalf("expected email=saml@example.com, got %v", claims["email"])
 	}
 }
