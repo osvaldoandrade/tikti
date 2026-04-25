@@ -3,6 +3,7 @@ package saml
 import (
 	"bytes"
 	"encoding/xml"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -66,10 +67,10 @@ func TestSPMetadata_SchemaValid(t *testing.T) {
 	dec := xml.NewDecoder(bytes.NewReader(out))
 	for {
 		_, err := dec.Token()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
 			t.Fatalf("XML is not well-formed: %v", err)
 		}
 	}
