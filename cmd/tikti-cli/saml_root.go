@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
+
+	"github.com/go-redis/redis/v8"
 
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/spf13/cobra"
@@ -257,29 +260,80 @@ func samlDomainCmd(profileName *string, outputJSON *bool) *cobra.Command {
 
 func samlDomainAddCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	var (
-		tid    string
-		domain string
+		tid       string
+		domain    string
+		redisAddr string
 	)
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Map an email domain to a tenant for SAML discovery",
-		RunE:  stubRunE("saml domain add", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if redisAddr == "" {
+				redisAddr = os.Getenv("REDIS_ADDR")
+			}
+			if redisAddr == "" {
+				redisAddr = "localhost:6379"
+			}
+
+			rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+			defer rdb.Close()
+			store := saml.NewRedisStore(rdb)
+
+			if err := domainAdd(context.Background(), store, domain, tid); err != nil {
+				return err
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.write(map[string]any{
+				"command": "saml domain add",
+				"domain":  domain,
+				"tid":     tid,
+				"status":  "ok",
+			})
+		},
 	}
 	cmd.Flags().StringVar(&tid, "tid", "", "Tenant ID")
 	cmd.Flags().StringVar(&domain, "domain", "", "Email domain (e.g. example.com)")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis server address (host:port)")
 	_ = cmd.MarkFlagRequired("tid")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }
 
 func samlDomainRemoveCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var domain string
+	var (
+		domain    string
+		redisAddr string
+	)
 	cmd := &cobra.Command{
 		Use:   "remove",
 		Short: "Remove an email-domain mapping",
-		RunE:  stubRunE("saml domain remove", outputJSON),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if redisAddr == "" {
+				redisAddr = os.Getenv("REDIS_ADDR")
+			}
+			if redisAddr == "" {
+				redisAddr = "localhost:6379"
+			}
+
+			rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
+			defer rdb.Close()
+			store := saml.NewRedisStore(rdb)
+
+			if err := domainRemove(context.Background(), store, domain); err != nil {
+				return err
+			}
+
+			w := newSAMLWriter(outputJSON)
+			return w.write(map[string]any{
+				"command": "saml domain remove",
+				"domain":  domain,
+				"status":  "ok",
+			})
+		},
 	}
 	cmd.Flags().StringVar(&domain, "domain", "", "Email domain (e.g. example.com)")
+	cmd.Flags().StringVar(&redisAddr, "redis-addr", "", "Redis server address (host:port)")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }
