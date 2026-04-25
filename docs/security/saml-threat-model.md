@@ -63,4 +63,4 @@ All findings will be classified using the following severity levels:
 ## References
 
 - High-Level Design: `docs/12_saml_federation_hld.md`
-- Pentest report (P8.7): `docs/security/saml-pentest-report.md` *(to be created by reviewer)*
+- Pentest report (P8.7): `docs/security/saml-pentest-report.md`
