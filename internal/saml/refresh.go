@@ -206,10 +206,12 @@ func (r *Refresher) updateSPCertExpiry() {
 	}
 	block, _ := pem.Decode(r.spCertPEM)
 	if block == nil {
+		log.Printf("saml: SPCertPEM provided but contains no valid PEM block")
 		return
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)
 	if err != nil {
+		log.Printf("saml: failed to parse SP signing cert: %v", err)
 		return
 	}
 	r.metrics.SPCertExpiry.Set(cert.NotAfter.Sub(time.Now()).Seconds())

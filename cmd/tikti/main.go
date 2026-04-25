@@ -55,7 +55,10 @@ func main() {
 			defer rdb.Close()
 			store := saml.NewRedisStore(rdb)
 			m := saml.NewMetrics(prometheus.DefaultRegisterer)
-			spCert, _ := saml.LoadCertFile(cfg.SAML.SP.SigningCertPath)
+			spCert, err := saml.LoadCertFile(cfg.SAML.SP.SigningCertPath)
+			if err != nil {
+				log.Printf("saml: could not load SP signing cert for expiry monitoring: %v", err)
+			}
 			saml.NewRefresher(saml.RefresherConfig{
 				Store:     store,
 				Metrics:   m,
