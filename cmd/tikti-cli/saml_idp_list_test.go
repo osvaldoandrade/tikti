@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,23 +104,10 @@ func TestFormatIdPTable(t *testing.T) {
 		t.Error("expected non-empty table output")
 	}
 	// Verify header is present.
-	if !containsSubstring(output, "TENANT ID") {
+	if !strings.Contains(output, "TENANT ID") {
 		t.Error("table missing TENANT ID header")
 	}
-	if !containsSubstring(output, "t-001") {
+	if !strings.Contains(output, "t-001") {
 		t.Error("table missing tenant ID value")
 	}
-}
-
-func containsSubstring(s, sub string) bool {
-	return len(s) >= len(sub) && searchSubstring(s, sub)
-}
-
-func searchSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
