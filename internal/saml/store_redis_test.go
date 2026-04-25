@@ -2,6 +2,7 @@ package saml
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -152,8 +153,8 @@ func TestListIdPs_Scan(t *testing.T) {
 	const count = 150
 	for i := 0; i < count; i++ {
 		rec := IdPRecord{
-			TenantID: "t-" + time.Now().Format("150405.000000000") + "-" + string(rune('A'+i%26)) + "-" + padInt(i),
-			EntityID: "https://idp.example.com/" + padInt(i),
+			TenantID: fmt.Sprintf("t-%d", i),
+			EntityID: fmt.Sprintf("https://idp.example.com/%d", i),
 		}
 		if err := store.PutIdP(ctx, rec); err != nil {
 			t.Fatalf("PutIdP %d: %v", i, err)
@@ -640,20 +641,3 @@ func TestListIdPs_NilValueSkipped(t *testing.T) {
 	}
 }
 
-// padInt zero-pads an integer to 4 digits for deterministic ordering.
-func padInt(n int) string {
-	s := "0000" + itoa(n)
-	return s[len(s)-4:]
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
-}

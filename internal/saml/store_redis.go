@@ -125,12 +125,12 @@ func (s *RedisStore) ListIdPs(ctx context.Context) ([]IdPRecord, error) {
 				return nil, err
 			}
 			for _, v := range vals {
-				s, ok := v.(string)
-				if !ok || len(s) == 0 {
+				str, ok := v.(string)
+				if !ok || len(str) == 0 {
 					continue
 				}
 				var rec IdPRecord
-				if err := msgpack.Unmarshal([]byte(s), &rec); err != nil {
+				if err := msgpack.Unmarshal([]byte(str), &rec); err != nil {
 					return nil, err
 				}
 				records = append(records, rec)
