@@ -98,9 +98,9 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	h.metrics.ValidationDuration.WithLabelValues(req.TenantID).Observe(h.clock.Since(t0).Seconds())
 	_ = h.audit.Emit(ctx, NewAcceptRecord(req.TenantID, *va, req.ID, h.cfg.SP.EntityID, h.clock.Since(t0)))
 
-	dest := relay
-	if dest == "" {
-		dest = h.cfg.ACS.PostLoginURL
+	redirectURL := relay
+	if redirectURL == "" {
+		redirectURL = h.cfg.ACS.PostLoginURL
 	}
-	http.Redirect(w, r, dest, http.StatusFound)
+	http.Redirect(w, r, redirectURL, http.StatusFound)
 }

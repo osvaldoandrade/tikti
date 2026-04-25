@@ -110,7 +110,8 @@ func goldenSAMLConfig() config.SAMLConfig {
 
 // goldenIDToken returns a minimal HS256 JWT token string for tests.
 // The payload contains {"sub":"user-001","tid":"t-001"}.
-// It is NOT cryptographically valid — only the payload is meaningful.
+// The signature is intentionally invalid — this token is only used in tests
+// to verify cookie setting and subject extraction, never for real auth.
 func goldenIDToken() string {
 	// header: {"alg":"HS256","typ":"JWT"}
 	// payload: {"sub":"user-001","tid":"t-001","iat":1767225600,"exp":1767229200}

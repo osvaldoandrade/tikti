@@ -103,6 +103,7 @@ func (h *Handler) setIDTokenCookie(w http.ResponseWriter, idt string) {
 }
 
 // parseSameSite converts a string cookie SameSite value to http.SameSite.
+// Unrecognized or empty values return http.SameSiteDefaultMode.
 func parseSameSite(s string) http.SameSite {
 	switch strings.ToLower(s) {
 	case "strict":
