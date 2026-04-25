@@ -70,3 +70,12 @@ secrets:
   apiKey: ""
   redisPassword: ""
   jwksPrivateKey: ""
+
+saml:
+  enabled: false
+  # existingSecret: name of a pre-existing Secret containing sp.key and sp.crt.
+  # When set, no Secret is rendered by this chart (use external-secrets or Vault).
+  existingSecret: ""
+  sp:
+    key: ""  # PEM PKCS#8 private key; inject via --set-file or existingSecret
+    crt: ""  # PEM X.509 certificate; inject via --set-file or existingSecret
