@@ -1,0 +1,14 @@
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+                  entityID="https://idp.example.com/expired">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:X509Data>
+          <ds:X509Certificate>MIIBZTCCAQugAwIBAgIBATAKBggqhkjOPQQDAjAyMREwDwYDVQQKEwhUZXN0IElkUDEdMBsGA1UEAxMUdGVzdC1pZHAuZXhhbXBsZS5jb20wHhcNMjQwNDI1MDIyOTUzWhcNMjUwNDI1MDIyOTUzWjAyMREwDwYDVQQKEwhUZXN0IElkUDEdMBsGA1UEAxMUdGVzdC1pZHAuZXhhbXBsZS5jb20wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAASldwFxGJpXU+Ege6Esp0U51MvCj1+TeiJY4RkRZ2z9HOPR3GT0TgXpw+xZsJaA2vZZI8RGlv8cfUyVNs0TNVKFoxIwEDAOBgNVHQ8BAf8EBAMCB4AwCgYIKoZIzj0EAwIDSAAwRQIhAOn/r0qxiWTgBvUFyVul39vngYyNa2VFr2lYtp6SvHjAAiAP4oiN3ghUV1v2oS86D9ZLsvzaIrD9H4wLjO4MM6SRCg==</ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </KeyDescriptor>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+                         Location="https://idp.example.com/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>

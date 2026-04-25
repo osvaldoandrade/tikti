@@ -130,4 +130,12 @@ var (
 	ErrXXE                       = errors.New("saml: xxe detected")
 	ErrSignatureWrapping         = errors.New("saml: signature wrapping detected")
 	ErrInternal                  = errors.New("saml: internal error")
+
+	// Metadata-parsing sentinels — returned by ParseIdPMetadata.
+	ErrMetadataNoCert          = errors.New("saml: metadata contains no signing certificate")
+	ErrMetadataExpired         = errors.New("saml: metadata signing certificate expired")
+	ErrMetadataInsecureURL     = errors.New("saml: SSO URL is not HTTPS")
+	ErrMetadataEmptyEntityID   = errors.New("saml: entityID is empty")
+	ErrMetadataUnsupportedBind = errors.New("saml: unsupported SSO binding")
+	ErrMetadataMalformedXML    = errors.New("saml: malformed XML")
 )

@@ -1,0 +1,17 @@
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+                  entityID="http://www.okta.com/exk123abc">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:X509Data>
+          <ds:X509Certificate>MIIBZTCCAQugAwIBAgIBATAKBggqhkjOPQQDAjAyMREwDwYDVQQKEwhUZXN0IElkUDEdMBsGA1UEAxMUdGVzdC1pZHAuZXhhbXBsZS5jb20wHhcNMjYwNDI0MDIyOTUzWhcNMjcwNDI1MDIyOTUzWjAyMREwDwYDVQQKEwhUZXN0IElkUDEdMBsGA1UEAxMUdGVzdC1pZHAuZXhhbXBsZS5jb20wWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARQeeUnrnawt8eh2TsCK6oEoqcxvzjBHC998pL5vl0D2a6zE1z2uBT1sfXk+Kid/Ld9YvsaDIiUZ6BjDHDVg4xToxIwEDAOBgNVHQ8BAf8EBAMCB4AwCgYIKoZIzj0EAwIDSAAwRQIhAMWnB+EPK8msh9qoVQz+jQ5wSGqLWCw2naOf/RdNIwATAiA9mYQJj50lCXK2Q46Iv1gmsa998+0JsmEyg6eqs0bk1w==</ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </KeyDescriptor>
+    <NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</NameIDFormat>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+                         Location="https://dev-123456.okta.com/app/exk123abc/sso/saml"/>
+    <SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect"
+                         Location="https://dev-123456.okta.com/app/exk123abc/sso/saml"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>
