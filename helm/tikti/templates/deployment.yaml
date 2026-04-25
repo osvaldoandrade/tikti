@@ -110,7 +110,7 @@ spec:
         {{- if .Values.saml.enabled }}
         - name: saml-keys
           secret:
-            secretName: {{ include "tikti.fullname" . }}-saml
+            secretName: {{ .Values.saml.existingSecret | default (printf "%s-saml" (include "tikti.fullname" .)) }}
             defaultMode: 0400
         {{- end }}
         {{- with .Values.extraVolumes }}

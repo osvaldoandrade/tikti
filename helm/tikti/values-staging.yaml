@@ -1,0 +1,52 @@
+# values-staging.yaml — Helm overlay for staging dogfood (P10.2).
+#
+# Usage:
+#   helm upgrade --install tikti ./helm/tikti \
+#     -f helm/tikti/values-staging.yaml \
+#     --set saml.existingSecret=tikti-saml-external \
+#     --set saml.sp.entityID=https://staging.example.com/saml/metadata \
+#     --set saml.sp.acsURL=https://staging.example.com/saml/acs \
+#     --set saml.sp.sloURL=https://staging.example.com/saml/slo \
+#     --set saml.idp.metadataURL=https://your-org.okta.com/app/APPID/sso/saml/metadata
+#
+# After deploying, onboard the test tenant:
+#   tikti-cli saml idp register \
+#     --tid <TENANT_ID> \
+#     --metadata-url https://your-org.okta.com/app/APPID/sso/saml/metadata
+
+image:
+  tag: "latest"
+
+saml:
+  enabled: true
+  # Provide the name of a pre-provisioned Secret containing sp.key and sp.crt.
+  # Use external-secrets-operator or a manual kubectl create secret.
+  existingSecret: ""
+  sp:
+    entityID: ""      # Override: --set saml.sp.entityID=https://staging.example.com/saml/metadata
+    acsURL: ""        # Override: --set saml.sp.acsURL=https://staging.example.com/saml/acs
+    sloURL: ""        # Override: --set saml.sp.sloURL=https://staging.example.com/saml/slo
+    keyBits: 2048
+    clockSkewSeconds: 120
+    requestTTLSeconds: 300
+    allowedSigAlgs:
+      - rsa-sha256
+    allowedDigestAlgs:
+      - sha256
+    canonicalization: "xml-exc-c14n"
+    requireAssertionSigned: true
+    requireEncryptedAssertion: false
+  acs:
+    postLoginURL: /dashboard
+    deliveryMode: cookie
+    cookieSameSite: Lax
+    cookieSecure: true
+    cookieHTTPOnly: true
+    sessionTTL: 3600
+  idp:
+    metadataURL: ""   # Override: --set saml.idp.metadataURL=https://your-org.okta.com/...
+    refreshIntervalHours: 12
+    skipSignatureCheck: false
+  metrics:
+    enabled: true
+    namespace: tikti
