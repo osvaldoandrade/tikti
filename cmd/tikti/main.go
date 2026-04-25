@@ -13,6 +13,8 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/osvaldoandrade/tikti/internal/app"
 	"github.com/osvaldoandrade/tikti/internal/saml"
@@ -46,6 +48,20 @@ func main() {
 		}
 		// Workers stop when rootCtx is cancelled (SIGTERM/SIGINT).
 		kh.Start(rootCtx, cfg.SAML.SP.SigningKeyPath, cfg.SAML.SP.SigningCertPath)
+
+		// Start background IdP metadata refresher if an interval is configured.
+		if cfg.SAML.IdP.RefreshInterval > 0 {
+			rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+			defer rdb.Close()
+			store := saml.NewRedisStore(rdb)
+			m := saml.NewMetrics(prometheus.DefaultRegisterer)
+			saml.NewRefresher(saml.RefresherConfig{
+				Store:     store,
+				Metrics:   m,
+				Interval:  cfg.SAML.IdP.RefreshInterval,
+				MaxJitter: saml.DefaultJitter,
+			}).Start(rootCtx)
+		}
 	}
 
 	application, err := app.NewApplication(cfg)
