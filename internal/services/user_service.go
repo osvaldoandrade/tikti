@@ -850,7 +850,7 @@ func (s *userService) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 	return s.repo.GetAllUsers(ctx)
 }
 
-func (s *userService) issueIDToken(u *domain.User) (string, int, error) {
+func (s *userService) issueIDToken(u *domain.User, amr ...[]string) (string, int, error) {
 	if u == nil {
 		return "", 0, domain.ErrInvalidArgument
 	}
@@ -869,10 +869,20 @@ func (s *userService) issueIDToken(u *domain.User) (string, int, error) {
 			claims["tid"] = tid
 		}
 	}
+	if len(amr) > 0 && len(amr[0]) > 0 {
+		claims["amr"] = amr[0]
+	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := tok.SignedString([]byte(s.jwtSecret))
 	if err != nil {
 		return "", 0, err
 	}
 	return signed, 3600, nil
+}
+
+// IssueIDTokenWithAMR is the exported wrapper around issueIDToken that
+// accepts an explicit AMR slice.  It satisfies the saml.IDTokenIssuer
+// interface so the SAML SessionBridge can reuse the existing HS256 issuer.
+func (s *userService) IssueIDTokenWithAMR(u *domain.User, amr []string) (string, int, error) {
+	return s.issueIDToken(u, amr)
 }
