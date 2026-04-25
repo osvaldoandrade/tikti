@@ -26,6 +26,9 @@ type Metrics struct {
 	// Gauges — 2 per HLD §18.
 	IdPCertExpiry *prometheus.GaugeVec
 	SPCertExpiry  prometheus.Gauge
+
+	// RefreshConsecFailures tracks consecutive background-refresh failures per tenant.
+	RefreshConsecFailures *prometheus.GaugeVec
 }
 
 // NewMetrics creates and registers all SAML collectors against the supplied
@@ -103,5 +106,10 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "tikti_saml_sp_cert_expiry_seconds",
 			Help: "Seconds until SP signing certificate expires.",
 		}),
+
+		RefreshConsecFailures: f.NewGaugeVec(prometheus.GaugeOpts{
+			Name: "tikti_saml_metadata_refresh_consec_failures",
+			Help: "Current count of consecutive IdP metadata refresh failures per tenant.",
+		}, []string{"tid"}),
 	}
 }
