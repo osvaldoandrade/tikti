@@ -36,6 +36,21 @@ const (
 	AuthSourceSAML AuthSource = "saml"
 )
 
+// MergeStrategy controls how UpsertFromSAML resolves an existing user.
+type MergeStrategy string
+
+const (
+	// MergeStrategyEmail matches an existing password user by (tid, email) and
+	// converts it to a SAML user. This is the default.
+	MergeStrategyEmail MergeStrategy = "email"
+	// MergeStrategyExternalSubject only merges when the SAML external subject
+	// already exists; no email-based merge is attempted.
+	MergeStrategyExternalSubject MergeStrategy = "externalSubject"
+	// MergeStrategyNone disables merge entirely; a new user is always created
+	// when no prior SAML subject match is found.
+	MergeStrategyNone MergeStrategy = "none"
+)
+
 // User represents the canonical user document stored in Redis and exposed to clients.
 type User struct {
 	Id              string     `json:"localId"`
