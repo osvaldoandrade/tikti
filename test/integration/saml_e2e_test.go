@@ -150,7 +150,10 @@ func genKeyPair(t *testing.T) (*rsa.PrivateKey, *x509.Certificate) {
 	if err != nil {
 		t.Fatalf("x509.CreateCertificate: %v", err)
 	}
-	cert, _ := x509.ParseCertificate(der)
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("x509.ParseCertificate: %v", err)
+	}
 	return key, cert
 }
 
@@ -414,8 +417,8 @@ func deflateDecodeID(encoded string) string {
 		return "_unknown"
 	}
 	reader := flate.NewReader(strings.NewReader(string(compressed)))
-	defer reader.Close()
 	xmlBytes, err := io.ReadAll(reader)
+	reader.Close()
 	if err != nil {
 		return "_unknown"
 	}
