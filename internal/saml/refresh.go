@@ -2,6 +2,8 @@ package saml
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log"
@@ -27,6 +29,7 @@ type RefresherConfig struct {
 	Interval  time.Duration   // ticker period
 	MaxJitter time.Duration   // upper bound of random pre-first-tick delay; 0 = no jitter (useful in tests)
 	Fetcher   MetadataFetcher // nil → httpFetch
+	SPCertPEM []byte          // optional PEM-encoded SP signing cert; when set, SPCertExpiry gauge is updated each tick
 }
 
 // Refresher runs the background IdP metadata refresh loop.
@@ -37,6 +40,7 @@ type Refresher struct {
 	interval    time.Duration
 	maxJitter   time.Duration
 	fetcher     MetadataFetcher
+	spCertPEM   []byte
 	consecFails map[string]int
 }
 
@@ -53,6 +57,7 @@ func NewRefresher(cfg RefresherConfig) *Refresher {
 		interval:    cfg.Interval,
 		maxJitter:   cfg.MaxJitter,
 		fetcher:     f,
+		spCertPEM:   cfg.SPCertPEM,
 		consecFails: make(map[string]int),
 	}
 }
@@ -94,6 +99,8 @@ func (r *Refresher) run(ctx context.Context) {
 
 // tick performs one full refresh cycle: list all IdPs and refresh each one.
 func (r *Refresher) tick(ctx context.Context) {
+	r.updateSPCertExpiry()
+
 	idps, err := r.store.ListIdPs(ctx)
 	if err != nil {
 		log.Printf("saml: metadata refresher: list IdPs: %v", err)
@@ -112,7 +119,12 @@ func (r *Refresher) refreshOne(ctx context.Context, existing IdPRecord) {
 		return
 	}
 
+	t0 := time.Now()
 	raw, err := r.fetcher(existing.MetadataURL)
+	dur := time.Since(t0)
+	if r.metrics != nil {
+		r.metrics.IdPRoundtrip.WithLabelValues(tid).Observe(dur.Seconds())
+	}
 	if err != nil {
 		r.handleFailure(tid, err)
 		return
@@ -143,6 +155,9 @@ func (r *Refresher) refreshOne(ctx context.Context, existing IdPRecord) {
 		r.metrics.MetadataRefresh.WithLabelValues(tid, "success").Inc()
 		r.metrics.RefreshConsecFailures.WithLabelValues(tid).Set(0)
 	}
+
+	// Update IdP cert expiry gauge for each signing cert.
+	r.updateIdPCertExpiry(tid, rec.SigningCerts)
 }
 
 // handleFailure logs the error, bumps the failure counter/gauge, and emits an
@@ -160,6 +175,46 @@ func (r *Refresher) handleFailure(tid string, err error) {
 		log.Printf("ERROR saml: metadata refresh for tid=%s has failed %d consecutive times",
 			tid, r.consecFails[tid])
 	}
+}
+
+// updateIdPCertExpiry parses DER-encoded signing certs and sets the
+// IdPCertExpiry gauge for each cert. Seconds until expiry may be negative
+// if the cert is already expired.
+func (r *Refresher) updateIdPCertExpiry(tid string, derCerts [][]byte) {
+	if r.metrics == nil {
+		return
+	}
+	now := time.Now()
+	for _, der := range derCerts {
+		cert, err := x509.ParseCertificate(der)
+		if err != nil {
+			continue
+		}
+		subject := cert.Subject.CommonName
+		if subject == "" {
+			subject = cert.Subject.String()
+		}
+		r.metrics.IdPCertExpiry.WithLabelValues(tid, subject).Set(cert.NotAfter.Sub(now).Seconds())
+	}
+}
+
+// updateSPCertExpiry parses the optional SP signing cert PEM and sets the
+// SPCertExpiry gauge. Called once per tick.
+func (r *Refresher) updateSPCertExpiry() {
+	if r.metrics == nil || len(r.spCertPEM) == 0 {
+		return
+	}
+	block, _ := pem.Decode(r.spCertPEM)
+	if block == nil {
+		log.Printf("saml: SPCertPEM provided but contains no valid PEM block")
+		return
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		log.Printf("saml: failed to parse SP signing cert: %v", err)
+		return
+	}
+	r.metrics.SPCertExpiry.Set(cert.NotAfter.Sub(time.Now()).Seconds())
 }
 
 // httpClient is the default HTTP client used by httpFetch, with a 30-second

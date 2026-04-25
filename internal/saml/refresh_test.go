@@ -3,6 +3,7 @@ package saml
 import (
 	"context"
 	"errors"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -160,5 +161,120 @@ func TestRefresh_TwoFailures_GaugeBumped(t *testing.T) {
 	v := gaugeVecValue(t, m.RefreshConsecFailures, "t-gauge")
 	if v != 2 {
 		t.Errorf("consecutive failures gauge = %v, want 2", v)
+	}
+}
+
+// TestRefresh_IdPRoundtrip_Observed verifies that the IdP metadata fetch
+// roundtrip duration histogram is observed after a fetch attempt.
+func TestRefresh_IdPRoundtrip_Observed(t *testing.T) {
+	idp := IdPRecord{
+		TenantID:    "t-rt",
+		MetadataURL: "https://idp.example.com/meta",
+	}
+	store := newRefreshMemStore(idp)
+
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	r := NewRefresher(RefresherConfig{
+		Store:     store,
+		Metrics:   m,
+		Interval:  1 * time.Hour,
+		MaxJitter: 0,
+		Fetcher: func(_ string) ([]byte, error) {
+			time.Sleep(1 * time.Millisecond) // ensure non-zero duration
+			return nil, errors.New("fail")
+		},
+	})
+
+	r.tick(context.Background())
+
+	// Verify the histogram was observed.
+	hm := &dto.Metric{}
+	if err := m.IdPRoundtrip.WithLabelValues("t-rt").(prometheus.Histogram).Write(hm); err != nil {
+		t.Fatalf("write histogram: %v", err)
+	}
+	if hm.GetHistogram().GetSampleCount() != 1 {
+		t.Errorf("IdPRoundtrip sample count = %d, want 1", hm.GetHistogram().GetSampleCount())
+	}
+}
+
+// TestRefresh_IdPCertExpiry_Set verifies that the IdP cert expiry gauge is
+// set after a successful metadata refresh.
+func TestRefresh_IdPCertExpiry_Set(t *testing.T) {
+	metaXML, err := os.ReadFile("testdata/idp_okta.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	existing := IdPRecord{
+		TenantID:    "t-cert",
+		MetadataURL: "https://idp.example.com/meta",
+	}
+	store := newRefreshMemStore(existing)
+
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	r := NewRefresher(RefresherConfig{
+		Store:     store,
+		Metrics:   m,
+		Interval:  1 * time.Hour,
+		MaxJitter: 0,
+		Fetcher:   func(_ string) ([]byte, error) { return metaXML, nil },
+	})
+
+	r.tick(context.Background())
+
+	// Verify that at least one IdPCertExpiry gauge was set.
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "tikti_saml_idp_cert_expiry_seconds" {
+			if len(mf.GetMetric()) > 0 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Error("IdPCertExpiry gauge not set after successful metadata refresh")
+	}
+}
+
+// TestRefresh_SPCertExpiry_Set verifies that the SP cert expiry gauge is
+// set when SPCertPEM is provided.
+func TestRefresh_SPCertExpiry_Set(t *testing.T) {
+	spCert, err := os.ReadFile("testdata/sp_signing.crt")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	store := newRefreshMemStore() // no IdPs
+
+	reg := prometheus.NewRegistry()
+	m := NewMetrics(reg)
+
+	r := NewRefresher(RefresherConfig{
+		Store:     store,
+		Metrics:   m,
+		Interval:  1 * time.Hour,
+		MaxJitter: 0,
+		Fetcher:   func(_ string) ([]byte, error) { return nil, errors.New("stub") },
+		SPCertPEM: spCert,
+	})
+
+	r.tick(context.Background())
+
+	// Verify SPCertExpiry gauge was set.
+	gm := &dto.Metric{}
+	if err := m.SPCertExpiry.Write(gm); err != nil {
+		t.Fatalf("write gauge: %v", err)
+	}
+	val := gm.GetGauge().GetValue()
+	if val <= 0 {
+		t.Errorf("SPCertExpiry = %v, want > 0 (cert expires 2035)", val)
 	}
 }
