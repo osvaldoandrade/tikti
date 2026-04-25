@@ -82,7 +82,9 @@ type ACSConfig struct {
 	CookieDomain   string `yaml:"cookieDomain"`
 	CookieSameSite string `yaml:"cookieSameSite"`
 	CookieSecure   bool   `yaml:"cookieSecure"`
+	CookieHTTPOnly bool   `yaml:"cookieHTTPOnly"`
 	SessionTTL     int    `yaml:"sessionTTL"`
+	PostLoginURL   string `yaml:"postLoginURL"`
 }
 
 // IdPSectionConfig holds Identity Provider settings.
@@ -211,6 +213,12 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if c.SAML.ACS.CookieSameSite == "" {
 		c.SAML.ACS.CookieSameSite = "Lax"
+	}
+	if c.SAML.ACS.CookieName == "" {
+		c.SAML.ACS.CookieName = "tikti_idt"
+	}
+	if c.SAML.ACS.PostLoginURL == "" {
+		c.SAML.ACS.PostLoginURL = "/dashboard"
 	}
 	if len(c.SAML.SP.AllowedSigAlgs) == 0 {
 		c.SAML.SP.AllowedSigAlgs = []string{"rsa-sha256"}
