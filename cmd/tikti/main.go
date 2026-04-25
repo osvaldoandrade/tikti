@@ -8,15 +8,18 @@ import (
 	"log"
 	"net/http"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/go-chi/chi/v5"
 	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/osvaldoandrade/tikti/internal/app"
+	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 )
@@ -36,11 +39,13 @@ func main() {
 	defer stop()
 
 	// Wire SAML KeyHolder if SAML is enabled.
+	var kh *saml.KeyHolder
+	var samlMetrics *saml.Metrics
 	if cfg.SAML.Enabled {
 		if err := cfg.SAML.Validate(); err != nil {
 			log.Fatalf("saml config invalid: %v", err)
 		}
-		kh := saml.NewKeyHolder(saml.KeyHolderConfig{
+		kh = saml.NewKeyHolder(saml.KeyHolderConfig{
 			WatchFile: cfg.SAML.SP.WatchFile,
 		})
 		if err := kh.LoadKey(cfg.SAML.SP.SigningKeyPath, cfg.SAML.SP.SigningCertPath); err != nil {
@@ -49,19 +54,20 @@ func main() {
 		// Workers stop when rootCtx is cancelled (SIGTERM/SIGINT).
 		kh.Start(rootCtx, cfg.SAML.SP.SigningKeyPath, cfg.SAML.SP.SigningCertPath)
 
+		samlMetrics = saml.NewMetrics(prometheus.DefaultRegisterer)
+
 		// Start background IdP metadata refresher if an interval is configured.
 		if cfg.SAML.IdP.RefreshInterval > 0 {
 			rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
 			defer rdb.Close()
 			store := saml.NewRedisStore(rdb)
-			m := saml.NewMetrics(prometheus.DefaultRegisterer)
 			spCert, err := saml.LoadCertFile(cfg.SAML.SP.SigningCertPath)
 			if err != nil {
 				log.Printf("saml: could not load SP signing cert for expiry monitoring: %v", err)
 			}
 			saml.NewRefresher(saml.RefresherConfig{
 				Store:     store,
-				Metrics:   m,
+				Metrics:   samlMetrics,
 				Interval:  cfg.SAML.IdP.RefreshInterval,
 				MaxJitter: saml.DefaultJitter,
 				SPCertPEM: spCert,
@@ -96,10 +102,62 @@ func main() {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	// Mount SAML routes when the flag is on (HLD §16, Appendix A.1).
+	// A chi router handles /saml/* paths; gin handles everything else.
+	var samlRouter http.Handler
+	if cfg.SAML.Enabled {
+		samlStore := saml.NewRedisStore(application.Redis)
+		repo := repository.NewRedisRepo(application.Redis)
+		bridge := saml.NewSessionBridge(repo, application.UserService.(saml.IDTokenIssuer))
+
+		provider := &saml.CrewjamProvider{
+			EntityID: cfg.SAML.SP.EntityID,
+			ACSURL:   cfg.SAML.SP.ACSURL,
+			SLOURL:   cfg.SAML.SP.SLOURL,
+			Key:      kh.Key(),
+			Cert:     kh.Cert(),
+		}
+
+		h := saml.NewHandler(saml.Deps{
+			Provider: provider,
+			Store:    samlStore,
+			Bridge:   bridge,
+			Clock:    saml.SystemClock{},
+			Cfg:      cfg.SAML,
+			Metrics:  samlMetrics,
+			Audit:    saml.LogEmitter{},
+		})
+
+		r := chi.NewRouter()
+		r.Route("/saml", func(s chi.Router) {
+			s.Use(saml.BodyLimit(1 << 20))
+			s.Get("/metadata", h.Metadata)
+			s.Get("/login/{tid}", h.Login)
+			s.Post("/acs", h.ACS)
+			s.Get("/logout/{tid}", h.Logout)
+			s.Get("/slo", h.SLO)
+			s.Post("/slo", h.SLO)
+			s.Get("/discover", h.Discover)
+		})
+		samlRouter = r
+		log.Println("SAML routes mounted at /saml/*")
+	}
+
 	addr := fmt.Sprintf(":%d", cfg.Port)
+	var handler http.Handler = application.Engine
+	if samlRouter != nil {
+		ginHandler := application.Engine
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, "/saml/") || r.URL.Path == "/saml" {
+				samlRouter.ServeHTTP(w, r)
+				return
+			}
+			ginHandler.ServeHTTP(w, r)
+		})
+	}
 	srv := &http.Server{
 		Addr:    addr,
-		Handler: application.Engine,
+		Handler: handler,
 	}
 
 	// Start HTTP server in background.
