@@ -699,7 +699,7 @@
             "mode": "continuous-RdYlGr"
           },
           "mappings": [],
-          "max": 7776000,
+          "max": 31536000,
           "min": 0,
           "thresholds": {
             "mode": "absolute",
