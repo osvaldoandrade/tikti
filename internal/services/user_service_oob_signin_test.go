@@ -86,7 +86,7 @@ func (r *fakeUserRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) 
 	return []*domain.User{}, nil
 }
 
-func (r *fakeUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string) (domain.User, bool, error) {
+func (r *fakeUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error) {
 	return domain.User{}, false, nil
 }
 

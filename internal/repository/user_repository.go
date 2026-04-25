@@ -23,7 +23,7 @@ type UserRepository interface {
 	SaveOobCode(ctx context.Context, code, email, reqType string) error
 	ConsumeOobCode(ctx context.Context, code string, expectedReqType string) (string, error)
 	GetAllUsers(ctx context.Context) ([]*domain.User, error)
-	UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string) (domain.User, bool, error)
+	UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error)
 }
 
 // redisRepo is a Redis-backed implementation of UserRepository.
@@ -323,11 +323,18 @@ func (r *redisRepo) findByExternalSubject(ctx context.Context, tid, externalSubj
 
 // UpsertFromSAML creates or updates a user from a SAML assertion.
 // If a user exists with (tid, externalSubject), it is updated and created=false.
-// Else if a password user exists with (tid, email), it is merged and created=false.
+// When mergeStrategy is "email" (the default) and a password user exists with
+// (tid, email), the user is merged: authSource flips to SAML, externalSubject is
+// set, but sub and roles are preserved.
 // Otherwise a new user is created and created=true.
-func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string) (domain.User, bool, error) {
+func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error) {
 	if tid == "" || externalSubject == "" || email == "" {
 		return domain.User{}, false, domain.ErrInvalidArgument
+	}
+
+	// Treat empty strategy as the default: email.
+	if mergeStrategy == "" {
+		mergeStrategy = domain.MergeStrategyEmail
 	}
 
 	// Case 1: Existing SAML user by external subject.
@@ -347,23 +354,26 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	}
 
 	// Case 2: Merge by email — password user with the same email within same tenant.
-	emailUser, err := r.FindByEmail(ctx, email)
-	if err != nil && err != domain.ErrNotFound {
-		return domain.User{}, false, err
-	}
-	if emailUser != nil && (emailUser.AuthSource == domain.AuthSourcePassword || emailUser.AuthSource == "") {
-		emailUser.AuthSource = domain.AuthSourceSAML
-		emailUser.ExternalSubject = externalSubject
-		if len(roles) > 0 {
-			emailUser.Role = domain.UserRole(roles[0])
-		}
-		if err := r.UpdateUser(ctx, emailUser); err != nil {
+	// Only active when mergeStrategy is "email".
+	if mergeStrategy == domain.MergeStrategyEmail {
+		emailUser, err := r.FindByEmail(ctx, email)
+		if err != nil && err != domain.ErrNotFound {
 			return domain.User{}, false, err
 		}
-		if err := r.client.Set(ctx, samlSubjectKey(tid, externalSubject), emailUser.Id, 0).Err(); err != nil {
-			return domain.User{}, false, err
+		if emailUser != nil && (emailUser.AuthSource == domain.AuthSourcePassword || emailUser.AuthSource == "") {
+			emailUser.AuthSource = domain.AuthSourceSAML
+			emailUser.ExternalSubject = externalSubject
+			// sub (Id) and roles are intentionally preserved during email merge;
+			// roles from the SAML assertion are ignored to keep the existing
+			// user's authorization tier unchanged.
+			if err := r.UpdateUser(ctx, emailUser); err != nil {
+				return domain.User{}, false, err
+			}
+			if err := r.client.Set(ctx, samlSubjectKey(tid, externalSubject), emailUser.Id, 0).Err(); err != nil {
+				return domain.User{}, false, err
+			}
+			return *emailUser, false, nil
 		}
-		return *emailUser, false, nil
 	}
 
 	// Case 3: Create new SAML user.
