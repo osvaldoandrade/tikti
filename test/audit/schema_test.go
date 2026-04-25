@@ -64,6 +64,22 @@ func marshalRecord(t *testing.T, rec saml.AuditRecord) []byte {
 	return data
 }
 
+// tamperRecord unmarshals a JSON record into a map, applies a mutation, and
+// marshals the result back. It fails the test on any marshal/unmarshal error.
+func tamperRecord(t *testing.T, data []byte, mutate func(m map[string]interface{})) []byte {
+	t.Helper()
+	var m map[string]interface{}
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal for tamper: %v", err)
+	}
+	mutate(m)
+	out, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal tampered record: %v", err)
+	}
+	return out
+}
+
 // TestAcceptRecord_Schema validates that a well-formed accept audit record
 // conforms to the audit JSON schema.
 func TestAcceptRecord_Schema(t *testing.T) {
@@ -150,13 +166,9 @@ func TestDeviation_BadEvent(t *testing.T) {
 	)
 	data := marshalRecord(t, rec)
 
-	// Tamper: replace the event field.
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	m["event"] = "wrong.event"
-	tampered, _ := json.Marshal(m)
+	tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+		m["event"] = "wrong.event"
+	})
 
 	if err := validateJSON(t, sch, tampered); err == nil {
 		t.Fatal("expected schema validation to fail for bad event, but it passed")
@@ -176,12 +188,9 @@ func TestDeviation_BadDecision(t *testing.T) {
 	)
 	data := marshalRecord(t, rec)
 
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	m["decision"] = "maybe"
-	tampered, _ := json.Marshal(m)
+	tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+		m["decision"] = "maybe"
+	})
 
 	if err := validateJSON(t, sch, tampered); err == nil {
 		t.Fatal("expected schema validation to fail for bad decision, but it passed")
@@ -201,12 +210,9 @@ func TestDeviation_BadSchemaVersion(t *testing.T) {
 	)
 	data := marshalRecord(t, rec)
 
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	m["schemaVersion"] = 99
-	tampered, _ := json.Marshal(m)
+	tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+		m["schemaVersion"] = 99
+	})
 
 	if err := validateJSON(t, sch, tampered); err == nil {
 		t.Fatal("expected schema validation to fail for bad schemaVersion, but it passed")
@@ -234,12 +240,9 @@ func TestDeviation_MissingRequired(t *testing.T) {
 
 	for _, field := range []string{"event", "schemaVersion", "ts", "tid", "decision"} {
 		t.Run("missing_"+field, func(t *testing.T) {
-			var m map[string]interface{}
-			if err := json.Unmarshal(data, &m); err != nil {
-				t.Fatal(err)
-			}
-			delete(m, field)
-			tampered, _ := json.Marshal(m)
+			tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+				delete(m, field)
+			})
 
 			if err := validateJSON(t, sch, tampered); err == nil {
 				t.Fatalf("expected schema validation to fail for missing %q, but it passed", field)
@@ -261,12 +264,9 @@ func TestDeviation_AdditionalProperty(t *testing.T) {
 	)
 	data := marshalRecord(t, rec)
 
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	m["extraField"] = "should-not-exist"
-	tampered, _ := json.Marshal(m)
+	tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+		m["extraField"] = "should-not-exist"
+	})
 
 	if err := validateJSON(t, sch, tampered); err == nil {
 		t.Fatal("expected schema validation to fail for additional property, but it passed")
@@ -286,12 +286,9 @@ func TestDeviation_BadRequestIDPattern(t *testing.T) {
 	)
 	data := marshalRecord(t, rec)
 
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	m["requestID"] = "not-a-valid-request-id"
-	tampered, _ := json.Marshal(m)
+	tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+		m["requestID"] = "not-a-valid-request-id"
+	})
 
 	if err := validateJSON(t, sch, tampered); err == nil {
 		t.Fatal("expected schema validation to fail for bad requestID pattern, but it passed")
@@ -311,12 +308,9 @@ func TestDeviation_BadReason(t *testing.T) {
 	)
 	data := marshalRecord(t, rec)
 
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	m["reason"] = "totally_made_up_reason"
-	tampered, _ := json.Marshal(m)
+	tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+		m["reason"] = "totally_made_up_reason"
+	})
 
 	if err := validateJSON(t, sch, tampered); err == nil {
 		t.Fatal("expected schema validation to fail for bad reason, but it passed")
@@ -335,12 +329,9 @@ func TestDeviation_NegativeDuration(t *testing.T) {
 	)
 	data := marshalRecord(t, rec)
 
-	var m map[string]interface{}
-	if err := json.Unmarshal(data, &m); err != nil {
-		t.Fatal(err)
-	}
-	m["durationMs"] = -1
-	tampered, _ := json.Marshal(m)
+	tampered := tamperRecord(t, data, func(m map[string]interface{}) {
+		m["durationMs"] = -1
+	})
 
 	if err := validateJSON(t, sch, tampered); err == nil {
 		t.Fatal("expected schema validation to fail for negative durationMs, but it passed")
