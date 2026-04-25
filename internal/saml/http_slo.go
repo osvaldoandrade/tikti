@@ -9,32 +9,6 @@ import (
 	crewjamsaml "github.com/crewjam/saml"
 )
 
-// Deps carries all dependencies needed by the SAML HTTP handlers.
-type Deps struct {
-	Provider Provider
-	Store    Store
-	Clock    Clock
-	Metrics  *Metrics
-}
-
-// Handler holds the dependencies for the SAML HTTP handlers.
-type Handler struct {
-	prov    Provider
-	store   Store
-	clock   Clock
-	metrics *Metrics
-}
-
-// NewHandler creates a new Handler wired with the given dependencies.
-func NewHandler(d Deps) *Handler {
-	return &Handler{
-		prov:    d.Provider,
-		store:   d.Store,
-		clock:   d.Clock,
-		metrics: d.Metrics,
-	}
-}
-
 // SLO handles both GET and POST /saml/slo.
 //
 // GET: receives the IdP's LogoutResponse (tail of SP-initiated SLO).
