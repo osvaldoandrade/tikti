@@ -601,7 +601,8 @@ func TestMerge_Email_FromPassword(t *testing.T) {
 		t.Fatalf("create password user: %v", err)
 	}
 
-	// Merge via email strategy.
+	// Merge via email strategy — the SAML-supplied roles (["ADMIN"]) must be
+	// ignored so the original password user's role is preserved.
 	u, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-1", "merge@example.com", "Merge User", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)

@@ -363,7 +363,9 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 		if emailUser != nil && (emailUser.AuthSource == domain.AuthSourcePassword || emailUser.AuthSource == "") {
 			emailUser.AuthSource = domain.AuthSourceSAML
 			emailUser.ExternalSubject = externalSubject
-			// sub (Id) and roles are intentionally preserved during email merge.
+			// sub (Id) and roles are intentionally preserved during email merge;
+			// roles from the SAML assertion are ignored to keep the existing
+			// user's authorization tier unchanged.
 			if err := r.UpdateUser(ctx, emailUser); err != nil {
 				return domain.User{}, false, err
 			}
