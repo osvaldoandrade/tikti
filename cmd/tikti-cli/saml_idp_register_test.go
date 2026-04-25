@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,11 +19,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type memStore struct {
-	idps map[string]saml.IdPRecord
+	idps    map[string]saml.IdPRecord
+	domains map[string]string
 }
 
 func newMemStore() *memStore {
-	return &memStore{idps: make(map[string]saml.IdPRecord)}
+	return &memStore{
+		idps:    make(map[string]saml.IdPRecord),
+		domains: make(map[string]string),
+	}
 }
 
 func (m *memStore) PutIdP(_ context.Context, rec saml.IdPRecord) error {
@@ -53,9 +58,21 @@ func (m *memStore) GetIndex(_ context.Context, _ string) (saml.IndexRecord, erro
 }
 func (m *memStore) DeleteIndex(_ context.Context, _ string) error                        { return nil }
 func (m *memStore) MarkSeen(_ context.Context, _ string, _ time.Duration) (bool, error)  { return false, nil }
-func (m *memStore) PutDomain(_ context.Context, _, _ string) error                       { return nil }
-func (m *memStore) GetDomain(_ context.Context, _ string) (string, error)                { return "", nil }
-func (m *memStore) DeleteDomain(_ context.Context, _ string) error                       { return nil }
+func (m *memStore) PutDomain(_ context.Context, domain, tid string) error {
+	m.domains[domain] = tid
+	return nil
+}
+func (m *memStore) GetDomain(_ context.Context, domain string) (string, error) {
+	tid, ok := m.domains[domain]
+	if !ok {
+		return "", errors.New("saml: domain not found")
+	}
+	return tid, nil
+}
+func (m *memStore) DeleteDomain(_ context.Context, domain string) error {
+	delete(m.domains, domain)
+	return nil
+}
 
 // Compile-time check.
 var _ saml.Store = (*memStore)(nil)
