@@ -1,11 +1,15 @@
 package saml
 
 import (
+	"bytes"
+	"compress/flate"
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/xml"
 	"fmt"
+	"io"
 	"net/url"
 
 	crewjamsaml "github.com/crewjam/saml"
@@ -117,14 +121,150 @@ func (p *CrewjamProvider) ValidateResponse(_ context.Context, _ ValidateResponse
 	return nil, fmt.Errorf("saml: ValidateResponse not implemented")
 }
 
-// BuildLogoutRequest is not yet implemented.
-func (p *CrewjamProvider) BuildLogoutRequest(_ context.Context, _ BuildLogoutRequestInput) (*LogoutRequest, error) {
-	return nil, fmt.Errorf("saml: BuildLogoutRequest not implemented")
+// BuildLogoutRequest produces a deflate-compressed, base64-encoded,
+// RSA-SHA256-signed LogoutRequest redirect URL per HLD §12.
+func (p *CrewjamProvider) BuildLogoutRequest(_ context.Context, in BuildLogoutRequestInput) (*LogoutRequest, error) {
+	sloURL, err := url.Parse(p.SLOURL)
+	if err != nil {
+		return nil, fmt.Errorf("saml: parse SLO URL: %w", err)
+	}
+
+	nameIDFormat := crewjamsaml.EmailAddressNameIDFormat
+	if in.NameIDFormat != "" {
+		nameIDFormat = crewjamsaml.NameIDFormat(in.NameIDFormat)
+	}
+
+	// Build IdP metadata descriptor so crewjam knows the SLO endpoint.
+	idpMeta := &crewjamsaml.EntityDescriptor{
+		EntityID: in.IdP.EntityID,
+		IDPSSODescriptors: []crewjamsaml.IDPSSODescriptor{
+			{
+				SSODescriptor: crewjamsaml.SSODescriptor{
+					SingleLogoutServices: []crewjamsaml.Endpoint{
+						{
+							Binding:  crewjamsaml.HTTPRedirectBinding,
+							Location: in.IdP.SLOURL,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// Populate IdP signing certs into the descriptor.
+	if len(in.IdP.SigningCerts) > 0 {
+		kds := make([]crewjamsaml.KeyDescriptor, 0, len(in.IdP.SigningCerts))
+		for _, raw := range in.IdP.SigningCerts {
+			kds = append(kds, crewjamsaml.KeyDescriptor{
+				Use: "signing",
+				KeyInfo: crewjamsaml.KeyInfo{
+					X509Data: crewjamsaml.X509Data{
+						X509Certificates: []crewjamsaml.X509Certificate{
+							{Data: base64.StdEncoding.EncodeToString(raw)},
+						},
+					},
+				},
+			})
+		}
+		idpMeta.IDPSSODescriptors[0].KeyDescriptors = kds
+	}
+
+	sp := crewjamsaml.ServiceProvider{
+		EntityID:          p.EntityID,
+		SloURL:            *sloURL,
+		Key:               p.Key,
+		Certificate:       p.Cert,
+		IDPMetadata:       idpMeta,
+		AuthnNameIDFormat: nameIDFormat,
+		SignatureMethod:   dsig.RSASHA256SignatureMethod,
+	}
+
+	req, err := sp.MakeLogoutRequest(in.IdP.SLOURL, in.NameID)
+	if err != nil {
+		return nil, fmt.Errorf("saml: make logout request: %w", err)
+	}
+
+	// Override the library-generated ID with the caller-supplied one.
+	if in.RequestID != "" {
+		req.ID = "_" + in.RequestID
+	}
+	if !in.IssueInstant.IsZero() {
+		req.IssueInstant = in.IssueInstant.UTC()
+	}
+	if in.SessionIndex != "" {
+		req.SessionIndex = &crewjamsaml.SessionIndex{Value: in.SessionIndex}
+	}
+
+	redirectURL := req.Redirect("")
+	return &LogoutRequest{
+		ID:          req.ID,
+		RedirectURL: redirectURL.String(),
+	}, nil
 }
 
-// ValidateLogoutMessage is not yet implemented.
-func (p *CrewjamProvider) ValidateLogoutMessage(_ context.Context, _ ValidateLogoutInput) (*VerifiedLogout, error) {
-	return nil, fmt.Errorf("saml: ValidateLogoutMessage not implemented")
+// ValidateLogoutMessage validates an incoming SAML LogoutRequest or LogoutResponse.
+// It supports both HTTP-Redirect (deflate+base64) and HTTP-POST (base64) bindings.
+func (p *CrewjamProvider) ValidateLogoutMessage(_ context.Context, in ValidateLogoutInput) (*VerifiedLogout, error) {
+	var rawXML []byte
+	var err error
+
+	switch in.Binding {
+	case crewjamsaml.HTTPRedirectBinding:
+		compressed, err := base64.StdEncoding.DecodeString(in.RawMessage)
+		if err != nil {
+			return nil, fmt.Errorf("saml: base64 decode logout message: %w", err)
+		}
+		reader := flate.NewReader(bytes.NewReader(compressed))
+		defer reader.Close()
+		rawXML, err = io.ReadAll(reader)
+		if err != nil {
+			return nil, fmt.Errorf("saml: deflate decompress logout message: %w", err)
+		}
+	case crewjamsaml.HTTPPostBinding, "":
+		rawXML, err = base64.StdEncoding.DecodeString(in.RawMessage)
+		if err != nil {
+			return nil, fmt.Errorf("saml: base64 decode logout message: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("saml: unsupported binding: %s", in.Binding)
+	}
+
+	// Detect root element type using a lightweight probe.
+	var probe struct {
+		XMLName xml.Name
+	}
+	if err := xml.Unmarshal(rawXML, &probe); err != nil {
+		return nil, fmt.Errorf("saml: parse logout message XML: %w", err)
+	}
+
+	switch probe.XMLName.Local {
+	case "LogoutResponse":
+		var resp crewjamsaml.LogoutResponse
+		if err := xml.Unmarshal(rawXML, &resp); err != nil {
+			return nil, fmt.Errorf("saml: unmarshal LogoutResponse: %w", err)
+		}
+		return &VerifiedLogout{
+			IsResponse: true,
+			Status:     resp.Status.StatusCode.Value,
+		}, nil
+	case "LogoutRequest":
+		var req crewjamsaml.LogoutRequest
+		if err := xml.Unmarshal(rawXML, &req); err != nil {
+			return nil, fmt.Errorf("saml: unmarshal LogoutRequest: %w", err)
+		}
+		vl := &VerifiedLogout{
+			IsResponse: false,
+		}
+		if req.NameID != nil {
+			vl.NameID = req.NameID.Value
+		}
+		if req.SessionIndex != nil {
+			vl.SessionIndex = req.SessionIndex.Value
+		}
+		return vl, nil
+	default:
+		return nil, fmt.Errorf("saml: unexpected root element: %s", probe.XMLName.Local)
+	}
 }
 
 // SPMetadata is not yet implemented.
