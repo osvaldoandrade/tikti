@@ -35,7 +35,8 @@ func main() {
 		if err := kh.LoadKey(cfg.SAML.SP.SigningKeyPath, cfg.SAML.SP.SigningCertPath); err != nil {
 			log.Fatalf("saml: load SP key: %v", err)
 		}
-		ctx := context.Background()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 		kh.Start(ctx, cfg.SAML.SP.SigningKeyPath, cfg.SAML.SP.SigningCertPath)
 	}
 

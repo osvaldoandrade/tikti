@@ -2,8 +2,10 @@ package saml
 
 import (
 	"context"
+	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -178,7 +180,8 @@ func TestKeyHolder_SIGHUP_Swap(t *testing.T) {
 				t.Errorf("concurrent reader saw nil key or cert")
 			}
 			// Validate the key can sign something.
-			_, err := rsa.SignPKCS1v15(rand.Reader, k, 0, []byte("test"))
+			digest := sha256.Sum256([]byte("test"))
+			_, err := rsa.SignPKCS1v15(rand.Reader, k, crypto.SHA256, digest[:])
 			if err != nil {
 				t.Errorf("concurrent signer error: %v", err)
 			}

@@ -17,6 +17,10 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
+// gracePeriod is the duration the old key pair is kept alive after a swap,
+// allowing in-flight signers that grabbed the old pointer to finish.
+const gracePeriod = 10 * time.Second
+
 // keyPair bundles a parsed RSA private key and its X.509 certificate.
 type keyPair struct {
 	key  *rsa.PrivateKey
@@ -110,7 +114,7 @@ func (kh *KeyHolder) reload(keyPath, certPath string) {
 	// grabbed it before the swap can complete.
 	if old != nil {
 		go func(prev *keyPair) {
-			time.Sleep(10 * time.Second)
+			time.Sleep(gracePeriod)
 			runtime.KeepAlive(prev)
 		}(old)
 	}
@@ -186,8 +190,12 @@ func loadKeyPair(keyPath, certPath string) (*keyPair, error) {
 		return nil, fmt.Errorf("saml: parse cert %s: %w", certPath, err)
 	}
 
-	if time.Now().After(cert.NotAfter) {
+	now := time.Now()
+	if now.After(cert.NotAfter) {
 		return nil, fmt.Errorf("saml: certificate %s expired at %s", certPath, cert.NotAfter)
+	}
+	if now.Before(cert.NotBefore) {
+		return nil, fmt.Errorf("saml: certificate %s not yet valid until %s", certPath, cert.NotBefore)
 	}
 
 	return &keyPair{key: privKey, cert: cert}, nil
