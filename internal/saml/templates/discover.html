@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Tikti – Discover Workspace</title>
+</head>
+<body>
+    <h1>Discover your workspace</h1>
+    {{if .Error}}<p>{{.Error}}</p>{{end}}
+    <form method="get" action="/saml/discover">
+        <label for="email">Work email</label>
+        <input id="email" name="email" type="email" value="{{.Email}}" required>
+        <button type="submit">Continue</button>
+    </form>
+</body>
+</html>
