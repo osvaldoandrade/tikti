@@ -1,31 +1,32 @@
 package saml
 
 import (
+	"reflect"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
 func init() {
-	msgpack.RegisterExt(1, (*timeExt)(nil))
-}
-
-// timeExt encodes time.Time as RFC 3339 with nanosecond precision.
-type timeExt struct {
-	time.Time
-}
-
-func (t timeExt) MarshalMsgpack() ([]byte, error) {
-	return []byte(t.Time.Format(time.RFC3339Nano)), nil
-}
-
-func (t *timeExt) UnmarshalMsgpack(b []byte) error {
-	parsed, err := time.Parse(time.RFC3339Nano, string(b))
-	if err != nil {
-		return err
-	}
-	t.Time = parsed
-	return nil
+	msgpack.Register(
+		time.Time{},
+		func(enc *msgpack.Encoder, v reflect.Value) error {
+			t := v.Interface().(time.Time)
+			return enc.EncodeString(t.Format(time.RFC3339Nano))
+		},
+		func(dec *msgpack.Decoder, v reflect.Value) error {
+			s, err := dec.DecodeString()
+			if err != nil {
+				return err
+			}
+			t, err := time.Parse(time.RFC3339Nano, s)
+			if err != nil {
+				return err
+			}
+			v.Set(reflect.ValueOf(t))
+			return nil
+		},
+	)
 }
 
 // encode serialises any value to msgpack bytes.
