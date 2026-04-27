@@ -19,7 +19,7 @@ The following fields must be present for a production deployment:
 
 When RS256 signing is enabled, the process must refuse to start if `issuerBaseUrl` or `jwksPrivateKey` is absent. This prevents a running instance from issuing tokens that downstream services cannot verify.
 
-When SAML federation is enabled, the configuration must also include `saml.sp.cert` and `saml.sp.key` (the SP signing certificate and private key). These are loaded from disk at process start and held in memory. The process must refuse to start if either file is unreadable or contains an expired certificate.
+When SAML federation is enabled, the configuration must also include `saml.sp.signingKeyPath`, `saml.sp.signingCertPath`, `saml.sp.entityID`, and `saml.sp.acsURL`. The SP keypair is loaded from disk at process start and held in memory. The process refuses to start if the required paths are unreadable or the certificate is not valid for the current time.
 
 Tikti does not own email delivery. OOB codes are generated and persisted by Tikti, and delivery is orchestrated externally (for example, by a Cadence workflow that calls Tikti and then calls the Notifications Service).
 
@@ -135,7 +135,7 @@ The SAML assertion-to-idToken target measures the time from when Tikti receives 
 
 ### SP key rotation
 
-The `saml keys rotate` CLI command rotates the SP signing keypair using a two-step process. The operator first runs `saml sp rotate --prepare`, which generates a new keypair and publishes both the old and new certificates in the SP metadata endpoint. During this overlap period, the IdP can validate signatures made with either key. The operator then runs `saml sp rotate --commit`, which drops the old key from metadata and switches signing to the new key. The overlapping validity window prevents request failures during the transition. Helm values must be updated to reference the new key material before the commit step.
+The `saml sp rotate` CLI command rotates the SP signing keypair using a two-step process. The operator first runs `saml sp rotate --prepare`, which generates a new keypair, writes `.new` key and certificate files, publishes metadata containing both the old and new certificates, and stores rotation state at `saml:sp:rotation`. During this overlap period, the IdP can validate signatures made with either key. The operator then runs `saml sp rotate --commit`, which publishes metadata containing only the new certificate and removes the rotation state. The overlapping validity window prevents request failures during the transition. Helm values must be updated to reference the new key material before the commit step.
 
 ### IdP certificate refresh
 

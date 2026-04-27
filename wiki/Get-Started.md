@@ -70,19 +70,32 @@ Example:
 
 Register an external SAML 2.0 IdP for a tenant, verify the SP metadata Tikti publishes, and test the SP-initiated login flow.
 
-Register an IdP:
+Enable the SAML block in the runtime config first. At minimum, set `saml.enabled=true`, the SP `entityID`, `acsURL`, `sloURL`, `signingKeyPath`, and `signingCertPath`.
+
+Generate SP metadata for the tenant's IdP administrator:
 
 ```bash
-./tikti-cli saml idp register --tenant <tenantId> --metadata-url <url>
+./tikti-cli saml sp metadata \
+  --entity-id https://auth.example.com/saml \
+  --acs-url https://auth.example.com/saml/acs \
+  --slo-url https://auth.example.com/saml/slo \
+  --signing-cert /etc/tikti/saml/sp.crt \
+  --out sp-metadata.xml
 ```
 
-Verify SP metadata:
+Register the tenant's IdP metadata:
 
 ```bash
-./tikti-cli saml metadata
+./tikti-cli saml idp register --tid <tenantId> --metadata-url <url> --attr-map attr-map.json
 ```
 
-Test SAML login by navigating to `/saml/login/<tenantId>` in a browser. The IdP authenticates the user and posts an assertion back to Tikti, which issues the same HS256 idToken used by all other flows.
+Optionally map an email domain to the tenant for discovery:
+
+```bash
+./tikti-cli saml domain add --tid <tenantId> --domain example.com
+```
+
+Test SAML login by navigating to `/saml/login/<tenantId>` in a browser. The IdP authenticates the user and posts an assertion back to Tikti, which issues the same HS256 idToken used by all other flows and adds `amr: ["saml"]`.
 
 For the full protocol sequence see [SAML Federation](SAML-Federation).
 

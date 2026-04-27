@@ -18,7 +18,7 @@ Primary references: [API Specification](API-Specification), [Unit Test Functiona
 
 SAML federation introduces failure modes at each stage of the authentication exchange.
 
-When assertion signature verification fails, the IdP signing certificate may have rotated. Retrieve the current certificate from the IdP metadata and re-register it using `tikti-cli saml idp register`. Tikti pins the IdP certificate at registration time and rejects assertions signed by any other certificate.
+When assertion signature verification fails, the IdP signing certificate may have rotated. Retrieve the current IdP metadata and refresh the trust record using `tikti-cli saml idp update --tid <tenantId> --metadata-url <url>`, or remove and re-register the IdP if this is a clean onboarding. Tikti pins IdP signing certificates per tenant and rejects assertions signed by certificates outside that trust record.
 
 When Tikti rejects an assertion due to clock skew, the NotBefore or NotOnOrAfter timestamps fall outside the ±120-second tolerance window. Synchronize NTP on both the Tikti host and the IdP host. After synchronization, the user must re-authenticate because the rejected assertion cannot be resubmitted.
 

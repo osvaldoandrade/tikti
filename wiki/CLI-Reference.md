@@ -158,73 +158,115 @@ When a client secret is generated, the CLI prints it once and stores it only if 
 
 ## SAML federation commands
 
-The CLI exposes a `saml` command group for managing SAML 2.0 federation lifecycle. These commands handle SP metadata retrieval, IdP registration and inspection, and SP signing key rotation. They are part of the standard admin toolset alongside tenant, membership, role, client, and token commands.
+The CLI exposes a `saml` command group for managing the SAML 2.0 federation lifecycle. These commands generate SP metadata, register and inspect IdP trust records, refresh IdP metadata, manage email-domain discovery, create manual test AuthnRequests, and rotate SP signing keys. They are part of the standard admin toolset alongside tenant, membership, role, client, and token commands.
 
-### SP metadata retrieval
+### SP metadata generation
 
-`saml metadata` fetches the SP metadata XML from the Tikti server and writes it to stdout. Operators use this output to register Tikti as an SP in the IdP admin console during initial SAML setup.
+`saml sp metadata` emits SP metadata XML from local SP settings and certificate material. Operators upload this XML to the IdP admin console during initial SAML setup.
 
 ```bash
-tikti-cli saml metadata
-tikti-cli saml metadata --output json
+tikti-cli saml sp metadata \
+  --entity-id https://auth.example.com/saml \
+  --acs-url https://auth.example.com/saml/acs \
+  --slo-url https://auth.example.com/saml/slo \
+  --signing-cert /etc/tikti/saml/sp.crt \
+  --out sp-metadata.xml
 ```
 
-The command sends `GET /saml/metadata` and returns the XML document. When `--output json` is specified, the CLI parses the XML and emits a JSON object containing the entity ID, ACS URL, SLO URL, and signing certificate.
+The command also accepts `--encryption-cert` when the encryption certificate differs from the signing certificate, and `--valid-until YYYY-MM-DD` when the metadata validity window must be pinned.
 
 ### IdP registration
 
-`saml idp register` registers an external IdP for a tenant. The command accepts IdP metadata as a URL or a local file path. It parses the IdP metadata XML to extract the entity ID, SSO URL, SLO URL, and signing certificate, then stores the configuration in Redis under `saml:idp:{tenantId}`.
+`saml idp register` registers an external IdP for a tenant. The command accepts IdP metadata as a URL or a local file path. It parses the IdP metadata XML to extract the entity ID, SSO URL, SLO URL, signing certificates, encryption certificates, and NameID format, then stores the configuration in Redis under `saml:idp:{tenantId}`.
 
 ```bash
-tikti-cli saml idp register --tenant tenant-1 --metadata-url https://idp.example.com/metadata
-tikti-cli saml idp register --tenant tenant-1 --metadata-file /path/to/idp-metadata.xml
+tikti-cli saml idp register --tid tenant-1 --metadata-url https://idp.example.com/metadata
+tikti-cli saml idp register --tid tenant-1 --metadata-file /path/to/idp-metadata.xml
 ```
 
-For environments where metadata XML is unavailable, the command accepts manual configuration flags:
+The command can also apply a JSON attribute map:
 
 ```bash
-tikti-cli saml idp register --tenant tenant-1 \
-  --entity-id https://idp.example.com \
-  --sso-url https://idp.example.com/sso \
-  --slo-url https://idp.example.com/slo \
-  --cert-file /path/to/idp-signing.pem
+tikti-cli saml idp register --tid tenant-1 \
+  --metadata-url https://idp.example.com/metadata \
+  --attr-map attr-map.json
 ```
 
-The command requires either `--metadata-url` or `--metadata-file` or the full set of manual flags (`--entity-id`, `--sso-url`, `--cert-file`). The `--slo-url` flag is optional because not all IdPs support Single Logout. The command validates the certificate format before storing the configuration and returns the stored entity ID and tenant binding on success.
+The command requires either `--metadata-url` or `--metadata-file`. It validates metadata XML, rejects missing signing certificates, rejects expired signing certificates, rejects insecure SSO URLs, and rejects unsupported bindings before storing the trust record.
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--tenant` | yes | Target tenant identifier |
-| `--metadata-url` | one of metadata-url, metadata-file, or manual set | URL of the IdP metadata XML endpoint |
-| `--metadata-file` | one of metadata-url, metadata-file, or manual set | Local file path to IdP metadata XML |
-| `--entity-id` | required if no metadata | IdP entity ID |
-| `--sso-url` | required if no metadata | IdP SSO endpoint URL |
-| `--slo-url` | no | IdP SLO endpoint URL |
-| `--cert-file` | required if no metadata | Path to IdP signing certificate PEM file |
+| `--tid` | yes | Target tenant identifier. |
+| `--metadata-url` | one of metadata-url or metadata-file | URL of the IdP metadata XML endpoint. |
+| `--metadata-file` | one of metadata-url or metadata-file | Local file path to IdP metadata XML. |
+| `--attr-map` | no | Path to a JSON attribute map using `email`, `name`, and `roles` keys. |
+| `--redis-addr` | no | Redis address, defaulting to `REDIS_ADDR` or `localhost:6379`. |
 
-### IdP configuration inspection
+### IdP inspection and refresh
 
-`saml idp show` displays the stored IdP configuration for a tenant. The output includes the entity ID, SSO URL, SLO URL, certificate fingerprint (SHA-256), and attribute mapping.
+`saml idp show` displays the stored IdP configuration for a tenant. `saml idp list` lists all registered IdPs. `saml idp fetch` forces a metadata refresh for one tenant. `saml idp update` refreshes an existing IdP record from a metadata URL or file and preserves the old signing certificate during the overlap window.
 
 ```bash
-tikti-cli saml idp show --tenant tenant-1
-tikti-cli saml idp show --tenant tenant-1 --output json
+tikti-cli saml idp show --tid tenant-1 --output json
+tikti-cli saml idp list
+tikti-cli saml idp fetch --tid tenant-1
+tikti-cli saml idp update --tid tenant-1 --metadata-url https://idp.example.com/metadata
 ```
 
-The command reads from `saml:idp:{tenantId}` in Redis via the API. It never outputs the full certificate; it prints only the SHA-256 fingerprint.
+Remove an IdP registration with explicit confirmation:
+
+```bash
+tikti-cli saml idp remove --tid tenant-1 --yes
+```
+
+### Domain discovery mappings
+
+`saml domain add` maps an email domain to a tenant so `/saml/discover?email=user@example.com` can route the user to the correct IdP. `saml domain remove` deletes the mapping.
+
+```bash
+tikti-cli saml domain add --tid tenant-1 --domain example.com
+tikti-cli saml domain remove --domain example.com
+```
+
+### Manual SAML test
+
+`saml test` emits a signed AuthnRequest redirect URL for validating an IdP setup without building a full application login page.
+
+```bash
+tikti-cli saml test \
+  --tid tenant-1 \
+  --email user@example.com \
+  --entity-id https://auth.example.com/saml \
+  --acs-url https://auth.example.com/saml/acs \
+  --signing-key /etc/tikti/saml/sp.key \
+  --signing-cert /etc/tikti/saml/sp.crt
+```
 
 ### SP key rotation
 
-`saml keys rotate` rotates the SP signing keypair used to sign SAML AuthnRequests. The command generates a new RSA keypair, publishes both old and new keys in the SP metadata during an overlap window, and removes the old key after a grace period.
+`saml sp rotate` rotates the SP signing keypair used to sign SAML AuthnRequests. The command is intentionally split into a prepare step and a commit step so IdPs have time to refresh cached SP metadata.
 
 ```bash
-tikti-cli saml keys rotate
-tikti-cli saml keys rotate --grace-period 24h
+tikti-cli saml sp rotate --prepare \
+  --entity-id https://auth.example.com/saml \
+  --acs-url https://auth.example.com/saml/acs \
+  --slo-url https://auth.example.com/saml/slo \
+  --signing-key /etc/tikti/saml/sp.key \
+  --signing-cert /etc/tikti/saml/sp.crt \
+  --redis-addr localhost:6379 \
+  --out sp-metadata.xml
+
+tikti-cli saml sp rotate --commit \
+  --entity-id https://auth.example.com/saml \
+  --acs-url https://auth.example.com/saml/acs \
+  --slo-url https://auth.example.com/saml/slo \
+  --signing-key /etc/tikti/saml/sp.key \
+  --signing-cert /etc/tikti/saml/sp.crt \
+  --redis-addr localhost:6379 \
+  --out sp-metadata.xml
 ```
 
-The `--grace-period` flag controls how long both keys remain in the SP metadata. The default is 24 hours. During this window, IdPs that cache SP metadata can validate signatures made with either key. After the grace period, the old key is removed from the metadata and deleted from storage.
-
-The command requires an admin idToken. It calls the key rotation endpoint and returns the new key's `kid`, the overlap window start time, and the scheduled removal time for the old key.
+The prepare step writes `.new` key and certificate files, publishes metadata containing both certificates, and stores rotation state in Redis at `saml:sp:rotation`. The commit step publishes metadata containing only the new certificate and deletes the rotation state.
 
 ## JWKS inspection
 
@@ -275,14 +317,20 @@ This example shows the flow for onboarding a tenant's IdP via SAML federation.
 
 ```bash
 tikti-cli auth login --email admin@codecompany.com.br
-tikti-cli saml metadata > sp-metadata.xml
-tikti-cli saml idp register --tenant tenant-1 \
+tikti-cli saml sp metadata \
+  --entity-id https://auth.example.com/saml \
+  --acs-url https://auth.example.com/saml/acs \
+  --slo-url https://auth.example.com/saml/slo \
+  --signing-cert /etc/tikti/saml/sp.crt \
+  --out sp-metadata.xml
+tikti-cli saml idp register --tid tenant-1 \
   --metadata-url https://login.microsoftonline.com/{tenant}/federationmetadata/2007-06/federationmetadata.xml
-tikti-cli saml idp show --tenant tenant-1
+tikti-cli saml domain add --tid tenant-1 --domain codecompany.com.br
+tikti-cli saml idp show --tid tenant-1
 ```
 
 The operator exports the SP metadata XML and uploads it to the IdP admin console. Then the operator registers the IdP metadata URL with Tikti. The `saml idp show` command confirms that the IdP configuration is stored and the trust relationship is established.
 
 ## Command surface
 
-The CLI includes these command groups: `init`, `auth`, `token`, `tenant`, `user`, `membership`, `role`, `client`, `apikey`, `jwks`, `saml`, `revoke`, and `config`. The `saml` group contains `metadata`, `idp register`, `idp show`, and `keys rotate` subcommands.
+The CLI includes these command groups: `init`, `auth`, `token`, `tenant`, `user`, `membership`, `role`, `client`, `apikey`, `jwks`, `saml`, `revoke`, and `config`. The `saml` group contains `sp metadata`, `sp rotate`, `idp register`, `idp update`, `idp remove`, `idp list`, `idp show`, `idp fetch`, `domain add`, `domain remove`, and `test` subcommands.

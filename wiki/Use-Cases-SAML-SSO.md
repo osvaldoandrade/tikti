@@ -11,7 +11,7 @@ Authenticate a user through an external SAML 2.0 Identity Provider via SP-initia
 
 ## Preconditions
 
-The tenant has a registered IdP configuration stored at `saml:idp:{tenantId}` in Redis. The tenant admin has imported Tikti SP metadata into the IdP admin console. The IdP signing certificate is pinned in Tikti at registration time via `tikti-cli saml idp register`.
+The tenant has a registered IdP configuration stored at `saml:idp:{tenantId}` in Redis. The tenant admin has imported Tikti SP metadata into the IdP admin console. The IdP signing certificate is pinned in Tikti at registration time via `tikti-cli saml idp register --tid {tenantId}`.
 
 ## Main flow
 
@@ -74,4 +74,5 @@ Assertion replayed: a previously consumed assertion ID exists at `saml:seen:{ass
 
 - [API Specification](API-Specification)
 - [Tokens and Keys](Tokens-and-Keys)
+- [SAML Federation](SAML-Federation)
 - [SAML Federation HLD](../docs/12_saml_federation_hld.md)

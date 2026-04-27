@@ -16,5 +16,5 @@ This section defines end-to-end scenarios for Tikti. Each use case maps a busine
 - Identity and authentication contracts: [API Specification](API-Specification)
 - Token claims and validation: [Tokens and Keys](Tokens-and-Keys)
 - Tenant-aware authorization: [Multi-Tenant Authorization](Multi-Tenant-Authorization)
-- SAML federation: [SAML Federation HLD](../docs/12_saml_federation_hld.md)
+- SAML federation: [SAML Federation](SAML-Federation)
 - codeQ behavior and claims: [codeQ Integration](codeQ-Integration)

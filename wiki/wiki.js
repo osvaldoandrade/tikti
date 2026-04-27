@@ -22,6 +22,12 @@ const NAV = [
     ],
   },
   {
+    section: "Federation",
+    pages: [
+      ["SAML Federation", "SAML-Federation"],
+    ],
+  },
+  {
     section: "Interfaces",
     pages: [
       ["API Specification", "API-Specification"],
@@ -47,6 +53,7 @@ const NAV = [
       ["codeQ Worker Token Exchange", "Use-Cases-codeQ-Worker-Token-Exchange"],
       ["Tenant Admin Lifecycle", "Use-Cases-Tenant-Admin-Lifecycle"],
       ["Resource Server Token Validation", "Use-Cases-Resource-Server-Token-Validation"],
+      ["SAML SSO", "Use-Cases-SAML-SSO"],
     ],
   },
 ];

@@ -18,7 +18,7 @@ The caller is authenticated and authorized for admin scopes. The target tenant e
 2. Admin creates tenant roles via `POST /v1/tenants/{tenantId}/roles`.
 3. Admin creates tenant clients via `POST /v1/tenants/{tenantId}/clients`.
 4. Admin adds users to the tenant via `POST /v1/tenants/{tenantId}/users`.
-5. Admin registers a SAML IdP for the tenant via `tikti-cli saml idp register`. This stores the IdP metadata, SSO URL, and pinned signing certificate at `saml:idp:{tenantId}` in Redis.
+5. Admin registers a SAML IdP for the tenant via `tikti-cli saml idp register --tid {tenantId}`. This stores the IdP metadata, SSO URL, and pinned signing certificates at `saml:idp:{tenantId}` in Redis.
 6. Admin removes users from the tenant via `POST /v1/tenants/{tenantId}/users/remove` when needed.
 7. Admin suspends or reactivates users via account status operations when needed.
 
@@ -39,7 +39,7 @@ sequenceDiagram
     T-->>A: Client created
     A->>T: POST /v1/tenants/{tenantId}/users
     T-->>A: Membership created
-    A->>C: tikti-cli saml idp register --tenant {tenantId}
+    A->>C: tikti-cli saml idp register --tid {tenantId}
     C->>R: SET saml:idp:{tenantId} (metadata, cert, SSO URL)
     C-->>A: IdP registered
     opt Remove user from tenant
@@ -70,4 +70,4 @@ IdP registration with an invalid or expired signing certificate: registration re
 
 - [API Specification](API-Specification)
 - [Multi-Tenant Authorization](Multi-Tenant-Authorization)
-- [SAML Federation HLD](../docs/12_saml_federation_hld.md)
+- [SAML Federation](SAML-Federation)

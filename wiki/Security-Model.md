@@ -36,7 +36,7 @@ Tikti tracks every processed assertion ID in Redis under the key `saml:seen:{Ass
 
 ### Certificate Pinning
 
-Each tenant's IdP signing certificate is pinned at registration time via `tikti-cli saml idp register`. Tikti stores the certificate fingerprint and uses it to verify assertion signatures. Assertions signed by a certificate that does not match the pinned fingerprint are rejected. When an IdP rotates its signing certificate, the tenant administrator must re-register the IdP with the new certificate before federation resumes.
+Each tenant's IdP signing certificate is pinned at registration time via `tikti-cli saml idp register --tid <tenantId>`. Tikti stores the IdP signing certificates from metadata and uses them to verify assertion signatures. Assertions signed by a certificate outside the tenant's trust record are rejected. When an IdP rotates its signing certificate, the tenant administrator refreshes the record with `tikti-cli saml idp update --tid <tenantId> --metadata-url <url>` or re-registers the IdP with current metadata.
 
 ### Clock Skew Tolerance
 

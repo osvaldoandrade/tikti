@@ -150,10 +150,10 @@ This guarantees that every issued token remains verifiable until it expires. The
 
 ### SAML SP key rotation
 
-The SAML SP keypair rotation uses a two-phase process managed by the `saml keys rotate` CLI command. External IdPs cache the SP metadata containing the SP certificate, so the old certificate must remain valid long enough for every IdP to refresh its cache.
+The SAML SP keypair rotation uses a two-phase process managed by the `saml sp rotate` CLI command. External IdPs cache the SP metadata containing the SP certificate, so the old certificate must remain valid long enough for every IdP to refresh its cache.
 
-1. `tikti saml sp rotate --prepare` generates a new RSA keypair and publishes both the old and new certificates in SP metadata. Tikti continues signing AuthnRequests with the old key. IdPs see both certificates and accept signatures from either.
-2. After a grace period (72 hours by default, allowing IdP metadata refresh), `tikti saml sp rotate --commit` switches signing to the new key and removes the old certificate from metadata.
+1. `tikti-cli saml sp rotate --prepare` generates a new RSA keypair and publishes both the old and new certificates in SP metadata. Tikti continues signing AuthnRequests with the old key. IdPs see both certificates and accept signatures from either.
+2. After a grace period (72 hours by default, allowing IdP metadata refresh), `tikti-cli saml sp rotate --commit` switches signing to the new key and removes the old certificate from metadata.
 
 During the overlap window, Tikti accepts encrypted assertions encrypted to either key. After commit, the old private key is deleted from disk. The overlap window avoids AuthnRequest signature failures that would occur if the SP certificate changed before an IdP refreshed its cached metadata.
 
