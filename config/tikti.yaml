@@ -8,6 +8,13 @@ issuerBaseUrl: ${ISSUER_BASE_URL}
 defaultAudience: ${DEFAULT_AUDIENCE}
 jwksPrivateKey: ${JWKS_PRIVATE_KEY}
 jwksKeyId: ${JWKS_KEY_ID}
+workloadIdentity:
+  issuer: ${WORKLOAD_IDENTITY_ISSUER}
+  audience: tikti-workload-exchange
+  jwksUrl: ${WORKLOAD_IDENTITY_JWKS_URL}
+  httpTimeoutSeconds: 5
+  jwksCacheTtlSeconds: 300
+  accessTokenTtlSeconds: 300
 
 # ── SAML (HLD §16) ──────────────────────────────────────────────
 # saml:

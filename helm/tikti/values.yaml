@@ -63,6 +63,13 @@ config:
   defaultAudience: "tikti"
   jwksPrivateKey: ""
   jwksKeyId: "tikti-local-1"
+  workloadIdentity:
+    issuer: ""
+    audience: "tikti-workload-exchange"
+    jwksUrl: ""
+    httpTimeoutSeconds: 5
+    jwksCacheTtlSeconds: 300
+    accessTokenTtlSeconds: 300
 
 secrets:
   enabled: true
@@ -70,6 +77,8 @@ secrets:
   apiKey: ""
   redisPassword: ""
   jwksPrivateKey: ""
+  samlSpPrivateKey: ""
+  samlSpCertificate: ""
 
 saml:
   enabled: true

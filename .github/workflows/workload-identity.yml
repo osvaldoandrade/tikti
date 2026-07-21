@@ -1,0 +1,43 @@
+name: workload-identity
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/workload-identity.yml'
+      - 'cmd/tikti/**'
+      - 'config/**'
+      - 'docs/**'
+      - 'helm/tikti/**'
+      - 'internal/app/**'
+      - 'internal/controllers/workload_identity*'
+      - 'internal/repository/workload_binding*'
+      - 'internal/services/workload_identity*'
+      - 'internal/utils/api_key*'
+      - 'internal/workloadidentity/**'
+      - 'pkg/config/**'
+      - 'pkg/domain/**'
+      - 'go.mod'
+      - 'go.sum'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test with race detector
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - uses: azure/setup-helm@v4
+      - name: Validate Helm chart
+        run: |
+          helm lint helm/tikti
+          helm template tikti helm/tikti >/dev/null

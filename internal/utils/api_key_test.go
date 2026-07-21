@@ -58,3 +58,33 @@ func TestApiKey_ValidKey_AllowsRequest(t *testing.T) {
 		t.Fatalf("expected 202, got %d", rec.Code)
 	}
 }
+
+func TestRequiredApiKeyHeaderFailsClosed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, test := range []struct {
+		name     string
+		expected string
+		provided string
+		want     int
+	}{
+		{name: "empty configuration", expected: "", provided: "anything", want: http.StatusUnauthorized},
+		{name: "missing header", expected: "secret", want: http.StatusUnauthorized},
+		{name: "wrong header", expected: "secret", provided: "other", want: http.StatusUnauthorized},
+		{name: "valid header", expected: "secret", provided: "secret", want: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			router := gin.New()
+			router.Use(RequiredApiKeyHeader(test.expected))
+			router.POST("/workloads/bindings", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+			req := httptest.NewRequest(http.MethodPost, "/workloads/bindings?key=secret", nil)
+			if test.provided != "" {
+				req.Header.Set("X-API-Key", test.provided)
+			}
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+			if recorder.Code != test.want {
+				t.Fatalf("status = %d, want %d", recorder.Code, test.want)
+			}
+		})
+	}
+}

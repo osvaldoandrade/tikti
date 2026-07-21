@@ -101,6 +101,55 @@ jwksKeyId: kid-file
 	}
 }
 
+func TestLoadConfig_WorkloadIdentityDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("WORKLOAD_IDENTITY_ISSUER", "https://kubernetes.example.com")
+	t.Setenv("WORKLOAD_IDENTITY_JWKS_URL", "https://kubernetes.example.com/openid/v1/jwks")
+	t.Setenv("WORKLOAD_IDENTITY_HTTP_TIMEOUT_SECONDS", "7")
+	t.Setenv("WORKLOAD_IDENTITY_JWKS_CACHE_TTL_SECONDS", "600")
+	t.Setenv("WORKLOAD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", "120")
+	path := writeTempConfig(t, `{workloadIdentity: {audience: tikti-workload-exchange}}`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.WorkloadIdentity.Issuer != "https://kubernetes.example.com" || cfg.WorkloadIdentity.JWKSURL != "https://kubernetes.example.com/openid/v1/jwks" || cfg.WorkloadIdentity.Audience != "tikti-workload-exchange" {
+		t.Fatalf("workload identity endpoints = %#v", cfg.WorkloadIdentity)
+	}
+	if cfg.WorkloadIdentity.HTTPTimeoutSeconds != 7 || cfg.WorkloadIdentity.JWKSCacheTTLSeconds != 600 || cfg.WorkloadIdentity.AccessTokenTTLSeconds != 120 {
+		t.Fatalf("workload identity limits = %#v", cfg.WorkloadIdentity)
+	}
+}
+
+func TestLoadConfig_WorkloadIdentityFailsClosed(t *testing.T) {
+	t.Run("partial endpoint", func(t *testing.T) {
+		t.Setenv("WORKLOAD_IDENTITY_ISSUER", "https://kubernetes.example.com")
+		if _, err := LoadConfig(writeTempConfig(t, `{}`)); err == nil {
+			t.Fatal("issuer without JWKS URL was accepted")
+		}
+	})
+	t.Run("invalid lifetime", func(t *testing.T) {
+		t.Setenv("WORKLOAD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", "3601")
+		if _, err := LoadConfig(writeTempConfig(t, `{}`)); err == nil {
+			t.Fatal("access token lifetime above one hour was accepted")
+		}
+	})
+}
+
+func TestLoadConfig_UnsetWorkloadIdentityPlaceholdersDisableExchange(t *testing.T) {
+	path := writeTempConfig(t, `
+workloadIdentity:
+  issuer: ${WORKLOAD_IDENTITY_ISSUER}
+  jwksUrl: ${WORKLOAD_IDENTITY_JWKS_URL}
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.WorkloadIdentity.Issuer != "" || cfg.WorkloadIdentity.JWKSURL != "" {
+		t.Fatalf("unset workload placeholders = %#v", cfg.WorkloadIdentity)
+	}
+}
+
 func TestSAMLConfig_DefaultDisabled(t *testing.T) {
 	path := writeTempConfig(t, "{}")
 	cfg, err := LoadConfig(path)

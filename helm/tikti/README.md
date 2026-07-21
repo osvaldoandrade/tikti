@@ -20,6 +20,12 @@ helm upgrade --install tikti ./helm/tikti \
 
 The chart exposes values under three groups. `image.repository` and `image.tag` control the container image. `replicaCount` sets the number of pods. `resources` accepts standard Kubernetes resource requests and limits. `config.redisAddr` and `config.redisDb` point the application at a Redis instance. `ingress.enabled`, `ingress.className`, `ingress.hosts`, and `ingress.tls` configure the Ingress resource. Under `secrets`, the chart stores `jwtSecret`, `apiKey`, `redisPassword`, and `jwksPrivateKey` as Kubernetes Secrets.
 
+`config.workloadIdentity` enables projected Kubernetes ServiceAccount exchange.
+Set `issuer` and `jwksUrl` together, keep `audience` equal to
+`tikti-workload-exchange`, and choose an access-token lifetime from 1 through
+3600 seconds. Leaving both endpoint values empty keeps the route fail-closed
+without affecting existing user authentication routes.
+
 Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and configuring hosts.
 
 ## SAML
