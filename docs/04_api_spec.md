@@ -362,6 +362,35 @@ Error cases:
 | 403 | Scopes exceed permissions or membership is missing. |
 | 400 | Audience is unknown or request body is malformed. |
 
+### POST /v1/workloads/token/exchange
+
+Exchanges a projected Kubernetes ServiceAccount JWT for a tenant-bound RS256
+provider token. The route authenticates the workload token itself and therefore
+does not accept an API key fallback.
+
+```json
+{
+  "subjectToken": "<projected-jwt>",
+  "subjectTokenType": "urn:ietf:params:oauth:token-type:jwt",
+  "audience": "codeq-producer",
+  "scopes": ["codeq:admin"],
+  "tenantId": "payments"
+}
+```
+
+Tikti validates the configured Kubernetes issuer, JWKS signature, audience,
+expiry, namespace, ServiceAccount, subject, and a non-revoked explicit binding.
+The response echoes the authorization metadata and is never cacheable. Binding
+management requires `X-API-Key` and is documented in
+`13_workload_identity.md`.
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Target audience, tenant, or request shape is invalid. |
+| 401 | Projected JWT validation failed. |
+| 403 | Binding is absent, revoked, cross-tenant, or scope-mismatched. |
+| 503 | JWKS, binding storage, or signing is unavailable. |
+
 ## JWKS
 
 ### GET /.well-known/jwks.json

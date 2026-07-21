@@ -96,6 +96,7 @@ func main() {
 		application.MemberSvc,
 		application.RoleSvc,
 		application.ClientSvc,
+		application.WorkloadSvc,
 	)
 
 	application.Engine.GET("/healthz", func(c *gin.Context) {

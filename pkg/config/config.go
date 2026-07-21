@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -11,20 +13,32 @@ import (
 
 // Config captures runtime parameters loaded from YAML or the environment.
 type Config struct {
-	Port            int        `yaml:"port"`
-	RedisAddr       string     `yaml:"redisAddr"`
-	RedisHost       string     `yaml:"redisHost"`
-	RedisPort       int        `yaml:"redisPort"`
-	RedisDB         int        `yaml:"redisDb"`
-	RedisPassword   string     `yaml:"redisPassword"`
-	RedisURL        string     `yaml:"redisUrl"`
-	JwtSecret       string     `yaml:"jwtSecret"`
-	ApiKey          string     `yaml:"apiKey"`
-	IssuerBaseURL   string     `yaml:"issuerBaseUrl"`
-	DefaultAudience string     `yaml:"defaultAudience"`
-	JwksPrivateKey  string     `yaml:"jwksPrivateKey"`
-	JwksKeyID       string     `yaml:"jwksKeyId"`
-	SAML            SAMLConfig `yaml:"saml"`
+	Port             int                    `yaml:"port"`
+	RedisAddr        string                 `yaml:"redisAddr"`
+	RedisHost        string                 `yaml:"redisHost"`
+	RedisPort        int                    `yaml:"redisPort"`
+	RedisDB          int                    `yaml:"redisDb"`
+	RedisPassword    string                 `yaml:"redisPassword"`
+	RedisURL         string                 `yaml:"redisUrl"`
+	JwtSecret        string                 `yaml:"jwtSecret"`
+	ApiKey           string                 `yaml:"apiKey"`
+	IssuerBaseURL    string                 `yaml:"issuerBaseUrl"`
+	DefaultAudience  string                 `yaml:"defaultAudience"`
+	JwksPrivateKey   string                 `yaml:"jwksPrivateKey"`
+	JwksKeyID        string                 `yaml:"jwksKeyId"`
+	WorkloadIdentity WorkloadIdentityConfig `yaml:"workloadIdentity"`
+	SAML             SAMLConfig             `yaml:"saml"`
+}
+
+// WorkloadIdentityConfig validates Kubernetes projected ServiceAccount tokens
+// and controls the short-lived access tokens issued to bound controllers.
+type WorkloadIdentityConfig struct {
+	Issuer                string `yaml:"issuer"`
+	Audience              string `yaml:"audience"`
+	JWKSURL               string `yaml:"jwksUrl"`
+	HTTPTimeoutSeconds    int    `yaml:"httpTimeoutSeconds"`
+	JWKSCacheTTLSeconds   int    `yaml:"jwksCacheTtlSeconds"`
+	AccessTokenTTLSeconds int    `yaml:"accessTokenTtlSeconds"`
 }
 
 // SAMLConfig holds top-level SAML integration settings.
@@ -62,9 +76,9 @@ type SPConfig struct {
 func (s *SPConfig) UnmarshalYAML(value *yaml.Node) error {
 	type raw SPConfig // prevent recursion
 	var aux struct {
-		raw              `yaml:",inline"`
-		ClockSkewSec     int `yaml:"clockSkewSeconds"`
-		RequestTTLSec    int `yaml:"requestTTLSeconds"`
+		raw           `yaml:",inline"`
+		ClockSkewSec  int `yaml:"clockSkewSeconds"`
+		RequestTTLSec int `yaml:"requestTTLSeconds"`
 	}
 	if err := value.Decode(&aux); err != nil {
 		return err
@@ -207,6 +221,41 @@ func LoadConfig(filePath string) (*Config, error) {
 	if c.JwksKeyID == "" {
 		c.JwksKeyID = "tikti-local-1"
 	}
+	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_ISSUER")); value != "" {
+		c.WorkloadIdentity.Issuer = value
+	}
+	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_AUDIENCE")); value != "" {
+		c.WorkloadIdentity.Audience = value
+	}
+	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_JWKS_URL")); value != "" {
+		c.WorkloadIdentity.JWKSURL = value
+	}
+	c.WorkloadIdentity.Issuer = optionalExpandedValue(c.WorkloadIdentity.Issuer)
+	c.WorkloadIdentity.JWKSURL = optionalExpandedValue(c.WorkloadIdentity.JWKSURL)
+	if c.WorkloadIdentity.Audience == "" {
+		c.WorkloadIdentity.Audience = "tikti-workload-exchange"
+	}
+	if c.WorkloadIdentity.HTTPTimeoutSeconds == 0 {
+		c.WorkloadIdentity.HTTPTimeoutSeconds = 5
+	}
+	if c.WorkloadIdentity.JWKSCacheTTLSeconds == 0 {
+		c.WorkloadIdentity.JWKSCacheTTLSeconds = 300
+	}
+	if c.WorkloadIdentity.AccessTokenTTLSeconds == 0 {
+		c.WorkloadIdentity.AccessTokenTTLSeconds = 300
+	}
+	if c.WorkloadIdentity.HTTPTimeoutSeconds, err = positiveEnvInt("WORKLOAD_IDENTITY_HTTP_TIMEOUT_SECONDS", c.WorkloadIdentity.HTTPTimeoutSeconds, 60); err != nil {
+		return nil, err
+	}
+	if c.WorkloadIdentity.JWKSCacheTTLSeconds, err = positiveEnvInt("WORKLOAD_IDENTITY_JWKS_CACHE_TTL_SECONDS", c.WorkloadIdentity.JWKSCacheTTLSeconds, 86400); err != nil {
+		return nil, err
+	}
+	if c.WorkloadIdentity.AccessTokenTTLSeconds, err = positiveEnvInt("WORKLOAD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", c.WorkloadIdentity.AccessTokenTTLSeconds, 3600); err != nil {
+		return nil, err
+	}
+	if (strings.TrimSpace(c.WorkloadIdentity.Issuer) == "") != (strings.TrimSpace(c.WorkloadIdentity.JWKSURL) == "") {
+		return nil, fmt.Errorf("workload identity issuer and jwksUrl must be configured together")
+	}
 	// SAML defaults
 	if c.SAML.ACS.DeliveryMode == "" {
 		c.SAML.ACS.DeliveryMode = "cookie"
@@ -224,4 +273,27 @@ func LoadConfig(filePath string) (*Config, error) {
 		c.SAML.SP.AllowedSigAlgs = []string{"rsa-sha256"}
 	}
 	return &c, nil
+}
+
+func positiveEnvInt(name string, fallback, maximum int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		if fallback < 1 || fallback > maximum {
+			return 0, fmt.Errorf("%s must be between 1 and %d", name, maximum)
+		}
+		return fallback, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 1 || value > maximum {
+		return 0, fmt.Errorf("%s must be between 1 and %d", name, maximum)
+	}
+	return value, nil
+}
+
+func optionalExpandedValue(value string) string {
+	value = strings.TrimSpace(value)
+	if strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}") {
+		return ""
+	}
+	return value
 }

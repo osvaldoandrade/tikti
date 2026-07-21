@@ -190,6 +190,9 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 | `/accounts/signInWithPassword?key=...` | POST | Admin-initiated password authentication |
 | `/accounts/lookup?key=...` | POST | Look up an account by email |
 | `/accounts/token/exchange?key=...` | POST | Exchange an HS256 idToken for an RS256 access token |
+| `/workloads/token/exchange` | POST | Exchange a projected Kubernetes ServiceAccount JWT for a tenant-bound provider token |
+| `/workloads/bindings` | POST | Create or replace a workload-to-tenant authorization binding (`X-API-Key`) |
+| `/workloads/bindings/revoke` | POST | Revoke a workload binding (`X-API-Key`) |
 | `/.well-known/jwks.json` | GET | Publish RS256 public keys for offline verification |
 
 ### Multi-Tenant

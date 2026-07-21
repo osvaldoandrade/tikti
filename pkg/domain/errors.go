@@ -21,4 +21,13 @@ var (
 	ErrNotFound = errors.New("user not found")
 	// ErrInvalidOob signals that the out-of-band code is unknown or expired.
 	ErrInvalidOob = errors.New("invalid or expired code")
+	// ErrWorkloadTokenInvalid indicates a projected workload token failed
+	// cryptographic or Kubernetes identity validation.
+	ErrWorkloadTokenInvalid = errors.New("invalid workload token")
+	// ErrWorkloadBindingDenied indicates that the verified workload subject is
+	// not authorized for the requested tenant, audience, and scopes.
+	ErrWorkloadBindingDenied = errors.New("workload binding denied")
+	// ErrWorkloadIdentityUnavailable indicates a transient verifier, storage, or
+	// signing failure. It must not include token material.
+	ErrWorkloadIdentityUnavailable = errors.New("workload identity unavailable")
 )

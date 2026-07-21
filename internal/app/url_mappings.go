@@ -10,7 +10,7 @@ import (
 )
 
 // SetupMappings registers every public and protected route with their respective controllers.
-func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService) {
+func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService) {
 	v1 := engine.Group("/v1")
 
 	v1.POST("/accounts/signUp", controllers.NewSignUpController(userService, cfg).Handle)
@@ -18,6 +18,14 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
 	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
 	v1.GET("/.well-known/jwks.json", controllers.NewJWKSController(userService).Handle)
+	workloadCtrl := controllers.NewWorkloadIdentityController(workloadService)
+	v1.POST("/workloads/token/exchange", workloadCtrl.Exchange)
+	workloadAdmin := v1.Group("/workloads")
+	workloadAdmin.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
+	{
+		workloadAdmin.POST("/bindings", workloadCtrl.UpsertBinding)
+		workloadAdmin.POST("/bindings/revoke", workloadCtrl.RevokeBinding)
+	}
 
 	protected := v1.Group("/")
 	protected.Use(utils.ApiKey(cfg.ApiKey))
