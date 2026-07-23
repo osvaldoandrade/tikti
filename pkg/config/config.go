@@ -36,6 +36,7 @@ type WorkloadIdentityConfig struct {
 	Issuer                string `yaml:"issuer"`
 	Audience              string `yaml:"audience"`
 	JWKSURL               string `yaml:"jwksUrl"`
+	JWKSBearerTokenFile   string `yaml:"jwksBearerTokenFile"`
 	HTTPTimeoutSeconds    int    `yaml:"httpTimeoutSeconds"`
 	JWKSCacheTTLSeconds   int    `yaml:"jwksCacheTtlSeconds"`
 	AccessTokenTTLSeconds int    `yaml:"accessTokenTtlSeconds"`
@@ -230,8 +231,12 @@ func LoadConfig(filePath string) (*Config, error) {
 	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_JWKS_URL")); value != "" {
 		c.WorkloadIdentity.JWKSURL = value
 	}
+	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_JWKS_BEARER_TOKEN_FILE")); value != "" {
+		c.WorkloadIdentity.JWKSBearerTokenFile = value
+	}
 	c.WorkloadIdentity.Issuer = optionalExpandedValue(c.WorkloadIdentity.Issuer)
 	c.WorkloadIdentity.JWKSURL = optionalExpandedValue(c.WorkloadIdentity.JWKSURL)
+	c.WorkloadIdentity.JWKSBearerTokenFile = optionalExpandedValue(c.WorkloadIdentity.JWKSBearerTokenFile)
 	if c.WorkloadIdentity.Audience == "" {
 		c.WorkloadIdentity.Audience = "tikti-workload-exchange"
 	}

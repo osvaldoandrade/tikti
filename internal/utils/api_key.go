@@ -8,15 +8,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// ApiKey returns a Gin middleware that enforces the ?key= query parameter.
+// ApiKey returns a Gin middleware that accepts X-API-Key and keeps the legacy
+// ?key= query parameter for compatibility.
 func ApiKey(expected string) gin.HandlerFunc {
+	expected = strings.TrimSpace(expected)
 	return func(c *gin.Context) {
 		if expected == "" {
 			// No API Key needed
 			c.Next()
 			return
 		}
-		key := c.Query("key")
+		key := strings.TrimSpace(c.GetHeader("X-API-Key"))
+		if key == "" {
+			key = strings.TrimSpace(c.Query("key"))
+		}
 		if !constantTimeEqual(key, expected) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing API key"})
 			c.Abort()

@@ -68,11 +68,19 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	)
 	var workloadVerifier services.WorkloadTokenVerifier
 	if strings.TrimSpace(cfg.WorkloadIdentity.Issuer) != "" {
+		httpClient := &http.Client{Timeout: time.Duration(cfg.WorkloadIdentity.HTTPTimeoutSeconds) * time.Second}
+		if tokenFile := strings.TrimSpace(cfg.WorkloadIdentity.JWKSBearerTokenFile); tokenFile != "" {
+			transport, transportErr := workloadidentity.NewBearerTokenFileTransport(tokenFile, http.DefaultTransport)
+			if transportErr != nil {
+				return nil, fmt.Errorf("init workload identity JWKS authentication: %w", transportErr)
+			}
+			httpClient.Transport = transport
+		}
 		verifier, verifierErr := workloadidentity.NewJWKSVerifier(
 			cfg.WorkloadIdentity.Issuer,
 			cfg.WorkloadIdentity.Audience,
 			cfg.WorkloadIdentity.JWKSURL,
-			&http.Client{Timeout: time.Duration(cfg.WorkloadIdentity.HTTPTimeoutSeconds) * time.Second},
+			httpClient,
 			time.Duration(cfg.WorkloadIdentity.JWKSCacheTTLSeconds)*time.Second,
 		)
 		if verifierErr != nil {

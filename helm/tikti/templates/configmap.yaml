@@ -20,6 +20,7 @@ data:
       issuer: {{ .Values.config.workloadIdentity.issuer | quote }}
       audience: {{ .Values.config.workloadIdentity.audience | quote }}
       jwksUrl: {{ .Values.config.workloadIdentity.jwksUrl | quote }}
+      jwksBearerTokenFile: {{ .Values.config.workloadIdentity.jwksBearerTokenFile | quote }}
       httpTimeoutSeconds: {{ .Values.config.workloadIdentity.httpTimeoutSeconds }}
       jwksCacheTtlSeconds: {{ .Values.config.workloadIdentity.jwksCacheTtlSeconds }}
       accessTokenTtlSeconds: {{ .Values.config.workloadIdentity.accessTokenTtlSeconds }}
