@@ -67,12 +67,14 @@ config:
     issuer: ""
     audience: "tikti-workload-exchange"
     jwksUrl: ""
+    jwksBearerTokenFile: ""
     httpTimeoutSeconds: 5
     jwksCacheTtlSeconds: 300
     accessTokenTtlSeconds: 300
 
 secrets:
   enabled: true
+  existingSecret: ""
   jwtSecret: ""
   apiKey: ""
   redisPassword: ""

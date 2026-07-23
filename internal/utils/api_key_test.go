@@ -59,6 +59,22 @@ func TestApiKey_ValidKey_AllowsRequest(t *testing.T) {
 	}
 }
 
+func TestApiKey_HeaderTrimsSecretFileNewlineAndAvoidsQueryString(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(ApiKey("k1\n"))
+	r.GET("/x", func(c *gin.Context) { c.Status(http.StatusAccepted) })
+
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.Header.Set("X-API-Key", "k1")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", rec.Code)
+	}
+}
+
 func TestRequiredApiKeyHeaderFailsClosed(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, test := range []struct {

@@ -103,7 +103,7 @@ func (v *JWKSVerifier) Verify(ctx context.Context, subjectToken string) (domain.
 	})
 	if err != nil {
 		if ctx.Err() != nil || errors.Is(err, domain.ErrWorkloadIdentityUnavailable) {
-			return domain.WorkloadSubject{}, domain.ErrWorkloadIdentityUnavailable
+			return domain.WorkloadSubject{}, fmt.Errorf("%w: verify subject token: %v", domain.ErrWorkloadIdentityUnavailable, err)
 		}
 		return domain.WorkloadSubject{}, domain.ErrWorkloadTokenInvalid
 	}
@@ -138,7 +138,7 @@ func (v *JWKSVerifier) keyFor(ctx context.Context, kid string) (*rsa.PublicKey, 
 		}
 	}
 	if err := v.refreshLocked(ctx); err != nil {
-		return nil, domain.ErrWorkloadIdentityUnavailable
+		return nil, fmt.Errorf("%w: refresh workload JWKS: %v", domain.ErrWorkloadIdentityUnavailable, err)
 	}
 	key := v.keys[kid]
 	if key == nil {
@@ -152,7 +152,7 @@ func (v *JWKSVerifier) refreshLocked(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", "application/jwk-set+json, application/json")
 	resp, err := v.http.Do(req)
 	if err != nil {
 		return err

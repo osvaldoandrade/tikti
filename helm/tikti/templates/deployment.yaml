@@ -52,22 +52,22 @@ spec:
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "tikti.fullname" . }}-secrets
+                  name: {{ .Values.secrets.existingSecret | default (printf "%s-secrets" (include "tikti.fullname" .)) }}
                   key: jwtSecret
             - name: API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "tikti.fullname" . }}-secrets
+                  name: {{ .Values.secrets.existingSecret | default (printf "%s-secrets" (include "tikti.fullname" .)) }}
                   key: apiKey
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "tikti.fullname" . }}-secrets
+                  name: {{ .Values.secrets.existingSecret | default (printf "%s-secrets" (include "tikti.fullname" .)) }}
                   key: redisPassword
             - name: JWKS_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "tikti.fullname" . }}-secrets
+                  name: {{ .Values.secrets.existingSecret | default (printf "%s-secrets" (include "tikti.fullname" .)) }}
                   key: jwksPrivateKey
             {{- end }}
             {{- with .Values.extraEnv }}

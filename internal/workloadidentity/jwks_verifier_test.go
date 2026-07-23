@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -235,8 +236,11 @@ func newTestVerifier(t *testing.T, server *httptest.Server, cacheTTL time.Durati
 func jwksTestServer(t *testing.T, key *rsa.PrivateKey, kid string, delay time.Duration) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		calls.Add(1)
+		if !strings.Contains(request.Header.Get("Accept"), "application/jwk-set+json") {
+			t.Errorf("Accept header = %q", request.Header.Get("Accept"))
+		}
 		if delay > 0 {
 			time.Sleep(delay)
 		}

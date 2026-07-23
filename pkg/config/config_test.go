@@ -104,6 +104,7 @@ jwksKeyId: kid-file
 func TestLoadConfig_WorkloadIdentityDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("WORKLOAD_IDENTITY_ISSUER", "https://kubernetes.example.com")
 	t.Setenv("WORKLOAD_IDENTITY_JWKS_URL", "https://kubernetes.example.com/openid/v1/jwks")
+	t.Setenv("WORKLOAD_IDENTITY_JWKS_BEARER_TOKEN_FILE", "/var/run/secrets/kubernetes.io/serviceaccount/token")
 	t.Setenv("WORKLOAD_IDENTITY_HTTP_TIMEOUT_SECONDS", "7")
 	t.Setenv("WORKLOAD_IDENTITY_JWKS_CACHE_TTL_SECONDS", "600")
 	t.Setenv("WORKLOAD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", "120")
@@ -114,6 +115,9 @@ func TestLoadConfig_WorkloadIdentityDefaultsAndOverrides(t *testing.T) {
 	}
 	if cfg.WorkloadIdentity.Issuer != "https://kubernetes.example.com" || cfg.WorkloadIdentity.JWKSURL != "https://kubernetes.example.com/openid/v1/jwks" || cfg.WorkloadIdentity.Audience != "tikti-workload-exchange" {
 		t.Fatalf("workload identity endpoints = %#v", cfg.WorkloadIdentity)
+	}
+	if cfg.WorkloadIdentity.JWKSBearerTokenFile != "/var/run/secrets/kubernetes.io/serviceaccount/token" {
+		t.Fatalf("workload identity JWKS token file = %q", cfg.WorkloadIdentity.JWKSBearerTokenFile)
 	}
 	if cfg.WorkloadIdentity.HTTPTimeoutSeconds != 7 || cfg.WorkloadIdentity.JWKSCacheTTLSeconds != 600 || cfg.WorkloadIdentity.AccessTokenTTLSeconds != 120 {
 		t.Fatalf("workload identity limits = %#v", cfg.WorkloadIdentity)

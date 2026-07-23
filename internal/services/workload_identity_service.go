@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"log"
 	"regexp"
 	"strings"
 	"sync"
@@ -86,10 +87,12 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 		if errors.Is(err, domain.ErrWorkloadTokenInvalid) {
 			return nil, domain.ErrWorkloadTokenInvalid
 		}
+		log.Printf("workload identity verifier unavailable: %v", err)
 		return nil, domain.ErrWorkloadIdentityUnavailable
 	}
 	binding, err := s.repo.Get(ctx, subject.Subject)
 	if err != nil {
+		log.Printf("workload identity binding lookup unavailable: %v", err)
 		return nil, domain.ErrWorkloadIdentityUnavailable
 	}
 	if !bindingAllows(binding, subject, req.TenantID, req.Audience, req.Scopes) {
@@ -101,6 +104,7 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 	}
 	key, err := s.signingKey()
 	if err != nil {
+		log.Printf("workload identity signing unavailable: %v", err)
 		return nil, domain.ErrWorkloadIdentityUnavailable
 	}
 	now := s.now().UTC()
