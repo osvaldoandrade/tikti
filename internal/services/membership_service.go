@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 type MembershipService interface {
 	Create(ctx context.Context, tenantID string, req domain.MembershipCreateReq) (*domain.MembershipResp, error)
 	Remove(ctx context.Context, tenantID string, req domain.MembershipRemoveReq) (*domain.MembershipRemoveResp, error)
+	List(ctx context.Context, tenantID string, cursor uint64, pageSize int64) (*domain.TenantUsersPage, error)
 	ListTenantIDsByUser(ctx context.Context, userID string) ([]string, error)
 }
 
@@ -87,6 +90,55 @@ func (s *membershipService) Remove(ctx context.Context, tenantID string, req dom
 		Email:     u.Email,
 		RemovedAt: time.Now(),
 	}, nil
+}
+
+func (s *membershipService) List(ctx context.Context, tenantID string, cursor uint64, pageSize int64) (*domain.TenantUsersPage, error) {
+	if strings.TrimSpace(tenantID) == "" {
+		return nil, domain.ErrInvalidTenant
+	}
+	if pageSize < 1 || pageSize > 200 {
+		return nil, domain.ErrInvalidArgument
+	}
+	memberships, nextCursor, err := s.repo.ListByTenant(ctx, tenantID, cursor, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	allUsers, err := s.userRepo.GetAllUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	usersByID := make(map[string]*domain.User, len(allUsers))
+	for _, user := range allUsers {
+		if user != nil {
+			usersByID[user.Id] = user
+		}
+	}
+	users := make([]domain.TenantUserResp, 0, len(memberships))
+	for _, membership := range memberships {
+		user := usersByID[membership.UserId]
+		if user == nil {
+			continue
+		}
+		users = append(users, domain.TenantUserResp{
+			Id:         user.Id,
+			Email:      user.Email,
+			Roles:      append([]string(nil), membership.Roles...),
+			Status:     user.Status,
+			AuthSource: user.AuthSource,
+			CreatedAt:  user.CreatedAt,
+		})
+	}
+	sort.Slice(users, func(i, j int) bool {
+		if users[i].Email == users[j].Email {
+			return users[i].Id < users[j].Id
+		}
+		return users[i].Email < users[j].Email
+	})
+	nextPageToken := ""
+	if nextCursor != 0 {
+		nextPageToken = strconv.FormatUint(nextCursor, 10)
+	}
+	return &domain.TenantUsersPage{Users: users, NextPageToken: nextPageToken}, nil
 }
 
 func (s *membershipService) ListTenantIDsByUser(ctx context.Context, userID string) ([]string, error) {

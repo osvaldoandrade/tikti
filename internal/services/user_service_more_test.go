@@ -29,7 +29,7 @@ type mockUserRepo struct {
 	saveOobCodeFn           func(context.Context, string, string, string) error
 	consumeOobCodeFn        func(context.Context, string, string) (string, error)
 	getAllUsersFn           func(context.Context) ([]*domain.User, error)
-	upsertFromSAMLFn       func(context.Context, string, string, string, string, []string, domain.MergeStrategy) (domain.User, bool, error)
+	upsertFromSAMLFn        func(context.Context, string, string, string, string, []string, domain.MergeStrategy) (domain.User, bool, error)
 }
 
 func (m *mockUserRepo) CreateUser(ctx context.Context, user *domain.User) error {
@@ -96,6 +96,7 @@ func (m *mockUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject,
 type mockMembershipRepo struct {
 	createFn            func(context.Context, *domain.Membership) error
 	getFn               func(context.Context, string, string) (*domain.Membership, error)
+	listByTenantFn      func(context.Context, string, uint64, int64) ([]*domain.Membership, uint64, error)
 	listTenantIDsByUser func(context.Context, string) ([]string, error)
 	deleteFn            func(context.Context, string, string) error
 }
@@ -111,6 +112,12 @@ func (m *mockMembershipRepo) Get(ctx context.Context, tenantID string, userID st
 		return m.getFn(ctx, tenantID, userID)
 	}
 	return nil, nil
+}
+func (m *mockMembershipRepo) ListByTenant(ctx context.Context, tenantID string, cursor uint64, count int64) ([]*domain.Membership, uint64, error) {
+	if m.listByTenantFn != nil {
+		return m.listByTenantFn(ctx, tenantID, cursor, count)
+	}
+	return nil, 0, nil
 }
 func (m *mockMembershipRepo) ListTenantIDsByUser(ctx context.Context, userID string) ([]string, error) {
 	if m.listTenantIDsByUser != nil {

@@ -143,6 +143,7 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	r := gin.New()
 	r.POST("/tenants", tenantCtrl.Create)
 	r.GET("/tenants/id/:id", tenantCtrl.Get)
+	r.GET("/tenants/:tenantId/users", memberCtrl.List)
 	r.POST("/tenants/:tenantId/users", memberCtrl.Create)
 	r.POST("/tenants/:tenantId/users/remove", memberCtrl.Remove)
 	r.POST("/tenants/:tenantId/roles", roleCtrl.Create)
@@ -168,6 +169,17 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	rec = performJSON(t, r, http.MethodPost, "/tenants", domain.TenantCreateReq{Name: "n", Slug: "s"}, admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tenant create ok: expected 200, got %d", rec.Code)
+	}
+
+	memberSvc.listFn = func(_ context.Context, tenantID string, cursor uint64, pageSize int64) (*domain.TenantUsersPage, error) {
+		if tenantID != "t1" || cursor != 7 || pageSize != 20 {
+			t.Fatalf("unexpected membership list request: tenant=%s cursor=%d pageSize=%d", tenantID, cursor, pageSize)
+		}
+		return &domain.TenantUsersPage{Users: []domain.TenantUserResp{{Id: "u1", Email: "u@example.com"}}}, nil
+	}
+	rec = performJSON(t, r, http.MethodGet, "/tenants/t1/users?pageSize=20&pageToken=7", nil, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("membership list: expected 200, got %d", rec.Code)
 	}
 
 	tenantSvc.getFn = func(ctx context.Context, tenantID string) (*domain.TenantResp, error) { return nil, domain.ErrNotFound }
