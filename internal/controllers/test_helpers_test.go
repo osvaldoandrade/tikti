@@ -165,6 +165,7 @@ func (f *fakeTenantService) EnsureDefault(ctx context.Context) (*domain.TenantRe
 type fakeMembershipService struct {
 	createFn            func(context.Context, string, domain.MembershipCreateReq) (*domain.MembershipResp, error)
 	removeFn            func(context.Context, string, domain.MembershipRemoveReq) (*domain.MembershipRemoveResp, error)
+	listFn              func(context.Context, string, uint64, int64) (*domain.TenantUsersPage, error)
 	listTenantIDsByUser func(context.Context, string) ([]string, error)
 }
 
@@ -179,6 +180,12 @@ func (f *fakeMembershipService) Remove(ctx context.Context, tenantID string, req
 		return f.removeFn(ctx, tenantID, req)
 	}
 	return nil, nil
+}
+func (f *fakeMembershipService) List(ctx context.Context, tenantID string, cursor uint64, pageSize int64) (*domain.TenantUsersPage, error) {
+	if f.listFn != nil {
+		return f.listFn(ctx, tenantID, cursor, pageSize)
+	}
+	return &domain.TenantUsersPage{Users: []domain.TenantUserResp{}}, nil
 }
 func (f *fakeMembershipService) ListTenantIDsByUser(ctx context.Context, userID string) ([]string, error) {
 	if f.listTenantIDsByUser != nil {

@@ -350,6 +350,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		"aud":   req.Audience,
 		"sub":   subject,
 		"email": u.Email,
+		"role":  string(u.Role),
 		"tid":   tenantID,
 		"ver":   u.TokenVersion,
 		"iat":   time.Now().Unix(),

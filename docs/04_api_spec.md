@@ -593,6 +593,35 @@ Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 
 ## Membership management (admin)
 
+### GET /v1/tenants/{tenantId}/users
+
+Lists the users that are members of the tenant. Requires ADMIN or TENANT_ADMIN
+for the tenant. The response never includes passwords, token versions, external
+subjects, or other authentication secrets.
+
+Query parameters:
+
+- `pageSize`: optional, from 1 to 200; defaults to 50.
+- `pageToken`: optional opaque cursor returned by the previous page.
+
+Response 200:
+
+```json
+{
+  "users": [
+    {
+      "id": "user-123",
+      "email": "user@company.com",
+      "roles": ["TENANT_USER"],
+      "status": "ACTIVE",
+      "authSource": "PASSWORD",
+      "createdAt": "2026-01-28T12:00:00Z"
+    }
+  ],
+  "nextPageToken": ""
+}
+```
+
 ### POST /v1/tenants/{tenantId}/users
 
 Creates a membership for a user within a tenant. If the user does not exist, the endpoint creates the user with a generated password or returns 400, depending on policy.

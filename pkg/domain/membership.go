@@ -34,3 +34,17 @@ type MembershipRemoveResp struct {
 	Email     string    `json:"email"`
 	RemovedAt time.Time `json:"removedAt"`
 }
+
+type TenantUserResp struct {
+	Id         string     `json:"id"`
+	Email      string     `json:"email"`
+	Roles      []string   `json:"roles"`
+	Status     UserStatus `json:"status"`
+	AuthSource AuthSource `json:"authSource"`
+	CreatedAt  time.Time  `json:"createdAt"`
+}
+
+type TenantUsersPage struct {
+	Users         []TenantUserResp `json:"users"`
+	NextPageToken string           `json:"nextPageToken"`
+}

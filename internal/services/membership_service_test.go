@@ -11,6 +11,7 @@ import (
 type fakeMembershipRepo struct {
 	createFn            func(ctx context.Context, membership *domain.Membership) error
 	getFn               func(ctx context.Context, tenantID string, userID string) (*domain.Membership, error)
+	listByTenantFn      func(ctx context.Context, tenantID string, cursor uint64, count int64) ([]*domain.Membership, uint64, error)
 	listTenantIDsByUser func(ctx context.Context, userID string) ([]string, error)
 	deleteFn            func(ctx context.Context, tenantID string, userID string) error
 }
@@ -26,6 +27,12 @@ func (f *fakeMembershipRepo) Get(ctx context.Context, tenantID string, userID st
 		return f.getFn(ctx, tenantID, userID)
 	}
 	return nil, nil
+}
+func (f *fakeMembershipRepo) ListByTenant(ctx context.Context, tenantID string, cursor uint64, count int64) ([]*domain.Membership, uint64, error) {
+	if f.listByTenantFn != nil {
+		return f.listByTenantFn(ctx, tenantID, cursor, count)
+	}
+	return nil, 0, nil
 }
 func (f *fakeMembershipRepo) ListTenantIDsByUser(ctx context.Context, userID string) ([]string, error) {
 	if f.listTenantIDsByUser != nil {
@@ -43,6 +50,7 @@ func (f *fakeMembershipRepo) Delete(ctx context.Context, tenantID string, userID
 type fakeMembershipUserRepo struct {
 	findByEmailFn func(ctx context.Context, email string) (*domain.User, error)
 	updateUserFn  func(ctx context.Context, user *domain.User) error
+	getAllUsersFn func(ctx context.Context) ([]*domain.User, error)
 }
 
 func (f *fakeMembershipUserRepo) CreateUser(ctx context.Context, user *domain.User) error {
@@ -76,6 +84,9 @@ func (f *fakeMembershipUserRepo) ConsumeOobCode(ctx context.Context, code string
 	return "", nil
 }
 func (f *fakeMembershipUserRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
+	if f.getAllUsersFn != nil {
+		return f.getAllUsersFn(ctx)
+	}
 	return nil, nil
 }
 func (f *fakeMembershipUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error) {
@@ -211,5 +222,36 @@ func TestMembershipService_ListTenantIDsByUser(t *testing.T) {
 	})
 	if _, err := svc.ListTenantIDsByUser(context.Background(), "u1"); !errors.Is(err, repoErr) {
 		t.Fatalf("expected repo error, got %v", err)
+	}
+}
+
+func TestMembershipService_List(t *testing.T) {
+	users := []*domain.User{
+		{Id: "u2", Email: "z@example.com", Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword},
+		{Id: "u1", Email: "a@example.com", Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword},
+	}
+	userRepo := &fakeMembershipUserRepo{}
+	userRepo.getAllUsersFn = func(context.Context) ([]*domain.User, error) { return users, nil }
+	repo := &fakeMembershipRepo{
+		listByTenantFn: func(_ context.Context, tenantID string, cursor uint64, count int64) ([]*domain.Membership, uint64, error) {
+			if tenantID != "tenant-1" || cursor != 4 || count != 20 {
+				t.Fatalf("unexpected pagination: tenant=%s cursor=%d count=%d", tenantID, cursor, count)
+			}
+			return []*domain.Membership{
+				{UserId: "u2", Roles: []string{"WORKER"}},
+				{UserId: "missing", Roles: []string{"ADMIN"}},
+				{UserId: "u1", Roles: []string{"ADMIN"}},
+			}, 8, nil
+		},
+	}
+	page, err := NewMembershipService(userRepo, repo).List(context.Background(), "tenant-1", 4, 20)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(page.Users) != 2 || page.Users[0].Id != "u1" || page.Users[1].Id != "u2" {
+		t.Fatalf("unexpected safe users page: %+v", page)
+	}
+	if page.NextPageToken != "8" {
+		t.Fatalf("unexpected next page token: %q", page.NextPageToken)
 	}
 }

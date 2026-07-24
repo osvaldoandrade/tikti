@@ -58,6 +58,14 @@ func TestMembershipRepo_CreateGetListDelete(t *testing.T) {
 		t.Fatalf("unexpected tenants: %v", tenants)
 	}
 
+	memberships, cursor, err := r.ListByTenant(ctx, "t1", 0, 50)
+	if err != nil {
+		t.Fatalf("list by tenant: %v", err)
+	}
+	if cursor != 0 || len(memberships) != 1 || memberships[0].UserId != "u1" {
+		t.Fatalf("unexpected memberships page: cursor=%d values=%+v", cursor, memberships)
+	}
+
 	if err := r.Delete(ctx, "t1", "u1"); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
