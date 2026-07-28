@@ -214,7 +214,7 @@ func (r *Refresher) updateSPCertExpiry() {
 		log.Printf("saml: failed to parse SP signing cert: %v", err)
 		return
 	}
-	r.metrics.SPCertExpiry.Set(cert.NotAfter.Sub(time.Now()).Seconds())
+	r.metrics.SPCertExpiry.Set(time.Until(cert.NotAfter).Seconds())
 }
 
 // httpClient is the default HTTP client used by httpFetch, with a 30-second

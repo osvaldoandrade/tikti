@@ -27,6 +27,7 @@ type UserService interface {
 	Lookup(ctx context.Context, req domain.LookupReq) (*domain.LookupResp, error)
 	TokenExchange(ctx context.Context, req domain.TokenExchangeReq) (*domain.TokenExchangeResp, error)
 	JWKS(ctx context.Context) (map[string]any, error)
+	ValidateIDToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, error)
 	ValidateAccessToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, error)
 	SetStatus(ctx context.Context, email string, status string) (*domain.StatusResp, error)
 	RevokeTokens(ctx context.Context, email string, tenantID string, scope string) (*domain.RevokeResp, error)
@@ -122,7 +123,7 @@ func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
 	}
-	if e := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(req.Password)); e != nil {
+	if !utils.VerifyPassword(u.Password, req.Password) {
 		return nil, domain.ErrInvalidCreds
 	}
 	signed, expiresIn, e2 := s.issueIDToken(u, nil)
@@ -379,6 +380,46 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}, nil
 }
 
+// ValidateIDToken validates an HS256 browser session and enforces the current
+// user status and token version. SAML and password sign-in both issue this
+// token shape, so callers do not need to branch on the authentication method.
+func (s *userService) ValidateIDToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, error) {
+	claims, err := utils.ParseToken(tokenString, s.jwtSecret)
+	if err != nil {
+		return nil, domain.ErrInvalidToken
+	}
+	if issuer != "" {
+		claimIssuer, _ := claims["iss"].(string)
+		if claimIssuer != issuer {
+			return nil, domain.ErrInvalidToken
+		}
+	}
+	if !tokenHasAudience(claims, audience) {
+		return nil, domain.ErrInvalidToken
+	}
+
+	subject, _ := claims["sub"].(string)
+	email, _ := claims["email"].(string)
+	if strings.TrimSpace(subject) == "" || strings.TrimSpace(email) == "" {
+		return nil, domain.ErrInvalidToken
+	}
+	user, repoErr := s.repo.FindByEmail(ctx, email)
+	if repoErr != nil || user == nil {
+		return nil, domain.ErrNotFound
+	}
+	if subject != user.Id && !strings.EqualFold(subject, user.Email) {
+		return nil, domain.ErrInvalidToken
+	}
+	if user.Status != domain.UserStatusActive {
+		return nil, domain.ErrInvalidCreds
+	}
+	version, ok := tokenVersion(claims)
+	if !ok || version != user.TokenVersion {
+		return nil, domain.ErrInvalidToken
+	}
+	return claims, nil
+}
+
 // ValidateAccessToken validates an RS256 access token and enforces token version.
 func (s *userService) ValidateAccessToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, error) {
 	key, err := s.getRSAPrivateKey()
@@ -393,7 +434,10 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 	if err != nil {
 		return nil, err
 	}
-	ver, _ := claims["ver"].(float64)
+	version, ok := tokenVersion(claims)
+	if !ok {
+		return nil, domain.ErrInvalidToken
+	}
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		if email, _ := claims["email"].(string); email != "" {
@@ -412,10 +456,52 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 	if u == nil {
 		return nil, domain.ErrNotFound
 	}
-	if u.TokenVersion != int(ver) {
+	if u.Status != domain.UserStatusActive {
+		return nil, domain.ErrInvalidCreds
+	}
+	if u.TokenVersion != version {
 		return nil, domain.ErrInvalidToken
 	}
 	return claims, nil
+}
+
+func tokenVersion(claims jwt.MapClaims) (int, bool) {
+	rawVersion, exists := claims["ver"]
+	if !exists {
+		return 0, false
+	}
+	version, ok := rawVersion.(float64)
+	if !ok || version < 0 || version > 1<<31 || version != float64(int(version)) {
+		return 0, false
+	}
+	return int(version), true
+}
+
+func tokenHasAudience(claims jwt.MapClaims, audience string) bool {
+	if strings.TrimSpace(audience) == "" {
+		return true
+	}
+	rawAudience, exists := claims["aud"]
+	if !exists {
+		return false
+	}
+	switch values := rawAudience.(type) {
+	case string:
+		return values == audience
+	case []interface{}:
+		for _, value := range values {
+			if item, ok := value.(string); ok && item == audience {
+				return true
+			}
+		}
+	case []string:
+		for _, value := range values {
+			if value == audience {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // JWKS returns the current JSON Web Key Set for RS256 verification.
@@ -862,6 +948,7 @@ func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, e
 		"role":   u.Role,
 		"iss":    s.issuerBaseURL,
 		"aud":    s.defaultAudience,
+		"ver":    u.TokenVersion,
 		"exp":    time.Now().Add(time.Hour).Unix(),
 		"iat":    time.Now().Unix(),
 	}

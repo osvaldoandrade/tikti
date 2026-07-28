@@ -238,7 +238,7 @@ func validatedKubernetesSubject(claims jwt.MapClaims) (domain.WorkloadSubject, e
 	}
 	namespace, serviceAccount := kubernetesIdentityClaims(claims)
 	if namespace == "" || serviceAccount == "" || namespace != identity.Namespace || serviceAccount != identity.ServiceAccount {
-		return domain.WorkloadSubject{}, fmt.Errorf("Kubernetes identity claims do not match subject")
+		return domain.WorkloadSubject{}, fmt.Errorf("kubernetes identity claims do not match subject")
 	}
 	return identity, nil
 }

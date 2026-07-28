@@ -452,7 +452,7 @@ func TestUserService_TokenExchangeAndAccessValidation(t *testing.T) {
 func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 	repo := &mockUserRepo{}
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
-		return &domain.User{Id: "u1", Email: email, TokenVersion: 1, Role: domain.RoleCompanyEmployee}, nil
+		return &domain.User{Id: "u1", Email: email, TokenVersion: 1, Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive}, nil
 	}
 	membership := &mockMembershipRepo{
 		getFn: func(ctx context.Context, tenantID string, userID string) (*domain.Membership, error) {
@@ -504,13 +504,13 @@ func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
-		return &domain.User{Id: "u1", Email: email, TokenVersion: 2}, nil
+		return &domain.User{Id: "u1", Email: email, TokenVersion: 2, Status: domain.UserStatusActive}, nil
 	}
 	if _, err := svc.ValidateAccessToken(context.Background(), signed, "https://issuer", "tikti"); err != domain.ErrInvalidToken {
 		t.Fatalf("expected ErrInvalidToken, got %v", err)
 	}
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
-		return &domain.User{Id: "u1", Email: email, TokenVersion: 1}, nil
+		return &domain.User{Id: "u1", Email: email, TokenVersion: 1, Status: domain.UserStatusActive}, nil
 	}
 	if _, err := svc.ValidateAccessToken(context.Background(), signed, "https://issuer", "tikti"); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
@@ -530,6 +530,12 @@ func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 	}
 	if _, err := svc.ValidateAccessToken(context.Background(), emailFallbackSigned, "https://issuer", "tikti"); err != nil {
 		t.Fatalf("expected email-claim fallback to validate, got %v", err)
+	}
+	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
+		return &domain.User{Id: "u1", Email: email, TokenVersion: 1, Status: domain.UserStatusSuspended}, nil
+	}
+	if _, err := svc.ValidateAccessToken(context.Background(), signed, "https://issuer", "tikti"); err != domain.ErrInvalidCreds {
+		t.Fatalf("expected suspended account rejection, got %v", err)
 	}
 
 	tokenWithoutSubject := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{

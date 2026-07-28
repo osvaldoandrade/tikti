@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -62,6 +63,79 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 	if cfg.JwksKeyID != "tikti-local-1" {
 		t.Fatalf("unexpected kid: %s", cfg.JwksKeyID)
+	}
+}
+
+func TestLoadConfigReadsRuntimeSecretsFromFiles(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "tikti.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8080\nredisAddr: redis:6379\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	secrets := map[string]string{
+		"JWT_SECRET_FILE":       "jwt-secret",
+		"API_KEY_FILE":          "api-key",
+		"REDIS_PASSWORD_FILE":   "redis-password",
+		"JWKS_PRIVATE_KEY_FILE": "private-key",
+	}
+	for environmentVariable, value := range secrets {
+		path := filepath.Join(dir, strings.ToLower(environmentVariable))
+		if err := os.WriteFile(path, []byte(value+"\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", environmentVariable, err)
+		}
+		t.Setenv(environmentVariable, path)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.JwtSecret != "jwt-secret" || cfg.ApiKey != "api-key" ||
+		cfg.RedisPassword != "redis-password" || cfg.JwksPrivateKey != "private-key" {
+		t.Fatalf("runtime secrets were not loaded from files")
+	}
+}
+
+func TestLoadConfigRejectsMissingOrEmptyRuntimeSecretFile(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "tikti.yaml")
+	if err := os.WriteFile(configPath, []byte("port: 8080\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("JWT_SECRET_FILE", filepath.Join(dir, "missing"))
+	if _, err := LoadConfig(configPath); err == nil || !strings.Contains(err.Error(), "JWT_SECRET_FILE") {
+		t.Fatalf("expected missing secret file error, got %v", err)
+	}
+
+	emptyPath := filepath.Join(dir, "empty")
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatalf("write empty secret: %v", err)
+	}
+	t.Setenv("JWT_SECRET_FILE", emptyPath)
+	if _, err := LoadConfig(configPath); err == nil || !strings.Contains(err.Error(), "empty file") {
+		t.Fatalf("expected empty secret file error, got %v", err)
+	}
+}
+
+func TestLoadConfigNormalizesAndRejectsUnsafeCORSOrigins(t *testing.T) {
+	path := writeTempConfig(t, `
+http:
+  allowedOrigins:
+    - https://Console.Example.com/
+    - https://console.example.com
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("load origins: %v", err)
+	}
+	if len(cfg.HTTP.AllowedOrigins) != 1 || cfg.HTTP.AllowedOrigins[0] != "https://console.example.com" {
+		t.Fatalf("origins=%#v", cfg.HTTP.AllowedOrigins)
+	}
+
+	path = writeTempConfig(t, "http:\n  allowedOrigins: ['*']\n")
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("wildcard credentialed origin must fail")
 	}
 }
 
@@ -162,6 +236,28 @@ func TestSAMLConfig_DefaultDisabled(t *testing.T) {
 	}
 	if cfg.SAML.Enabled {
 		t.Fatalf("expected saml.enabled=false when absent, got true")
+	}
+}
+
+func TestForwardAuthAccessCookieName(t *testing.T) {
+	path := writeTempConfig(t, `
+forwardAuth:
+  accessCookieName: code_admin_session
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.ForwardAuth.AccessCookieName != "code_admin_session" {
+		t.Fatalf("access cookie name = %q", cfg.ForwardAuth.AccessCookieName)
+	}
+
+	path = writeTempConfig(t, `
+forwardAuth:
+  accessCookieName: "invalid cookie"
+`)
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("invalid forwardAuth access cookie name was accepted")
 	}
 }
 

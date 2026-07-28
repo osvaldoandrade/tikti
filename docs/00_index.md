@@ -19,3 +19,4 @@ Document order:
 11. `11_unit_test_execution_backlog.md` — execution backlog for unit testing, prioritized by risk with quality gates and completion criteria.
 12. `12_saml_federation_hld.md` — SAML 2.0 federation high-level design for Tikti as Service Provider, including flows, threat model, rollout, FAQ, and appendices.
 13. `13_workload_identity.md` — Kubernetes workload exchange, explicit bindings, revocation, and rollout.
+14. `14_edge_forward_auth.md` — Traefik ForwardAuth contract for bearer access tokens and SAML browser sessions.
