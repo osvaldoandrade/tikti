@@ -2,10 +2,11 @@ package saml
 
 import (
 	"encoding/base64"
-	"encoding/xml"
 	"log"
 	"net/http"
+	"strings"
 
+	"github.com/beevik/etree"
 	crewjamsaml "github.com/crewjam/saml"
 )
 
@@ -43,9 +44,32 @@ func (h *Handler) sloGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	state, err := r.Cookie("tikti_saml_slo")
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	nameID, expectedID, ok := decodeSLOState(state.Value)
+	if !ok {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	idx, err := h.store.GetIndex(ctx, nameID)
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
+	idp, err := h.store.GetIdP(ctx, idx.TenantID)
+	if err != nil {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
+	}
 	verified, err := h.prov.ValidateLogoutMessage(ctx, ValidateLogoutInput{
-		RawMessage: rawResp,
-		Binding:    crewjamsaml.HTTPRedirectBinding,
+		TenantID:             idx.TenantID,
+		IdP:                  idp,
+		RawMessage:           rawResp,
+		Binding:              crewjamsaml.HTTPRedirectBinding,
+		ExpectedInResponseTo: expectedID,
 	})
 	if err != nil || !verified.IsResponse {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
@@ -58,14 +82,8 @@ func (h *Handler) sloGet(w http.ResponseWriter, r *http.Request) {
 
 	// Read the SLO state cookie set by the logout handler (P3.4) to
 	// determine which SAML session index to delete.
-	if c, err := r.Cookie("tikti_saml_slo"); err == nil && c.Value != "" {
-		nameID := c.Value
-		idx, err := h.store.GetIndex(ctx, nameID)
-		if err == nil {
-			_ = h.store.DeleteIndex(ctx, nameID)
-			h.metrics.LogoutResponses.WithLabelValues(idx.TenantID, "accept").Inc()
-		}
-	}
+	_ = h.store.DeleteIndex(ctx, nameID)
+	h.metrics.LogoutResponses.WithLabelValues(idx.TenantID, "accept").Inc()
 
 	// Clear session and SLO cookies.
 	http.SetCookie(w, &http.Cookie{
@@ -90,7 +108,24 @@ func (h *Handler) sloPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	nameID, ok := untrustedLogoutNameID(rawReq)
+	if !ok {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	idx, err := h.store.GetIndex(ctx, nameID)
+	if err != nil {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	idp, err := h.store.GetIdP(ctx, idx.TenantID)
+	if err != nil {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 	verified, err := h.prov.ValidateLogoutMessage(ctx, ValidateLogoutInput{
+		TenantID:   idx.TenantID,
+		IdP:        idp,
 		RawMessage: rawReq,
 		Binding:    crewjamsaml.HTTPPostBinding,
 	})
@@ -100,29 +135,12 @@ func (h *Handler) sloPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up the session index to determine the tenant and IdP.
-	idx, err := h.store.GetIndex(ctx, verified.NameID)
-	if err != nil {
-		log.Printf("saml: slo: index lookup for %q: %v", verified.NameID, err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	idp, err := h.store.GetIdP(ctx, idx.TenantID)
-	if err != nil {
-		log.Printf("saml: slo: idp lookup for tenant %q: %v", idx.TenantID, err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
 	_ = h.store.DeleteIndex(ctx, verified.NameID)
 	h.metrics.LogoutResponses.WithLabelValues(idx.TenantID, "accept").Inc()
 
-	// Extract the InResponseTo ID from the original LogoutRequest.
-	inResponseTo := extractRequestID(rawReq)
-
 	resp, err := h.prov.BuildLogoutResponse(ctx, BuildLogoutResponseInput{
 		IdP:          idp,
-		InResponseTo: inResponseTo,
+		InResponseTo: verified.MessageID,
 	})
 	if err != nil {
 		log.Printf("saml: slo: build logout response: %v", err)
@@ -135,21 +153,52 @@ func (h *Handler) sloPost(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(resp.PostBody)
 }
 
-// extractRequestID decodes a base64-encoded SAML LogoutRequest and extracts
-// the request ID attribute.
-func extractRequestID(raw string) string {
-	xmlBytes, err := base64.StdEncoding.DecodeString(raw)
+func decodeSLOState(value string) (string, string, bool) {
+	parts := strings.Split(value, ".")
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	nameID, err := base64.RawURLEncoding.Strict().DecodeString(parts[0])
 	if err != nil {
+		return "", "", false
+	}
+	requestID, err := base64.RawURLEncoding.Strict().DecodeString(parts[1])
+	if err != nil || len(nameID) == 0 || len(requestID) == 0 {
+		return "", "", false
+	}
+	return string(nameID), string(requestID), true
+}
+
+func untrustedLogoutNameID(raw string) (string, bool) {
+	xmlBytes, err := base64.StdEncoding.Strict().DecodeString(raw)
+	if err != nil || len(xmlBytes) == 0 || len(xmlBytes) > 1<<20 || containsDOCTYPE(xmlBytes) {
+		return "", false
+	}
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(xmlBytes); err != nil || doc.Root() == nil ||
+		doc.Root().Tag != "LogoutRequest" ||
+		doc.Root().NamespaceURI() != "urn:oasis:names:tc:SAML:2.0:protocol" {
+		return "", false
+	}
+	for _, element := range doc.Root().ChildElements() {
+		if element.Tag == "NameID" && element.NamespaceURI() == "urn:oasis:names:tc:SAML:2.0:assertion" {
+			value := strings.TrimSpace(element.Text())
+			return value, value != ""
+		}
+	}
+	return "", false
+}
+
+func extractRequestID(raw string) string {
+	xmlBytes, err := base64.StdEncoding.Strict().DecodeString(raw)
+	if err != nil || len(xmlBytes) == 0 || len(xmlBytes) > 1<<20 || containsDOCTYPE(xmlBytes) {
 		return ""
 	}
-	// Lightweight extraction: look for ID= attribute in the LogoutRequest.
-	// The full XML was already validated by ValidateLogoutMessage.
-	type probe struct {
-		ID string `xml:"ID,attr"`
-	}
-	var p probe
-	if err := xml.Unmarshal(xmlBytes, &p); err != nil {
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(xmlBytes); err != nil || doc.Root() == nil ||
+		doc.Root().NamespaceURI() != "urn:oasis:names:tc:SAML:2.0:protocol" ||
+		doc.Root().Tag != "LogoutRequest" {
 		return ""
 	}
-	return p.ID
+	return strings.TrimSpace(doc.Root().SelectAttrValue("ID", ""))
 }

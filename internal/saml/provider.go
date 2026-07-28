@@ -66,14 +66,16 @@ type LogoutRequest struct {
 // ValidateLogoutInput carries the parameters needed to validate an incoming
 // SAML LogoutRequest or LogoutResponse.
 type ValidateLogoutInput struct {
-	TenantID   string
-	IdP        IdPRecord
-	RawMessage string
-	Binding    string
+	TenantID             string
+	IdP                  IdPRecord
+	RawMessage           string
+	Binding              string
+	ExpectedInResponseTo string
 }
 
 // VerifiedLogout is the validated output of a SAML LogoutRequest or LogoutResponse.
 type VerifiedLogout struct {
+	MessageID    string
 	NameID       string
 	SessionIndex string
 	IsResponse   bool

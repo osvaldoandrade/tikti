@@ -246,6 +246,7 @@ func (p *testProvider) ValidateLogoutMessage(_ context.Context, in saml.Validate
 			return nil, err
 		}
 		return &saml.VerifiedLogout{
+			MessageID:  r.ID,
 			IsResponse: true,
 			Status:     r.Status.Code.Value,
 		}, nil
@@ -255,6 +256,7 @@ func (p *testProvider) ValidateLogoutMessage(_ context.Context, in saml.Validate
 			return nil, err
 		}
 		return &saml.VerifiedLogout{
+			MessageID:    r.ID,
 			IsResponse:   false,
 			NameID:       r.NameID,
 			SessionIndex: r.SessionIndex,
@@ -312,14 +314,15 @@ type xmlAttrStatement struct {
 	Attrs []xmlAttr `xml:"Attribute"`
 }
 type xmlAttr struct {
-	Name   string        `xml:"Name,attr"`
-	Values []xmlAttrVal  `xml:"AttributeValue"`
+	Name   string       `xml:"Name,attr"`
+	Values []xmlAttrVal `xml:"AttributeValue"`
 }
 type xmlAttrVal struct {
 	Value string `xml:",chardata"`
 }
 type xmlLogoutResp struct {
 	XMLName xml.Name  `xml:"LogoutResponse"`
+	ID      string    `xml:"ID,attr"`
 	Status  xmlStatus `xml:"Status"`
 }
 type xmlLogoutReq struct {
@@ -577,10 +580,10 @@ func testSSOFlow(t *testing.T) {
 
 	// Register the IdP in the store.
 	if err := store.PutIdP(context.Background(), saml.IdPRecord{
-		TenantID:    "t-001",
-		EntityID:    idp.entityID,
-		SSOURL:      idpSrv.URL + "/sso",
-		SLOURL:      idpSrv.URL + "/slo",
+		TenantID:     "t-001",
+		EntityID:     idp.entityID,
+		SSOURL:       idpSrv.URL + "/sso",
+		SLOURL:       idpSrv.URL + "/slo",
 		SigningCerts: [][]byte{idpCert.Raw},
 	}); err != nil {
 		t.Fatalf("PutIdP: %v", err)
@@ -724,9 +727,9 @@ func testSLOIdPInitiated(t *testing.T) {
 
 	// Pre-populate.
 	_ = store.PutIdP(context.Background(), saml.IdPRecord{
-		TenantID:    "t-001",
-		EntityID:    "https://idp.e2e.test",
-		SLOURL:      "https://idp.e2e.test/slo",
+		TenantID:     "t-001",
+		EntityID:     "https://idp.e2e.test",
+		SLOURL:       "https://idp.e2e.test/slo",
 		SigningCerts: [][]byte{idpCert.Raw},
 	})
 	_ = store.PutIndex(context.Background(), "user@example.com", saml.IndexRecord{
@@ -813,6 +816,10 @@ func testSLOSPInitiatedTail(t *testing.T) {
 		SessionIndex: "_session-002",
 		NotOnOrAfter: time.Now().Add(time.Hour),
 	})
+	_ = store.PutIdP(context.Background(), saml.IdPRecord{
+		TenantID: "t-001",
+		EntityID: "https://idp.e2e.test",
+	})
 
 	respXML := fmt.Sprintf(`<samlp:LogoutResponse xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
   ID="_slo-resp-001" Version="2.0"
@@ -831,7 +838,9 @@ func testSLOSPInitiatedTail(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet,
 		sp.URL+"/saml/slo?SAMLResponse="+url.QueryEscape(encoded), nil)
-	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: "user2@example.com"})
+	state := base64.RawURLEncoding.EncodeToString([]byte("user2@example.com")) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte("_req-slo-001"))
+	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: state})
 
 	resp, err := noFollow.Do(req)
 	if err != nil {

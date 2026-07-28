@@ -8,17 +8,28 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"encoding/xml"
+	"errors"
+	"fmt"
 	"io"
 	"math/big"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/beevik/etree"
+	crewjamsaml "github.com/crewjam/saml"
+	dsig "github.com/russellhaering/goxmldsig"
+
+	"github.com/osvaldoandrade/tikti/pkg/config"
 )
 
 // Compile-time interface compliance check.
@@ -93,6 +104,183 @@ func newTestProvider(t *testing.T) *CrewjamProvider {
 		SLOURL:   "https://auth.example.com/saml/slo",
 		Key:      key,
 		Cert:     cert,
+	}
+}
+
+type fixedServiceProviderMetadata struct {
+	metadata *crewjamsaml.EntityDescriptor
+}
+
+func (p fixedServiceProviderMetadata) GetServiceProvider(_ *http.Request, _ string) (*crewjamsaml.EntityDescriptor, error) {
+	return p.metadata, nil
+}
+
+func parsedURL(t *testing.T, value string) url.URL {
+	t.Helper()
+	parsed, err := url.Parse(value)
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	return *parsed
+}
+
+func signedSAMLResponse(t *testing.T, provider *CrewjamProvider) (string, ValidateResponseInput) {
+	t.Helper()
+	idpKey, idpCert := testSPKeyPair(t)
+	sp := crewjamsaml.ServiceProvider{
+		EntityID:        provider.EntityID,
+		Key:             provider.Key,
+		Certificate:     provider.Cert,
+		MetadataURL:     parsedURL(t, provider.EntityID),
+		AcsURL:          parsedURL(t, provider.ACSURL),
+		SloURL:          parsedURL(t, provider.SLOURL),
+		SignatureMethod: dsig.RSASHA256SignatureMethod,
+	}
+	spMetadata := sp.Metadata()
+	// Keep the response plaintext but signed; encrypted assertion coverage is
+	// provided by crewjam while Tikti separately enforces its algorithm policy.
+	descriptors := spMetadata.SPSSODescriptors[0].KeyDescriptors[:0]
+	for _, descriptor := range spMetadata.SPSSODescriptors[0].KeyDescriptors {
+		if descriptor.Use == "signing" {
+			descriptors = append(descriptors, descriptor)
+		}
+	}
+	spMetadata.SPSSODescriptors[0].KeyDescriptors = descriptors
+
+	idp := crewjamsaml.IdentityProvider{
+		Key:                     idpKey,
+		Certificate:             idpCert,
+		MetadataURL:             parsedURL(t, "https://idp.example.com/metadata"),
+		SSOURL:                  parsedURL(t, "https://idp.example.com/sso"),
+		ServiceProviderProvider: fixedServiceProviderMetadata{metadata: spMetadata},
+		SignatureMethod:         dsig.RSASHA256SignatureMethod,
+	}
+	buildInput := testBuildInput()
+	buildInput.IssueInstant = time.Now().UTC()
+	authn, err := provider.BuildAuthnRequest(context.Background(), buildInput)
+	if err != nil {
+		t.Fatalf("BuildAuthnRequest: %v", err)
+	}
+	request := crewjamsaml.IdpAuthnRequest{
+		Now:           time.Now().UTC(),
+		IDP:           &idp,
+		RequestBuffer: decodeSAMLRequestFromURL(t, authn.RedirectURL),
+	}
+	request.HTTPRequest, err = http.NewRequest(http.MethodPost, idp.SSOURL.String(), nil)
+	if err != nil {
+		t.Fatalf("new IdP request: %v", err)
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("validate AuthnRequest: %v", err)
+	}
+	if err := (crewjamsaml.DefaultAssertionMaker{}).MakeAssertion(&request, &crewjamsaml.Session{
+		ID:         "session-001",
+		Index:      "session-index-001",
+		NameID:     "user@example.com",
+		UserName:   "user@example.com",
+		UserEmail:  "user@example.com",
+		ExpireTime: time.Now().UTC().Add(30 * time.Minute),
+		CustomAttributes: []crewjamsaml.Attribute{{
+			Name: "mail",
+			Values: []crewjamsaml.AttributeValue{{
+				Type: "xs:string", Value: "user@example.com",
+			}},
+		}},
+	}); err != nil {
+		t.Fatalf("make assertion: %v", err)
+	}
+	if err := request.MakeAssertionEl(); err != nil {
+		t.Fatalf("sign assertion: %v", err)
+	}
+	if err := request.MakeResponse(); err != nil {
+		t.Fatalf("make response: %v", err)
+	}
+	form, err := request.PostBinding()
+	if err != nil {
+		t.Fatalf("post binding: %v", err)
+	}
+	return form.SAMLResponse, ValidateResponseInput{
+		TenantID: "t-001",
+		IdP: IdPRecord{
+			TenantID:     "t-001",
+			EntityID:     idp.MetadataURL.String(),
+			SSOURL:       idp.SSOURL.String(),
+			SigningCerts: [][]byte{idpCert.Raw},
+			AttributeMap: map[string][]string{"email": {"mail"}},
+		},
+		RawBase64:            form.SAMLResponse,
+		Now:                  time.Now().UTC(),
+		ExpectedInResponseTo: authn.ID,
+		ClockSkew:            2 * time.Minute,
+	}
+}
+
+func TestCrewjamSPMetadata(t *testing.T) {
+	provider := newTestProvider(t)
+	raw, err := provider.SPMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("SPMetadata: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(provider.EntityID)) ||
+		!bytes.Contains(raw, []byte(provider.ACSURL)) ||
+		!bytes.Contains(raw, []byte(provider.SLOURL)) {
+		t.Fatal("SP metadata does not contain the configured public endpoints")
+	}
+}
+
+func TestCrewjamParseIdPMetadata(t *testing.T) {
+	_, cert := testSPKeyPair(t)
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	raw := []byte(fmt.Sprintf(`<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.com">
+  <IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <KeyDescriptor use="signing"><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#"><X509Data><X509Certificate>%s</X509Certificate></X509Data></KeyInfo></KeyDescriptor>
+    <SingleSignOnService Binding="%s" Location="https://idp.example.com/sso"/>
+  </IDPSSODescriptor>
+</EntityDescriptor>`, base64.StdEncoding.EncodeToString(cert.Raw), BindingHTTPRedirect))
+	provider := newTestProvider(t)
+	record, err := provider.ParseIdPMetadata(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("ParseIdPMetadata: %v", err)
+	}
+	if record.EntityID != "https://idp.example.com" || len(record.SigningCerts) != 1 ||
+		!bytes.Equal(certPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: record.SigningCerts[0]})) {
+		t.Fatal("parsed IdP trust material does not match the metadata")
+	}
+}
+
+func TestCrewjamValidateResponse(t *testing.T) {
+	provider := newTestProvider(t)
+	_, input := signedSAMLResponse(t, provider)
+	assertion, err := provider.ValidateResponse(context.Background(), input)
+	if err != nil {
+		t.Fatalf("ValidateResponse: %v", err)
+	}
+	if assertion.NameID != "user@example.com" || assertion.SessionIndex != "session-index-001" {
+		t.Fatalf("unexpected assertion identity: %#v", assertion)
+	}
+	if values := assertion.Attributes["email"]; len(values) != 1 || values[0] != "user@example.com" {
+		t.Fatalf("mapped email = %#v", values)
+	}
+
+	validated, reason, err := validateResponse(context.Background(), provider, SystemClock{}, input.IdP,
+		input.RawBase64, RequestRecord{ID: input.ExpectedInResponseTo, TenantID: input.TenantID},
+		config.SPConfig{
+			EntityID:       provider.EntityID,
+			ACSURL:         provider.ACSURL,
+			ClockSkew:      input.ClockSkew,
+			AllowedSigAlgs: []string{"rsa-sha256"},
+		})
+	if err != nil || reason != ReasonOK || validated == nil {
+		t.Fatalf("validation pipeline = (%#v, %s, %v)", validated, reason, err)
+	}
+}
+
+func TestCrewjamValidateResponseRejectsRequestMismatch(t *testing.T) {
+	provider := newTestProvider(t)
+	_, input := signedSAMLResponse(t, provider)
+	input.ExpectedInResponseTo = "_different-request"
+	if _, err := provider.ValidateResponse(context.Background(), input); !errors.Is(err, ErrSubjectConfirmation) {
+		t.Fatalf("error = %v, want ErrSubjectConfirmation", err)
 	}
 }
 
@@ -343,6 +531,54 @@ func decodeSAMLMessageFromURL(t *testing.T, rawURL, param string) []byte {
 	return xmlBytes
 }
 
+func signedXMLMessage(t *testing.T, raw string, key *rsa.PrivateKey, cert *x509.Certificate) string {
+	t.Helper()
+	doc := etree.NewDocument()
+	if err := doc.ReadFromString(raw); err != nil {
+		t.Fatalf("read XML: %v", err)
+	}
+	keyStore := dsig.TLSCertKeyStore(tls.Certificate{
+		Certificate: [][]byte{cert.Raw},
+		PrivateKey:  key,
+		Leaf:        cert,
+	})
+	signing := dsig.NewDefaultSigningContext(keyStore)
+	signing.Canonicalizer = dsig.MakeC14N10ExclusiveCanonicalizerWithPrefixList("")
+	if err := signing.SetSignatureMethod(dsig.RSASHA256SignatureMethod); err != nil {
+		t.Fatalf("signature method: %v", err)
+	}
+	signed, err := signing.SignEnveloped(doc.Root())
+	if err != nil {
+		t.Fatalf("sign XML: %v", err)
+	}
+	doc.SetRoot(signed)
+	encoded, err := doc.WriteToBytes()
+	if err != nil {
+		t.Fatalf("write signed XML: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(encoded)
+}
+
+func redirectXMLMessage(t *testing.T, encoded string) string {
+	t.Helper()
+	raw, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("decode signed XML: %v", err)
+	}
+	var compressed bytes.Buffer
+	writer, err := flate.NewWriter(&compressed, flate.DefaultCompression)
+	if err != nil {
+		t.Fatalf("create deflate writer: %v", err)
+	}
+	if _, err := writer.Write(raw); err != nil {
+		t.Fatalf("deflate signed XML: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close deflate writer: %v", err)
+	}
+	return base64.StdEncoding.EncodeToString(compressed.Bytes())
+}
+
 // testLogoutInput returns a BuildLogoutRequestInput with common test values.
 func testLogoutInput(idpCert *x509.Certificate) BuildLogoutRequestInput {
 	var signingCerts [][]byte
@@ -352,9 +588,9 @@ func testLogoutInput(idpCert *x509.Certificate) BuildLogoutRequestInput {
 	return BuildLogoutRequestInput{
 		TenantID: "t-001",
 		IdP: IdPRecord{
-			TenantID:    "t-001",
-			EntityID:    "https://idp.example.com",
-			SLOURL:      "https://idp.example.com/slo",
+			TenantID:     "t-001",
+			EntityID:     "https://idp.example.com",
+			SLOURL:       "https://idp.example.com/slo",
 			SigningCerts: signingCerts,
 		},
 		NameID:       "user@example.com",
@@ -369,7 +605,8 @@ func testLogoutInput(idpCert *x509.Certificate) BuildLogoutRequestInput {
 // simulate an IdP LogoutResponse, and validate the response.
 func TestSLO_SPInitiated_RoundTrip(t *testing.T) {
 	prov := newTestProvider(t)
-	in := testLogoutInput(nil)
+	idpKey, idpCert := testSPKeyPair(t)
+	in := testLogoutInput(idpCert)
 
 	// Step 1: Build the outbound LogoutRequest.
 	result, err := prov.BuildLogoutRequest(context.Background(), in)
@@ -406,9 +643,10 @@ func TestSLO_SPInitiated_RoundTrip(t *testing.T) {
 	}
 
 	// Step 2: Simulate an inbound LogoutResponse (as the IdP would send back).
+	now := time.Now().UTC()
 	respXML := `<samlp:LogoutResponse xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
 		xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-		ID="resp-001" Version="2.0" IssueInstant="2026-04-24T18:00:01Z"
+		ID="resp-001" Version="2.0" IssueInstant="` + now.Format(time.RFC3339) + `"
 		Destination="https://auth.example.com/saml/slo"
 		InResponseTo="` + expectedID + `">
 		<saml:Issuer>https://idp.example.com</saml:Issuer>
@@ -416,13 +654,14 @@ func TestSLO_SPInitiated_RoundTrip(t *testing.T) {
 			<samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/>
 		</samlp:Status>
 	</samlp:LogoutResponse>`
-	encodedResp := base64.StdEncoding.EncodeToString([]byte(respXML))
+	encodedResp := redirectXMLMessage(t, signedXMLMessage(t, respXML, idpKey, idpCert))
 
 	verified, err := prov.ValidateLogoutMessage(context.Background(), ValidateLogoutInput{
-		TenantID:   "t-001",
-		IdP:        in.IdP,
-		RawMessage: encodedResp,
-		Binding:    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+		TenantID:             "t-001",
+		IdP:                  in.IdP,
+		RawMessage:           encodedResp,
+		Binding:              "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+		ExpectedInResponseTo: expectedID,
 	})
 	if err != nil {
 		t.Fatalf("ValidateLogoutMessage (response): %v", err)
@@ -439,24 +678,26 @@ func TestSLO_SPInitiated_RoundTrip(t *testing.T) {
 // LogoutRequest from the IdP, validate it, then build a signed LogoutResponse.
 func TestSLO_IdPInitiated_RoundTrip(t *testing.T) {
 	prov := newTestProvider(t)
+	idpKey, idpCert := testSPKeyPair(t)
 
 	// Step 1: Simulate an inbound IdP-initiated LogoutRequest.
 	reqXML := `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
 		xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
-		ID="_idp-req-001" Version="2.0" IssueInstant="2026-04-24T18:00:00Z"
+		ID="_idp-req-001" Version="2.0" IssueInstant="` + time.Now().UTC().Format(time.RFC3339) + `"
 		Destination="https://auth.example.com/saml/slo">
 		<saml:Issuer>https://idp.example.com</saml:Issuer>
 		<saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">user@example.com</saml:NameID>
 		<samlp:SessionIndex>session-idx-002</samlp:SessionIndex>
 	</samlp:LogoutRequest>`
-	encodedReq := base64.StdEncoding.EncodeToString([]byte(reqXML))
+	encodedReq := signedXMLMessage(t, reqXML, idpKey, idpCert)
 
 	verified, err := prov.ValidateLogoutMessage(context.Background(), ValidateLogoutInput{
 		TenantID: "t-001",
 		IdP: IdPRecord{
-			TenantID: "t-001",
-			EntityID: "https://idp.example.com",
-			SLOURL:   "https://idp.example.com/slo",
+			TenantID:     "t-001",
+			EntityID:     "https://idp.example.com",
+			SLOURL:       "https://idp.example.com/slo",
+			SigningCerts: [][]byte{idpCert.Raw},
 		},
 		RawMessage: encodedReq,
 		Binding:    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",

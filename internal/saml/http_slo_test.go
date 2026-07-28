@@ -77,18 +77,18 @@ func (s *mockSLOStore) PutRequest(_ context.Context, _ saml.RequestRecord) error
 func (s *mockSLOStore) ConsumeRequest(_ context.Context, _ string) (saml.RequestRecord, bool, error) {
 	return saml.RequestRecord{}, false, nil
 }
-func (s *mockSLOStore) PutIdP(_ context.Context, _ saml.IdPRecord) error      { return nil }
-func (s *mockSLOStore) ListIdPs(_ context.Context) ([]saml.IdPRecord, error)   { return nil, nil }
-func (s *mockSLOStore) DeleteIdP(_ context.Context, _ string) error            { return nil }
+func (s *mockSLOStore) PutIdP(_ context.Context, _ saml.IdPRecord) error     { return nil }
+func (s *mockSLOStore) ListIdPs(_ context.Context) ([]saml.IdPRecord, error) { return nil, nil }
+func (s *mockSLOStore) DeleteIdP(_ context.Context, _ string) error          { return nil }
 func (s *mockSLOStore) PutIndex(_ context.Context, _ string, _ saml.IndexRecord) error {
 	return nil
 }
 func (s *mockSLOStore) MarkSeen(_ context.Context, _ string, _ time.Duration) (bool, error) {
 	return false, nil
 }
-func (s *mockSLOStore) PutDomain(_ context.Context, _, _ string) error    { return nil }
+func (s *mockSLOStore) PutDomain(_ context.Context, _, _ string) error        { return nil }
 func (s *mockSLOStore) GetDomain(_ context.Context, _ string) (string, error) { return "", nil }
-func (s *mockSLOStore) DeleteDomain(_ context.Context, _ string) error    { return nil }
+func (s *mockSLOStore) DeleteDomain(_ context.Context, _ string) error        { return nil }
 
 func (s *mockSLOStore) GetIndex(_ context.Context, nameID string) (saml.IndexRecord, error) {
 	if rec, ok := s.indexes[nameID]; ok {
@@ -138,6 +138,7 @@ func TestSLO_GET_DeletesSession(t *testing.T) {
 		Subject:      "sub-001",
 		SessionIndex: "idx-001",
 	}
+	store.idps["t-001"] = saml.IdPRecord{TenantID: "t-001", EntityID: "https://idp.example.com"}
 
 	prov := &mockSLOProvider{
 		validateLogoutFunc: func(_ context.Context, _ saml.ValidateLogoutInput) (*saml.VerifiedLogout, error) {
@@ -163,7 +164,9 @@ func TestSLO_GET_DeletesSession(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/saml/slo?SAMLResponse="+url.QueryEscape(encoded), nil)
-	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: "user@example.com"})
+	state := base64.RawURLEncoding.EncodeToString([]byte("user@example.com")) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte("_req-001"))
+	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: state})
 	rr := httptest.NewRecorder()
 
 	h.SLO(rr, req)
@@ -213,6 +216,7 @@ func TestSLO_POST_Acknowledges(t *testing.T) {
 	prov := &mockSLOProvider{
 		validateLogoutFunc: func(_ context.Context, _ saml.ValidateLogoutInput) (*saml.VerifiedLogout, error) {
 			return &saml.VerifiedLogout{
+				MessageID:    "_idp-req-001",
 				IsResponse:   false,
 				NameID:       "user@example.com",
 				SessionIndex: "idx-001",

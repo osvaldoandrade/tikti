@@ -461,6 +461,20 @@ func TestLogout_BuildLogoutRequestError_500(t *testing.T) {
 // http_slo.go — error branches
 // ===========================================================================
 
+func addSLOTestState(req *http.Request, store *mockSLOInternalStore) {
+	store.indexes["user@example.com"] = IndexRecord{TenantID: "t-001"}
+	store.idps["t-001"] = IdPRecord{TenantID: "t-001"}
+	state := base64.RawURLEncoding.EncodeToString([]byte("user@example.com")) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte("_req1"))
+	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: state})
+}
+
+func encodedSLOTestRequest(nameID string) string {
+	raw := `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_req1"><saml:NameID>` +
+		nameID + `</saml:NameID></samlp:LogoutRequest>`
+	return base64.StdEncoding.EncodeToString([]byte(raw))
+}
+
 func TestSLO_MethodNotAllowed(t *testing.T) {
 	store := newMockSLOStore_internal()
 	prov := &sloInternalMockProvider{}
@@ -483,6 +497,7 @@ func TestSLO_GET_ValidationError(t *testing.T) {
 	h := newSLOInternalHandler(prov, store)
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/slo?SAMLResponse=dGVzdA==", nil)
+	addSLOTestState(req, store)
 	rr := httptest.NewRecorder()
 	h.SLO(rr, req)
 
@@ -502,6 +517,7 @@ func TestSLO_GET_NonSuccessStatus(t *testing.T) {
 	h := newSLOInternalHandler(prov, store)
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/slo?SAMLResponse=dGVzdA==", nil)
+	addSLOTestState(req, store)
 	rr := httptest.NewRecorder()
 	h.SLO(rr, req)
 
@@ -539,12 +555,12 @@ func TestSLO_GET_NoCookie(t *testing.T) {
 	h := newSLOInternalHandler(prov, store)
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/slo?SAMLResponse=dGVzdA==", nil)
-	// No SLO cookie — the handler should still redirect.
+	// No SLO cookie means the response cannot be correlated.
 	rr := httptest.NewRecorder()
 	h.SLO(rr, req)
 
-	if rr.Code != http.StatusFound {
-		t.Errorf("status = %d, want %d", rr.Code, http.StatusFound)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusBadRequest)
 	}
 }
 
@@ -571,7 +587,9 @@ func TestSLO_POST_ValidationIsResponse(t *testing.T) {
 	}
 	h := newSLOInternalHandler(prov, store)
 
-	encoded := base64.StdEncoding.EncodeToString([]byte(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_req1"/>`))
+	store.indexes["user@example.com"] = IndexRecord{TenantID: "t-001"}
+	store.idps["t-001"] = IdPRecord{TenantID: "t-001"}
+	encoded := encodedSLOTestRequest("user@example.com")
 	form := url.Values{"SAMLRequest": {encoded}}
 	req := httptest.NewRequest(http.MethodPost, "/saml/slo", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -594,15 +612,15 @@ func TestSLO_POST_GetIndexError(t *testing.T) {
 	}
 	h := newSLOInternalHandler(prov, store)
 
-	encoded := base64.StdEncoding.EncodeToString([]byte(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_req1"/>`))
+	encoded := encodedSLOTestRequest("unknown@example.com")
 	form := url.Values{"SAMLRequest": {encoded}}
 	req := httptest.NewRequest(http.MethodPost, "/saml/slo", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	h.SLO(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
 }
 
@@ -618,15 +636,15 @@ func TestSLO_POST_GetIdPError(t *testing.T) {
 	}
 	h := newSLOInternalHandler(prov, store)
 
-	encoded := base64.StdEncoding.EncodeToString([]byte(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_req1"/>`))
+	encoded := encodedSLOTestRequest("user@example.com")
 	form := url.Values{"SAMLRequest": {encoded}}
 	req := httptest.NewRequest(http.MethodPost, "/saml/slo", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	h.SLO(rr, req)
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Errorf("status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rr.Code, http.StatusForbidden)
 	}
 }
 
@@ -637,6 +655,7 @@ func TestSLO_POST_BuildLogoutResponseError(t *testing.T) {
 
 	prov := &sloInternalMockProvider{
 		validateResult: &VerifiedLogout{
+			MessageID:  "_req1",
 			IsResponse: false,
 			NameID:     "user@example.com",
 		},
@@ -644,7 +663,7 @@ func TestSLO_POST_BuildLogoutResponseError(t *testing.T) {
 	}
 	h := newSLOInternalHandler(prov, store)
 
-	encoded := base64.StdEncoding.EncodeToString([]byte(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_req1"/>`))
+	encoded := encodedSLOTestRequest("user@example.com")
 	form := url.Values{"SAMLRequest": {encoded}}
 	req := httptest.NewRequest(http.MethodPost, "/saml/slo", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -827,7 +846,7 @@ func TestLoadKeyPair_NoPEMBlock_Cert(t *testing.T) {
 func TestLoadKeyPair_NotYetValid(t *testing.T) {
 	dir := t.TempDir()
 	keyPath, certPath := writePEMKeyPair(t, dir,
-		time.Now().Add(24*time.Hour),  // not valid until tomorrow
+		time.Now().Add(24*time.Hour), // not valid until tomorrow
 		time.Now().Add(48*time.Hour),
 	)
 
@@ -1224,18 +1243,12 @@ func TestCrewjam_ValidateLogoutMessage_LogoutRequest_NoNameID(t *testing.T) {
 	reqXML := `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
 		ID="_req1" Version="2.0"/>`
 	encoded := base64.StdEncoding.EncodeToString([]byte(reqXML))
-	verified, err := prov.ValidateLogoutMessage(context.Background(), ValidateLogoutInput{
+	_, err := prov.ValidateLogoutMessage(context.Background(), ValidateLogoutInput{
 		RawMessage: encoded,
 		Binding:    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if verified.NameID != "" {
-		t.Errorf("NameID = %q, want empty", verified.NameID)
-	}
-	if verified.SessionIndex != "" {
-		t.Errorf("SessionIndex = %q, want empty", verified.SessionIndex)
+	if !errors.Is(err, ErrSignatureInvalid) {
+		t.Fatalf("error = %v, want ErrSignatureInvalid", err)
 	}
 }
 

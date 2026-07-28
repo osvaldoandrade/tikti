@@ -44,7 +44,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.PutRequest(ctx, RequestRecord{
-		ID:           reqID,
+		ID:           authn.ID,
 		TenantID:     tid,
 		RelayState:   relay,
 		ACSURL:       h.cfg.SP.ACSURL,
@@ -55,7 +55,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// State cookie — SameSite=None so the IdP POST-back carries it.
-	h.setStateCookie(w, reqID, h.cfg.SP.RequestTTL)
+	h.setStateCookie(w, authn.ID, h.cfg.SP.RequestTTL)
 
 	h.metrics.AuthnRequests.WithLabelValues(tid).Inc()
 	http.Redirect(w, r, authn.RedirectURL, http.StatusFound)
