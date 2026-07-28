@@ -13,10 +13,10 @@ import (
 // globalBlockedAlgorithms lists algorithm URIs that are unconditionally
 // disallowed regardless of any configuration override.  Per HLD §20.
 var globalBlockedAlgorithms = map[string]bool{
-	"http://www.w3.org/2000/09/xmldsig#rsa-sha1":           true,
-	"http://www.w3.org/2000/09/xmldsig#sha1":               true,
-	"http://www.w3.org/2001/04/xmldsig-more#md5":           true,
-	"http://www.w3.org/TR/2001/REC-xml-c14n-20010315":      true,
+	"http://www.w3.org/2000/09/xmldsig#rsa-sha1":                   true,
+	"http://www.w3.org/2000/09/xmldsig#sha1":                       true,
+	"http://www.w3.org/2001/04/xmldsig-more#md5":                   true,
+	"http://www.w3.org/TR/2001/REC-xml-c14n-20010315":              true,
 	"http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments": true,
 }
 
@@ -192,6 +192,8 @@ func validateResponse(ctx context.Context, prov Provider, clk Clock, idp IdPReco
 		return nil, ReasonAlgorithmDisallowed, nil
 	case errors.Is(err, ErrXXE):
 		return nil, ReasonXXE, nil
+	case errors.Is(err, ErrIDPMetadataStale):
+		return nil, ReasonIDPMetadataStale, nil
 	case err != nil:
 		return nil, ReasonInternal, err
 	}

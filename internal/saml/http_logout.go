@@ -1,6 +1,7 @@
 package saml
 
 import (
+	"encoding/base64"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -60,5 +61,16 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.metrics.LogoutRequests.WithLabelValues(tid).Inc()
+	state := base64.RawURLEncoding.EncodeToString([]byte(nameID)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(lr.ID))
+	http.SetCookie(w, &http.Cookie{
+		Name:     "tikti_saml_slo",
+		Value:    state,
+		Path:     "/saml",
+		MaxAge:   int(h.cfg.SP.RequestTTL.Seconds()),
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteNoneMode,
+	})
 	http.Redirect(w, r, lr.RedirectURL, http.StatusFound)
 }
