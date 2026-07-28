@@ -17,6 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/osvaldoandrade/tikti/internal/app"
 	"github.com/osvaldoandrade/tikti/internal/repository"
@@ -58,7 +59,7 @@ func main() {
 
 		// Start background IdP metadata refresher if an interval is configured.
 		if cfg.SAML.IdP.RefreshInterval > 0 {
-			rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+			rdb := redis.NewClient(&redis.Options{Addr: cfg.RedisAddr, Password: cfg.RedisPassword, DB: cfg.RedisDB})
 			defer rdb.Close()
 			store := saml.NewRedisStore(rdb)
 			spCert, err := saml.LoadCertFile(cfg.SAML.SP.SigningCertPath)
@@ -80,13 +81,15 @@ func main() {
 		log.Fatalf("failed to initialize application: %v", err)
 	}
 
-	application.Engine.Use(cors.New(cors.Config{
-		AllowAllOrigins:  true,
-		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Content-Type", "Authorization", "X-API-Key"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}))
+	if len(cfg.HTTP.AllowedOrigins) > 0 {
+		application.Engine.Use(cors.New(cors.Config{
+			AllowOrigins:     cfg.HTTP.AllowedOrigins,
+			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowHeaders:     []string{"Content-Type", "Authorization", "X-API-Key"},
+			AllowCredentials: true,
+			MaxAge:           12 * time.Hour,
+		}))
+	}
 
 	app.SetupMappings(
 		application.Engine,
@@ -102,6 +105,16 @@ func main() {
 	application.Engine.GET("/healthz", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
+	application.Engine.GET("/readyz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), time.Second)
+		defer cancel()
+		if err := application.Redis.Ping(ctx).Err(); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unavailable"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+	application.Engine.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// Mount SAML routes when the flag is on (HLD §16, Appendix A.1).
 	// A chi router handles /saml/* paths; gin handles everything else.
@@ -157,8 +170,13 @@ func main() {
 		})
 	}
 	srv := &http.Server{
-		Addr:    addr,
-		Handler: handler,
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: time.Duration(cfg.HTTP.ReadHeaderTimeoutSeconds) * time.Second,
+		ReadTimeout:       time.Duration(cfg.HTTP.ReadTimeoutSeconds) * time.Second,
+		WriteTimeout:      time.Duration(cfg.HTTP.WriteTimeoutSeconds) * time.Second,
+		IdleTimeout:       time.Duration(cfg.HTTP.IdleTimeoutSeconds) * time.Second,
+		MaxHeaderBytes:    cfg.HTTP.MaxHeaderBytes,
 	}
 
 	// Start HTTP server in background.

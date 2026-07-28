@@ -18,6 +18,9 @@ func ParseToken(tokenString, secret string) (jwt.MapClaims, error) {
 		secret = "supersecret"
 	}
 	parsed, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+		if t.Method.Alg() != jwt.SigningMethodHS256.Alg() {
+			return nil, errors.New("invalid alg")
+		}
 		return []byte(secret), nil
 	})
 	if err != nil || !parsed.Valid {

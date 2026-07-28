@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
@@ -55,6 +57,33 @@ func TestBootstrapIsIdempotentAndRotatesPassword(t *testing.T) {
 	if err != nil || workload == nil || workload.Namespace != "codecloud-control" ||
 		len(workload.Grants) != 1 || workload.Grants[0].TenantID != cfg.tenantID {
 		t.Fatalf("unexpected workload binding: %#v, %v", workload, err)
+	}
+}
+
+func TestBootstrapImportsBoundedArgon2idPasswordHash(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+	}
+	salt := []byte("0123456789abcdef")
+	hash := argon2.IDKey([]byte("correct-password"), salt, 3, 64*1024, 4, 32)
+	encoded := "$argon2id$v=19$m=65536,t=3,p=4$" +
+		base64.RawStdEncoding.EncodeToString(salt) + "$" +
+		base64.RawStdEncoding.EncodeToString(hash)
+	cfg := settings{
+		tenantID: "local-tenant", tenantName: "Local Tenant", email: "admin@codecloud.local",
+		passwordHash: encoded, audience: "code-admin-api", scopes: []string{"code-admin:services:read"},
+	}
+	if err := bootstrap(context.Background(), data, cfg); err != nil {
+		t.Fatal(err)
+	}
+	user, err := data.users.FindByEmail(context.Background(), cfg.email)
+	if err != nil || user == nil || user.Password != encoded {
+		t.Fatalf("unexpected imported password hash: user=%#v err=%v", user, err)
 	}
 }
 

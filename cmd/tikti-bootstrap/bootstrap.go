@@ -10,6 +10,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -18,6 +19,7 @@ type settings struct {
 	tenantName      string
 	email           string
 	password        string
+	passwordHash    string
 	audience        string
 	scopes          []string
 	workloadSubject string
@@ -54,9 +56,13 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 		return fmt.Errorf("upsert tenant: %w", err)
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(cfg.password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash bootstrap password: %w", err)
+	passwordHash := strings.TrimSpace(cfg.passwordHash)
+	if passwordHash == "" {
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(cfg.password), bcrypt.DefaultCost)
+		if hashErr != nil {
+			return fmt.Errorf("hash bootstrap password: %w", hashErr)
+		}
+		passwordHash = string(hash)
 	}
 	user, err := data.users.FindByEmail(ctx, cfg.email)
 	if err != nil {
@@ -66,7 +72,7 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 		user = &domain.User{Id: uuid.NewString(), Email: cfg.email, CreatedAt: time.Now().UTC()}
 	}
 	user.Email = cfg.email
-	user.Password = string(hash)
+	user.Password = passwordHash
 	user.Role = domain.RoleAdmin
 	user.Status = domain.UserStatusActive
 	user.CompanyId = &cfg.tenantID
@@ -123,8 +129,18 @@ func validateSettings(cfg settings) error {
 	if strings.TrimSpace(cfg.tenantID) == "" || strings.TrimSpace(cfg.tenantName) == "" {
 		return fmt.Errorf("tenant id and name are required")
 	}
-	if strings.TrimSpace(cfg.email) == "" || len(cfg.password) < 12 {
-		return fmt.Errorf("bootstrap email and a password of at least 12 characters are required")
+	if strings.TrimSpace(cfg.email) == "" {
+		return fmt.Errorf("bootstrap email is required")
+	}
+	if cfg.password != "" && cfg.passwordHash != "" {
+		return fmt.Errorf("bootstrap password and password hash are mutually exclusive")
+	}
+	if cfg.passwordHash != "" {
+		if err := utils.ValidatePasswordHash(cfg.passwordHash); err != nil {
+			return fmt.Errorf("bootstrap password hash is invalid: %w", err)
+		}
+	} else if len(cfg.password) < 12 {
+		return fmt.Errorf("a bootstrap password of at least 12 characters is required")
 	}
 	if strings.TrimSpace(cfg.audience) == "" || len(cfg.scopes) == 0 {
 		return fmt.Errorf("bootstrap audience and scopes are required")

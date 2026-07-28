@@ -21,6 +21,7 @@ type fakeUserService struct {
 	lookupFn              func(context.Context, domain.LookupReq) (*domain.LookupResp, error)
 	tokenExchangeFn       func(context.Context, domain.TokenExchangeReq) (*domain.TokenExchangeResp, error)
 	jwksFn                func(context.Context) (map[string]any, error)
+	validateIDTokenFn     func(context.Context, string, string, string) (jwt.MapClaims, error)
 	validateAccessTokenFn func(context.Context, string, string, string) (jwt.MapClaims, error)
 	setStatusFn           func(context.Context, string, string) (*domain.StatusResp, error)
 	revokeTokensFn        func(context.Context, string, string, string) (*domain.RevokeResp, error)
@@ -70,6 +71,13 @@ func (f *fakeUserService) TokenExchange(ctx context.Context, req domain.TokenExc
 func (f *fakeUserService) JWKS(ctx context.Context) (map[string]any, error) {
 	if f.jwksFn != nil {
 		return f.jwksFn(ctx)
+	}
+	return nil, nil
+}
+
+func (f *fakeUserService) ValidateIDToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, error) {
+	if f.validateIDTokenFn != nil {
+		return f.validateIDTokenFn(ctx, tokenString, issuer, audience)
 	}
 	return nil, nil
 }

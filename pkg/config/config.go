@@ -2,7 +2,9 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -28,6 +30,24 @@ type Config struct {
 	JwksKeyID        string                 `yaml:"jwksKeyId"`
 	WorkloadIdentity WorkloadIdentityConfig `yaml:"workloadIdentity"`
 	SAML             SAMLConfig             `yaml:"saml"`
+	HTTP             HTTPConfig             `yaml:"http"`
+	ForwardAuth      ForwardAuthConfig      `yaml:"forwardAuth"`
+}
+
+// HTTPConfig defines the public server boundary.
+type HTTPConfig struct {
+	AllowedOrigins           []string `yaml:"allowedOrigins"`
+	ReadHeaderTimeoutSeconds int      `yaml:"readHeaderTimeoutSeconds"`
+	ReadTimeoutSeconds       int      `yaml:"readTimeoutSeconds"`
+	WriteTimeoutSeconds      int      `yaml:"writeTimeoutSeconds"`
+	IdleTimeoutSeconds       int      `yaml:"idleTimeoutSeconds"`
+	MaxHeaderBytes           int      `yaml:"maxHeaderBytes"`
+}
+
+// ForwardAuthConfig defines credentials accepted only by the edge
+// authentication endpoint.
+type ForwardAuthConfig struct {
+	AccessCookieName string `yaml:"accessCookieName"`
 }
 
 // WorkloadIdentityConfig validates Kubernetes projected ServiceAccount tokens
@@ -179,6 +199,19 @@ func LoadConfig(filePath string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, err
 	}
+	for _, secret := range []struct {
+		env    string
+		target *string
+	}{
+		{env: "JWT_SECRET_FILE", target: &c.JwtSecret},
+		{env: "API_KEY_FILE", target: &c.ApiKey},
+		{env: "REDIS_PASSWORD_FILE", target: &c.RedisPassword},
+		{env: "JWKS_PRIVATE_KEY_FILE", target: &c.JwksPrivateKey},
+	} {
+		if err := loadSecretFile(secret.env, secret.target); err != nil {
+			return nil, err
+		}
+	}
 	if c.Port == 0 {
 		c.Port = 8080
 	}
@@ -221,6 +254,37 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if c.JwksKeyID == "" {
 		c.JwksKeyID = "tikti-local-1"
+	}
+	if c.HTTP.ReadHeaderTimeoutSeconds == 0 {
+		c.HTTP.ReadHeaderTimeoutSeconds = 2
+	}
+	if c.HTTP.ReadTimeoutSeconds == 0 {
+		c.HTTP.ReadTimeoutSeconds = 5
+	}
+	if c.HTTP.WriteTimeoutSeconds == 0 {
+		c.HTTP.WriteTimeoutSeconds = 10
+	}
+	if c.HTTP.IdleTimeoutSeconds == 0 {
+		c.HTTP.IdleTimeoutSeconds = 60
+	}
+	if c.HTTP.MaxHeaderBytes == 0 {
+		c.HTTP.MaxHeaderBytes = 1 << 20
+	}
+	if c.HTTP.ReadHeaderTimeoutSeconds < 1 || c.HTTP.ReadHeaderTimeoutSeconds > 2 ||
+		c.HTTP.ReadTimeoutSeconds < 1 || c.HTTP.ReadTimeoutSeconds > 60 ||
+		c.HTTP.WriteTimeoutSeconds < 1 || c.HTTP.WriteTimeoutSeconds > 120 ||
+		c.HTTP.IdleTimeoutSeconds < 1 || c.HTTP.IdleTimeoutSeconds > 300 ||
+		c.HTTP.MaxHeaderBytes < 4096 || c.HTTP.MaxHeaderBytes > 1<<20 {
+		return nil, fmt.Errorf("http server limits are outside the supported production bounds")
+	}
+	origins, err := normalizeOrigins(c.HTTP.AllowedOrigins)
+	if err != nil {
+		return nil, err
+	}
+	c.HTTP.AllowedOrigins = origins
+	c.ForwardAuth.AccessCookieName = strings.TrimSpace(c.ForwardAuth.AccessCookieName)
+	if strings.ContainsAny(c.ForwardAuth.AccessCookieName, " \t\r\n;,=") {
+		return nil, fmt.Errorf("forwardAuth.accessCookieName contains invalid characters")
 	}
 	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_ISSUER")); value != "" {
 		c.WorkloadIdentity.Issuer = value
@@ -280,6 +344,34 @@ func LoadConfig(filePath string) (*Config, error) {
 	return &c, nil
 }
 
+func loadSecretFile(environmentVariable string, target *string) error {
+	path := strings.TrimSpace(os.Getenv(environmentVariable))
+	if path == "" {
+		return nil
+	}
+	// #nosec G304 G703 -- the path is supplied only by the trusted deployment
+	// manifest and is validated as one bounded regular Secret Manager CSI file.
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", environmentVariable, err)
+	}
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > 1<<20 {
+		return fmt.Errorf("%s must not point to an empty file and must be a regular file no larger than 1 MiB", environmentVariable)
+	}
+	raw, err := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err != nil || len(raw) > 1<<20 {
+		return fmt.Errorf("%s could not be read within the 1 MiB limit", environmentVariable)
+	}
+	value := strings.TrimSpace(string(raw))
+	if value == "" {
+		return fmt.Errorf("%s points to an empty file", environmentVariable)
+	}
+	*target = value
+	return nil
+}
+
 func positiveEnvInt(name string, fallback, maximum int) (int, error) {
 	raw := strings.TrimSpace(os.Getenv(name))
 	if raw == "" {
@@ -301,4 +393,28 @@ func optionalExpandedValue(value string) string {
 		return ""
 	}
 	return value
+}
+
+func normalizeOrigins(origins []string) ([]string, error) {
+	normalized := make([]string, 0, len(origins))
+	seen := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		origin = strings.TrimSpace(origin)
+		if origin == "*" {
+			return nil, fmt.Errorf("http.allowedOrigins must not contain a wildcard")
+		}
+		parsed, err := url.Parse(origin)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			parsed.Host == "" || (parsed.Path != "" && parsed.Path != "/") ||
+			parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return nil, fmt.Errorf("http.allowedOrigins must contain HTTP(S) origins")
+		}
+		value := strings.ToLower(parsed.Scheme + "://" + parsed.Host)
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
 }

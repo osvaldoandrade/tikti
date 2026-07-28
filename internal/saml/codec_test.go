@@ -8,13 +8,13 @@ import (
 
 func TestCodec_IdPRecord_RoundTrip(t *testing.T) {
 	orig := IdPRecord{
-		TenantID:     "t-001",
-		EntityID:     "https://idp.example.com",
-		SSOURL:       "https://idp.example.com/sso",
-		SLOURL:       "https://idp.example.com/slo",
-		SigningCerts: [][]byte{[]byte("cert1"), []byte("cert2"), []byte("cert3")},
+		TenantID:        "t-001",
+		EntityID:        "https://idp.example.com",
+		SSOURL:          "https://idp.example.com/sso",
+		SLOURL:          "https://idp.example.com/slo",
+		SigningCerts:    [][]byte{[]byte("cert1"), []byte("cert2"), []byte("cert3")},
 		EncryptionCerts: [][]byte{[]byte("enc1")},
-		NameIDFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+		NameIDFormat:    "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
 		AttributeMap: map[string][]string{
 			"email": {"mail", "email"},
 			"name":  {"displayName"},
@@ -83,20 +83,20 @@ func TestCodec_EmptyMap_EncodesNil(t *testing.T) {
 		t.Errorf("TenantID: %q vs %q", orig.TenantID, got.TenantID)
 	}
 	// nil map should round-trip without error; the decoded value may be nil.
-	if got.AttributeMap != nil && len(got.AttributeMap) != 0 {
+	if len(got.AttributeMap) != 0 {
 		t.Errorf("expected nil or empty AttributeMap, got %v", got.AttributeMap)
 	}
 }
 
 func BenchmarkEncodeIdPRecord(b *testing.B) {
 	rec := IdPRecord{
-		TenantID:     "t-bench",
-		EntityID:     "https://idp.example.com",
-		SSOURL:       "https://idp.example.com/sso",
-		SLOURL:       "https://idp.example.com/slo",
-		SigningCerts: [][]byte{[]byte("cert1"), []byte("cert2"), []byte("cert3")},
+		TenantID:        "t-bench",
+		EntityID:        "https://idp.example.com",
+		SSOURL:          "https://idp.example.com/sso",
+		SLOURL:          "https://idp.example.com/slo",
+		SigningCerts:    [][]byte{[]byte("cert1"), []byte("cert2"), []byte("cert3")},
 		EncryptionCerts: [][]byte{[]byte("enc1")},
-		NameIDFormat: "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
+		NameIDFormat:    "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress",
 		AttributeMap: map[string][]string{
 			"email": {"mail", "email"},
 			"name":  {"displayName"},

@@ -2,7 +2,7 @@ module github.com/osvaldoandrade/tikti
 
 go 1.23.0
 
-toolchain go1.24.11
+toolchain go1.26.5
 
 require (
 	github.com/alicebob/miniredis/v2 v2.35.0
@@ -11,9 +11,9 @@ require (
 	github.com/fsnotify/fsnotify v1.7.0
 	github.com/gin-contrib/cors v1.7.6
 	github.com/gin-gonic/gin v1.10.1
-	github.com/go-chi/chi/v5 v5.2.1
+	github.com/go-chi/chi/v5 v5.3.1
 	github.com/go-redis/redis/v8 v8.11.5
-	github.com/golang-jwt/jwt/v5 v5.0.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/mattermost/xml-roundtrip-validator v0.1.0
 	github.com/prometheus/client_golang v1.23.2
