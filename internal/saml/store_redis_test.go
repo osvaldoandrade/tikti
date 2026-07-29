@@ -101,8 +101,8 @@ func TestConsumeRequest_Atomic(t *testing.T) {
 	}
 }
 
-// TestPutIdP_TTL86400 verifies that the IdP record expires after its TTL.
-func TestPutIdP_TTL86400(t *testing.T) {
+// TestPutIdP_Persists verifies that IdP trust survives until explicit removal.
+func TestPutIdP_Persists(t *testing.T) {
 	store, mr := newTestStore(t)
 	ctx := context.Background()
 
@@ -124,12 +124,12 @@ func TestPutIdP_TTL86400(t *testing.T) {
 		t.Errorf("EntityID = %q, want %q", got.EntityID, rec.EntityID)
 	}
 
-	// Fast-forward past TTL.
-	mr.FastForward(86401 * time.Second)
+	// Fast-forward well past the former 24-hour TTL.
+	mr.FastForward(7 * 24 * time.Hour)
 
-	_, err = store.GetIdP(ctx, "t-001")
-	if err != ErrIdPNotFound {
-		t.Errorf("expected ErrIdPNotFound after TTL, got %v", err)
+	got, err = store.GetIdP(ctx, "t-001")
+	if err != nil || got.EntityID != rec.EntityID {
+		t.Errorf("expected persistent IdP record, got %#v, %v", got, err)
 	}
 }
 
@@ -640,4 +640,3 @@ func TestListIdPs_NilValueSkipped(t *testing.T) {
 		t.Errorf("expected 1 IdP after expire, got %d", len(idps2))
 	}
 }
-

@@ -374,7 +374,7 @@ erDiagram
 |Key pattern|Value|TTL|Access|
 |---|---|---|---|
 |`saml:req:{id}`|msgpack of request record|300 s|write once, read once|
-|`saml:idp:{tid}`|msgpack of IdP record|86400 s (refresh 24 h)|read-heavy; writes via CLI|
+|`saml:idp:{tid}`|msgpack of IdP record|none (refresh on configured interval)|read-heavy; writes via CLI or protected admin API|
 |`saml:idx:{nameID}`|msgpack of session link|`notOnOrAfter` bounded|write on ACS, delete on SLO|
 |`saml:seen:{assertionID}`|`1`|3600 s|replay guard|
 
@@ -425,7 +425,7 @@ saml:
     subsystem: "saml"
 ```
 
-Per-tenant IdP records are not stored in YAML. They reside in Redis and are managed through the CLI. This separation keeps YAML static at deploy time and the trust table mutable at runtime.
+Per-tenant IdP records are not stored in YAML. They reside in Redis and are managed through the CLI or the protected Code Admin control plane. This separation keeps YAML static at deploy time and the trust table mutable at runtime.
 
 ## 17. Admin CLI Additions
 
@@ -445,7 +445,7 @@ tikti saml domain remove --domain EXAMPLE.COM
 
 ## 18. Observability
 
-**Counters:** `tikti_saml_authn_requests_total{tid}`, `tikti_saml_responses_total{tid,result}`, `tikti_saml_validation_failures_total{tid,reason}`, `tikti_saml_jit_provisions_total{tid}`, `tikti_saml_logout_requests_total{tid}`, `tikti_saml_logout_responses_total{tid,result}`, `tikti_saml_metadata_refresh_total{tid,result}`, `tikti_saml_replay_blocked_total{tid}`.
+**Counters:** `tikti_saml_authn_requests_total{tid}`, `tikti_saml_responses_total{tid,result}`, `tikti_saml_validation_failures_total{tid,reason}`, `tikti_saml_jit_provisions_total{tid}`, `tikti_saml_logout_requests_total{tid}`, `tikti_saml_logout_responses_total{tid,result}`, `tikti_saml_metadata_refresh_total{tid,result}`, `tikti_saml_replay_blocked_total{tid}`, `tikti_saml_idp_admin_changes_total{operation,result}`.
 
 **Histograms:** `tikti_saml_response_validation_duration_seconds{tid}` (buckets: .005, .01, .025, .05, .1, .25, .5, 1), `tikti_saml_idp_roundtrip_duration_seconds{tid}`.
 
@@ -1174,7 +1174,7 @@ No authentication middleware runs on `/saml/*` because SAML is the authenticatio
 |`PutRequest`|`SET saml:req:{id} <bytes> NX EX 300`|`NX` prevents ID collision|
 |`ConsumeRequest`|Lua: `GET + DEL`|Atomic, single round-trip|
 |`MarkSeen`|`SET saml:seen:{aid} 1 NX EX 3600`|Returns `nil` when replay|
-|`PutIdP`|`SET saml:idp:{tid} <bytes> EX 86400`|Admin CLI only|
+|`PutIdP`|`SET saml:idp:{tid} <bytes>`|Admin CLI or protected admin API|
 |`GetIdP`|`GET saml:idp:{tid}`|Hot path|
 |`ListIdPs`|`SCAN 0 MATCH saml:idp:* COUNT 100`|Non-blocking|
 |`PutIndex`|`SET saml:idx:{nameID} <bytes> EX {ttl}`|`ttl = NotOnOrAfter - now`|

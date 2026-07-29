@@ -83,13 +83,15 @@ func (s *RedisStore) ConsumeRequest(ctx context.Context, id string) (RequestReco
 // IdPs
 // ---------------------------------------------------------------------------
 
-// PutIdP stores IdP trust material with a 24-hour TTL.
+// PutIdP stores IdP trust material until an administrator explicitly removes
+// or replaces it. Authentication trust must not silently disappear because a
+// metadata refresh worker was unavailable for one day.
 func (s *RedisStore) PutIdP(ctx context.Context, rec IdPRecord) error {
 	data, err := msgpack.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	return s.rdb.Set(ctx, rkeys.SAMLIdPPrefix+rec.TenantID, data, 86400*time.Second).Err()
+	return s.rdb.Set(ctx, rkeys.SAMLIdPPrefix+rec.TenantID, data, 0).Err()
 }
 
 // GetIdP retrieves IdP trust material for a tenant. Returns ErrIdPNotFound

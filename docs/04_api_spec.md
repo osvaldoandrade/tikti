@@ -420,6 +420,19 @@ The response includes all active public keys. The server sets cache headers so t
 
 Tikti acts as a SAML 2.0 Service Provider. The SAML endpoints live outside the `/v1/` prefix because they follow the SAML HTTP binding specifications rather than the JSON API conventions used by the identity endpoints. These endpoints handle browser redirects and form posts; only `/saml/metadata` and `/saml/discover` return machine-readable responses directly.
 
+### Tenant IdP administration
+
+`GET`, `PUT`, and `DELETE /v1/admin/tenants/:tenantId/saml/idp` are the
+server-to-server management surface used by Code Admin API. They require a
+non-empty `X-API-Key` header; query-string credentials are not accepted.
+
+`PUT` accepts exactly one of `metadataUrl` or `metadataXml` plus an
+`attributeMap`. URL ingestion requires public HTTPS, rejects redirects and
+private network destinations, and limits the response to 1 MiB. Tikti parses
+and validates the entire document before replacing the tenant's current
+record. Responses contain certificate counts but never certificate bodies or
+inline XML. `DELETE` removes the tenant record and returns 204.
+
 ### GET /saml/metadata
 
 Returns the SP EntityDescriptor as XML. No authentication is required.

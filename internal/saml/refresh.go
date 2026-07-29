@@ -5,10 +5,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"log"
 	"math/rand"
-	"net/http"
 	"time"
 )
 
@@ -49,7 +47,9 @@ type Refresher struct {
 func NewRefresher(cfg RefresherConfig) *Refresher {
 	f := cfg.Fetcher
 	if f == nil {
-		f = httpFetch
+		f = func(rawURL string) ([]byte, error) {
+			return (MetadataHTTPFetcher{Timeout: 30 * time.Second}).Fetch(context.Background(), rawURL)
+		}
 	}
 	return &Refresher{
 		store:       cfg.Store,
@@ -215,23 +215,4 @@ func (r *Refresher) updateSPCertExpiry() {
 		return
 	}
 	r.metrics.SPCertExpiry.Set(time.Until(cert.NotAfter).Seconds())
-}
-
-// httpClient is the default HTTP client used by httpFetch, with a 30-second
-// timeout to prevent the refresh goroutine from hanging indefinitely.
-var httpClient = &http.Client{Timeout: 30 * time.Second}
-
-// httpFetch is the default MetadataFetcher. It performs an HTTP GET with a
-// timeout and validates that the response status is 2xx.
-func httpFetch(url string) ([]byte, error) {
-	//nolint:gosec // URL originates from admin-supplied IdP records
-	resp, err := httpClient.Get(url)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("unexpected status %d fetching %s", resp.StatusCode, url)
-	}
-	return io.ReadAll(resp.Body)
 }
