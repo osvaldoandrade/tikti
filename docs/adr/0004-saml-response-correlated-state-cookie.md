@@ -18,12 +18,13 @@ safe correlation rule.
 
 ## Decision
 
-For a structurally parseable SAML Response, Tikti reads its `InResponseTo` and
-selects the exact `__Host-tikti_saml_state` cookie whose value matches that
-request ID. The comparison is constant-time. Tikti still requires the browser
-cookie and still atomically consumes the corresponding pending request before
-the existing signature, issuer, destination, audience, time, and assertion
-validation pipeline.
+For a structurally parseable SAML Response, Tikti reads `InResponseTo` from the
+Response or its SAML `SubjectConfirmationData` and selects the exact
+`__Host-tikti_saml_state` cookie whose value matches that request ID. If more
+than one location supplies a value, every value must agree. The comparison is
+constant-time. Tikti still requires the browser cookie and still atomically
+consumes the corresponding pending request before the existing signature,
+issuer, destination, audience, time, and assertion validation pipeline.
 
 `InResponseTo` is used only to select among browser-bound state cookies. It does
 not establish identity or trust. A malformed response follows the historical
@@ -39,4 +40,3 @@ already-consumed state cannot poison the next login.
 - Browser binding, one-time Kvrocks consumption, and cryptographic validation
   remain mandatory.
 - Parallel logins can coexist because each response selects its own request ID.
-

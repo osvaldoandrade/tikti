@@ -214,3 +214,35 @@ func TestResponseInResponseTo_RejectsInvalidEnvelopes(t *testing.T) {
 		})
 	}
 }
+
+func TestResponseInResponseTo_UsesSubjectConfirmationData(t *testing.T) {
+	response := `<samlp:Response xmlns:samlp="` + nsP + `">` +
+		`<saml:Assertion xmlns:saml="` + samlAssertionNamespace + `">` +
+		`<saml:Subject><saml:SubjectConfirmation>` +
+		`<saml:SubjectConfirmationData InResponseTo="_subject-request"/>` +
+		`</saml:SubjectConfirmation></saml:Subject></saml:Assertion>` +
+		`</samlp:Response>`
+	encoded := base64.StdEncoding.EncodeToString([]byte(response))
+
+	requestID, ok := responseInResponseTo(encoded)
+	if !ok {
+		t.Fatal("subject confirmation request ID was not found")
+	}
+	if requestID != "_subject-request" {
+		t.Fatalf("request ID = %q, want subject confirmation value", requestID)
+	}
+}
+
+func TestResponseInResponseTo_RejectsConflictingRequestIDs(t *testing.T) {
+	response := `<samlp:Response xmlns:samlp="` + nsP + `" InResponseTo="_root-request">` +
+		`<saml:Assertion xmlns:saml="` + samlAssertionNamespace + `">` +
+		`<saml:Subject><saml:SubjectConfirmation>` +
+		`<saml:SubjectConfirmationData InResponseTo="_different-request"/>` +
+		`</saml:SubjectConfirmation></saml:Subject></saml:Assertion>` +
+		`</samlp:Response>`
+	encoded := base64.StdEncoding.EncodeToString([]byte(response))
+
+	if requestID, ok := responseInResponseTo(encoded); ok {
+		t.Fatalf("request ID = %q, want conflicting-value rejection", requestID)
+	}
+}
