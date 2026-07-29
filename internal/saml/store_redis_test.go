@@ -27,6 +27,52 @@ func newTestStore(t *testing.T) (*RedisStore, *miniredis.Miniredis) {
 	return NewRedisStore(rdb), mr
 }
 
+type redisCommandRecorder struct {
+	mu    sync.Mutex
+	names []string
+}
+
+func (h *redisCommandRecorder) BeforeProcess(
+	ctx context.Context,
+	cmd redis.Cmder,
+) (context.Context, error) {
+	h.mu.Lock()
+	h.names = append(h.names, cmd.Name())
+	h.mu.Unlock()
+	return ctx, nil
+}
+
+func (*redisCommandRecorder) AfterProcess(context.Context, redis.Cmder) error {
+	return nil
+}
+
+func (h *redisCommandRecorder) BeforeProcessPipeline(
+	ctx context.Context,
+	cmds []redis.Cmder,
+) (context.Context, error) {
+	h.mu.Lock()
+	for _, cmd := range cmds {
+		h.names = append(h.names, cmd.Name())
+	}
+	h.mu.Unlock()
+	return ctx, nil
+}
+
+func (*redisCommandRecorder) AfterProcessPipeline(context.Context, []redis.Cmder) error {
+	return nil
+}
+
+func (h *redisCommandRecorder) recorded(name string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, recorded := range h.names {
+		if recorded == name {
+			return true
+		}
+	}
+	return false
+}
+
 // TestPutRequest_NX verifies that a second PutRequest with the same ID fails.
 func TestPutRequest_NX(t *testing.T) {
 	store, _ := newTestStore(t)
@@ -47,6 +93,33 @@ func TestPutRequest_NX(t *testing.T) {
 	err := store.PutRequest(ctx, rec)
 	if err == nil {
 		t.Fatal("second PutRequest with same ID should have failed")
+	}
+}
+
+func TestConsumeRequest_UsesEvalForKvrocksCompatibility(t *testing.T) {
+	store, _ := newTestStore(t)
+	recorder := &redisCommandRecorder{}
+	store.rdb.AddHook(recorder)
+	ctx := context.Background()
+
+	rec := RequestRecord{
+		ID:           "req-kvrocks",
+		TenantID:     "t-001",
+		RelayState:   "/dashboard",
+		ACSURL:       "https://sp.example.com/acs",
+		IssueInstant: time.Now().UTC().Truncate(time.Second),
+	}
+	if err := store.PutRequest(ctx, rec); err != nil {
+		t.Fatalf("PutRequest: %v", err)
+	}
+	if _, ok, err := store.ConsumeRequest(ctx, rec.ID); err != nil || !ok {
+		t.Fatalf("ConsumeRequest: ok=%t err=%v", ok, err)
+	}
+	if !recorder.recorded("eval") {
+		t.Fatal("ConsumeRequest did not execute EVAL")
+	}
+	if recorder.recorded("evalsha") {
+		t.Fatal("ConsumeRequest must not execute EVALSHA")
 	}
 }
 
