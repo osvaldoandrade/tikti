@@ -5,6 +5,12 @@ with Tikti. Estimated time: **15 minutes**.
 
 > **Audience:** Platform engineers. No prior SAML experience required.
 
+For CodeCloud production, the preferred workflow is the public Code Admin
+Console under **IAM & SSO → SAML Identity Provider**. It accepts the same
+metadata URL or XML and attribute map, while keeping the Tikti API key and
+KVRocks credentials out of the browser. The CLI remains available for
+break-glass operations.
+
 ---
 
 ## Prerequisites
@@ -53,6 +59,10 @@ The CLI will:
 1. Fetch the metadata XML from the URL.
 2. Parse and validate it (entity ID, signing certificates, HTTPS SSO URL).
 3. Store the `IdPRecord` in Redis keyed by tenant ID.
+
+The record has no TTL. It remains active until a validated replacement is
+stored or an administrator explicitly removes it. Background refresh keeps
+the last valid record on download or validation failure.
 
 ### Using a local metadata file
 

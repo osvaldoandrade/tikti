@@ -91,6 +91,11 @@ func main() {
 		}))
 	}
 
+	var samlStore saml.Store
+	if cfg.SAML.Enabled {
+		samlStore = saml.NewRedisStore(application.Redis)
+	}
+
 	app.SetupMappings(
 		application.Engine,
 		cfg,
@@ -100,6 +105,8 @@ func main() {
 		application.RoleSvc,
 		application.ClientSvc,
 		application.WorkloadSvc,
+		samlStore,
+		samlMetrics,
 	)
 
 	application.Engine.GET("/healthz", func(c *gin.Context) {
@@ -120,7 +127,6 @@ func main() {
 	// A chi router handles /saml/* paths; gin handles everything else.
 	var samlRouter http.Handler
 	if cfg.SAML.Enabled {
-		samlStore := saml.NewRedisStore(application.Redis)
 		repo := repository.NewRedisRepo(application.Redis)
 		bridge := saml.NewSessionBridge(repo, application.UserService.(saml.IDTokenIssuer))
 

@@ -2,6 +2,7 @@ package app
 
 import (
 	"github.com/osvaldoandrade/tikti/internal/controllers"
+	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/config"
@@ -10,7 +11,7 @@ import (
 )
 
 // SetupMappings registers every public and protected route with their respective controllers.
-func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService) {
+func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService, samlStore saml.Store, samlMetrics *saml.Metrics) {
 	v1 := engine.Group("/v1")
 
 	v1.POST("/accounts/signUp", controllers.NewSignUpController(userService, cfg).Handle)
@@ -59,5 +60,19 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		protected.POST("/tenants/:tenantId/clients", clientCtrl.Create)
 		protected.GET("/tenants/:tenantId/clients", clientCtrl.List)
 		protected.GET("/tenants/:tenantId/clients/:clientId", clientCtrl.Get)
+	}
+
+	if samlStore != nil {
+		samlAdminController := controllers.NewSAMLAdminController(saml.NewAdminService(
+			samlStore,
+			saml.MetadataHTTPFetcher{},
+			cfg.IssuerBaseURL,
+			samlMetrics,
+		))
+		samlAdmin := v1.Group("/admin/tenants/:tenantId/saml/idp")
+		samlAdmin.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
+		samlAdmin.GET("", samlAdminController.Get)
+		samlAdmin.PUT("", samlAdminController.Put)
+		samlAdmin.DELETE("", samlAdminController.Delete)
 	}
 }
