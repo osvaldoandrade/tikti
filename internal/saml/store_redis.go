@@ -23,8 +23,6 @@ redis.call('DEL', KEYS[1])
 return v
 `
 
-var consumeRequestScript = redis.NewScript(luaConsumeRequest)
-
 // RedisStore implements Store using Redis with Lua-script atomics and
 // msgpack-encoded values.
 type RedisStore struct {
@@ -62,7 +60,12 @@ func (s *RedisStore) PutRequest(ctx context.Context, rec RequestRecord) error {
 // second return value is false when no record exists for the given ID.
 func (s *RedisStore) ConsumeRequest(ctx context.Context, id string) (RequestRecord, bool, error) {
 	key := rkeys.SAMLRequestPrefix + id
-	raw, err := consumeRequestScript.Run(ctx, s.rdb, []string{key}).Text()
+	// Execute the small script directly instead of optimistically using
+	// EVALSHA. Kvrocks 2.7 prefixes its cache-miss response with
+	// "ERR NOSCRIPT", while go-redis v8 only retries EVAL for errors that
+	// start with "NOSCRIPT ". Direct EVAL keeps the operation atomic and
+	// avoids that protocol incompatibility.
+	raw, err := s.rdb.Eval(ctx, luaConsumeRequest, []string{key}).Text()
 	if errors.Is(err, redis.Nil) {
 		return RequestRecord{}, false, nil
 	}
