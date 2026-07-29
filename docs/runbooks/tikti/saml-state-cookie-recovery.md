@@ -33,13 +33,18 @@ Cloud Logging records `saml.assertion` with
 3. Confirm the IdP configuration through Code Foundry
    `Tenants & IAM > Service Grants`; do not remove or replace it during
    cookie triage.
+4. Compare per-pod `tikti_saml_authn_requests_total` and
+   `tikti_saml_state_cookie_recovery_total`. An authentication request with no
+   recovery increment and a pending request that remains in Kvrocks indicates
+   a stale-cookie collision, not a missing-cookie recovery.
 
 ## Mitigation
 
-1. Confirm the current deployment uses a Tikti image that contains
-   ADR-0002.
+1. Confirm the current deployment uses a Tikti image that contains ADR-0002
+   and ADR-0003.
 2. Run one SP-initiated login from Code Foundry `Entrar com SAML`.
-3. Require one `repost` followed by one `success` in
+3. Require either direct request consumption with the host-bound cookie or one
+   `repost` followed by one `success` in
    `tikti_saml_state_cookie_recovery_total` when the browser withholds the
    cross-site cookie.
 4. Require the final `saml.assertion` decision to equal `accept`.

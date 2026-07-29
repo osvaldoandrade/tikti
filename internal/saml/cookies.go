@@ -6,14 +6,20 @@ import (
 	"time"
 )
 
+const (
+	stateCookieName = "__Host-tikti_saml_state"
+	stateCookiePath = "/"
+)
+
 // setStateCookie writes the SAML state cookie used to correlate the
-// AuthnRequest with the IdP's POST-back. The cookie uses SameSite=None
-// so that it is included when the IdP sends the cross-origin POST.
+// AuthnRequest with the IdP's POST-back. The __Host- prefix prevents a
+// sibling domain from creating a colliding Domain cookie. SameSite=None
+// allows the cookie on the IdP's cross-origin POST when the browser permits it.
 func (h *Handler) setStateCookie(w http.ResponseWriter, id string, ttl time.Duration) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     "tikti_saml_state",
+		Name:     stateCookieName,
 		Value:    id,
-		Path:     "/saml",
+		Path:     stateCookiePath,
 		Secure:   true,
 		HttpOnly: true,
 		SameSite: http.SameSiteNoneMode,
@@ -40,9 +46,9 @@ func (h *Handler) setIDTokenCookie(w http.ResponseWriter, idt string) {
 // and an empty value.
 func (h *Handler) clearStateCookie(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     "tikti_saml_state",
+		Name:     stateCookieName,
 		Value:    "",
-		Path:     "/saml",
+		Path:     stateCookiePath,
 		MaxAge:   -1,
 		Secure:   true,
 		HttpOnly: true,
