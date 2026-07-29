@@ -36,12 +36,14 @@ Cloud Logging records `saml.assertion` with
 4. Compare per-pod `tikti_saml_authn_requests_total` and
    `tikti_saml_state_cookie_recovery_total`. An authentication request with no
    recovery increment and a pending request that remains in Kvrocks indicates
-   a stale-cookie collision, not a missing-cookie recovery.
+   a same-name stale-cookie collision, not a missing-cookie recovery. The
+   deployed Tikti version must correlate the cookie with the Response
+   `InResponseTo` as specified by ADR-0004.
 
 ## Mitigation
 
-1. Confirm the current deployment uses a Tikti image that contains ADR-0002
-   and ADR-0003.
+1. Confirm the current deployment uses a Tikti image that contains ADR-0002,
+   ADR-0003, and ADR-0004.
 2. Run one SP-initiated login from Code Foundry `Entrar com SAML`.
 3. Require either direct request consumption with the host-bound cookie or one
    `repost` followed by one `success` in

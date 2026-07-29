@@ -2,6 +2,7 @@ package saml
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -146,6 +147,20 @@ func newACSRequestWithRetry(
 		r.AddCookie(&http.Cookie{Name: stateCookieName, Value: stateCookie})
 	}
 	return r
+}
+
+func responseForRequest(requestID string) string {
+	raw, err := base64.StdEncoding.DecodeString(goldenResponseBase64())
+	if err != nil {
+		panic(err)
+	}
+	response := strings.Replace(
+		string(raw),
+		"<samlp:Response ",
+		`<samlp:Response InResponseTo="`+requestID+`" `,
+		1,
+	)
+	return base64.StdEncoding.EncodeToString([]byte(response))
 }
 
 // buildHandler creates a Handler with the given mocks for ACS tests. It
@@ -315,6 +330,24 @@ func TestACS_LegacyStateCookieCannotShadowHostCookie(t *testing.T) {
 	}
 	if store.consumeID != "req-001" {
 		t.Errorf("consumed request ID = %q, want host-bound request", store.consumeID)
+	}
+}
+
+func TestACS_SameNameStaleCookieCannotShadowMatchingResponseCookie(t *testing.T) {
+	store := happyStore()
+	h := buildHandler(store, happyProvider(), happyBridge(), &mockACSEmitter{})
+
+	r := newACSRequest(responseForRequest("req-001"), "/app", "stale-request")
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "req-001"})
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusFound)
+	}
+	if store.consumeID != "req-001" {
+		t.Fatalf("consumed request ID = %q, want response-correlated request", store.consumeID)
 	}
 }
 

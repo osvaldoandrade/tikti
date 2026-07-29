@@ -1,9 +1,13 @@
 package saml
 
 import (
+	"crypto/subtle"
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/beevik/etree"
 )
 
 const (
@@ -54,6 +58,50 @@ func (h *Handler) clearStateCookie(w http.ResponseWriter) {
 		HttpOnly: true,
 		SameSite: http.SameSiteNoneMode,
 	})
+}
+
+// stateCookieForResponse returns the browser state cookie that belongs to the
+// AuthnRequest referenced by the SAML Response. Browsers can retain multiple
+// same-name cookies after migrations or interrupted flows; selecting the first
+// one can therefore consume stale state while the current request remains
+// pending. A malformed response preserves the historical first-cookie behavior
+// so the normal validation pipeline remains responsible for its rejection.
+func stateCookieForResponse(r *http.Request, rawResponse string) (*http.Cookie, error) {
+	requestID, ok := responseInResponseTo(rawResponse)
+	if !ok {
+		return r.Cookie(stateCookieName)
+	}
+
+	for _, cookie := range r.Cookies() {
+		if cookie.Name != stateCookieName {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(requestID)) == 1 {
+			return cookie, nil
+		}
+	}
+	return nil, http.ErrNoCookie
+}
+
+func responseInResponseTo(rawResponse string) (string, bool) {
+	if strings.TrimSpace(rawResponse) == "" {
+		return "", false
+	}
+	raw, err := base64.StdEncoding.Strict().DecodeString(rawResponse)
+	if err != nil || len(raw) == 0 || len(raw) > 1<<20 || containsDOCTYPE(raw) {
+		return "", false
+	}
+
+	doc := etree.NewDocument()
+	if err := doc.ReadFromBytes(raw); err != nil || doc.Root() == nil {
+		return "", false
+	}
+	root := doc.Root()
+	if root.Tag != "Response" || root.NamespaceURI() != nsP {
+		return "", false
+	}
+	requestID := strings.TrimSpace(root.SelectAttrValue("InResponseTo", ""))
+	return requestID, requestID != ""
 }
 
 // parseSameSite converts a string cookie SameSite value to http.SameSite.
