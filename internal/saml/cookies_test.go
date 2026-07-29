@@ -198,6 +198,46 @@ func TestStateCookieForResponse_MalformedResponsePreservesFallback(t *testing.T)
 	}
 }
 
+func TestDiagnoseStateCorrelation(t *testing.T) {
+	response := base64.StdEncoding.EncodeToString([]byte(
+		`<samlp:Response xmlns:samlp="` + nsP + `" InResponseTo="_current"/>`,
+	))
+	r := httptest.NewRequest(http.MethodPost, "/saml/acs", nil)
+	r.AddCookie(&http.Cookie{Name: "unrelated", Value: "_current"})
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "_stale"})
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "_current"})
+
+	diagnostics := diagnoseStateCorrelation(r, response, "_current")
+	if !diagnostics.ResponseIDPresent {
+		t.Error("ResponseIDPresent = false, want true")
+	}
+	if diagnostics.StateCookieCount != 2 {
+		t.Errorf("StateCookieCount = %d, want 2", diagnostics.StateCookieCount)
+	}
+	if !diagnostics.MatchingCookiePresent {
+		t.Error("MatchingCookiePresent = false, want true")
+	}
+	if !diagnostics.SelectedMatchesResponse {
+		t.Error("SelectedMatchesResponse = false, want true")
+	}
+}
+
+func TestDiagnoseStateCorrelation_MalformedResponse(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/saml/acs", nil)
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "_fallback"})
+
+	diagnostics := diagnoseStateCorrelation(r, "not-base64", "_fallback")
+	if diagnostics.ResponseIDPresent {
+		t.Error("ResponseIDPresent = true, want false")
+	}
+	if diagnostics.StateCookieCount != 1 {
+		t.Errorf("StateCookieCount = %d, want 1", diagnostics.StateCookieCount)
+	}
+	if diagnostics.MatchingCookiePresent || diagnostics.SelectedMatchesResponse {
+		t.Fatal("malformed response must not report a correlated cookie")
+	}
+}
+
 func TestResponseInResponseTo_RejectsInvalidEnvelopes(t *testing.T) {
 	tests := map[string]string{
 		"invalid XML":     `<samlp:Response`,

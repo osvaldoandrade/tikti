@@ -2,6 +2,7 @@ package saml
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -47,6 +48,16 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	h.clearStateCookie(w)
 	req, ok, err := h.store.ConsumeRequest(ctx, state.Value)
 	if err != nil || !ok {
+		diagnostics := diagnoseStateCorrelation(r, raw, state.Value)
+		log.Printf(
+			"event=saml.state_correlation responseIDPresent=%t stateCookieCount=%d matchingCookiePresent=%t selectedMatchesResponse=%t consumeError=%t requestFound=%t",
+			diagnostics.ResponseIDPresent,
+			diagnostics.StateCookieCount,
+			diagnostics.MatchingCookiePresent,
+			diagnostics.SelectedMatchesResponse,
+			err != nil,
+			ok,
+		)
 		h.reject(w, r, "", ReasonRequestNotFound)
 		return
 	}

@@ -85,6 +85,37 @@ func stateCookieForResponse(r *http.Request, rawResponse string) (*http.Cookie, 
 	return nil, http.ErrNoCookie
 }
 
+type stateCorrelationDiagnostics struct {
+	ResponseIDPresent       bool
+	StateCookieCount        int
+	MatchingCookiePresent   bool
+	SelectedMatchesResponse bool
+}
+
+func diagnoseStateCorrelation(
+	r *http.Request,
+	rawResponse string,
+	selectedValue string,
+) stateCorrelationDiagnostics {
+	requestID, responseIDPresent := responseInResponseTo(rawResponse)
+	diagnostics := stateCorrelationDiagnostics{ResponseIDPresent: responseIDPresent}
+	for _, cookie := range r.Cookies() {
+		if cookie.Name != stateCookieName {
+			continue
+		}
+		diagnostics.StateCookieCount++
+		if responseIDPresent &&
+			subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(requestID)) == 1 {
+			diagnostics.MatchingCookiePresent = true
+		}
+	}
+	if responseIDPresent &&
+		subtle.ConstantTimeCompare([]byte(selectedValue), []byte(requestID)) == 1 {
+		diagnostics.SelectedMatchesResponse = true
+	}
+	return diagnostics
+}
+
 func responseInResponseTo(rawResponse string) (string, bool) {
 	if strings.TrimSpace(rawResponse) == "" {
 		return "", false
