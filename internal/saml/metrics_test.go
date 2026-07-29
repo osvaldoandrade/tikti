@@ -21,7 +21,7 @@ func gather(t *testing.T, reg *prometheus.Registry) map[string]*dto.MetricFamily
 	return out
 }
 
-// TestMetrics_AllPresent ensures all 12 series defined in HLD §18 are
+// TestMetrics_AllPresent ensures all series defined in HLD §18 are
 // registered after calling NewMetrics.
 func TestMetrics_AllPresent(t *testing.T) {
 	reg := prometheus.NewRegistry()
@@ -36,11 +36,16 @@ func TestMetrics_AllPresent(t *testing.T) {
 	m.LogoutResponses.WithLabelValues("t1", "ok").Inc()
 	m.MetadataRefresh.WithLabelValues("t1", "ok").Inc()
 	m.ReplayBlocked.WithLabelValues("t1").Inc()
+	m.TIDOverrideIgnored.WithLabelValues("t1").Inc()
+	m.IdPAdminChanges.WithLabelValues("update", "ok").Inc()
 	m.ValidationDuration.WithLabelValues("t1").Observe(0.042)
 	m.IdPRoundtrip.WithLabelValues("t1").Observe(0.15)
 	m.IdPCertExpiry.WithLabelValues("t1", "CN=idp").Set(86400)
 	m.SPCertExpiry.Set(172800)
 	m.RefreshConsecFailures.WithLabelValues("t1").Set(0)
+	for _, result := range []string{"repost", "success", "failure"} {
+		m.StateCookieRecovery.WithLabelValues(result).Inc()
+	}
 
 	fams := gather(t, reg)
 
@@ -53,11 +58,14 @@ func TestMetrics_AllPresent(t *testing.T) {
 		"tikti_saml_logout_responses_total",
 		"tikti_saml_metadata_refresh_total",
 		"tikti_saml_replay_blocked_total",
+		"tikti_saml_tid_override_ignored_total",
+		"tikti_saml_idp_admin_changes_total",
 		"tikti_saml_response_validation_duration_seconds",
 		"tikti_saml_idp_roundtrip_duration_seconds",
 		"tikti_saml_idp_cert_expiry_seconds",
 		"tikti_saml_sp_cert_expiry_seconds",
 		"tikti_saml_metadata_refresh_consec_failures",
+		"tikti_saml_state_cookie_recovery_total",
 	}
 
 	if len(fams) != len(want) {
@@ -68,6 +76,11 @@ func TestMetrics_AllPresent(t *testing.T) {
 		if _, ok := fams[name]; !ok {
 			t.Errorf("metric %q not found in registry", name)
 		}
+	}
+
+	recovery := fams["tikti_saml_state_cookie_recovery_total"]
+	if got := len(recovery.GetMetric()); got != 3 {
+		t.Errorf("state cookie recovery: expected 3 bounded result series, got %d", got)
 	}
 }
 

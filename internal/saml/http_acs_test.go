@@ -123,9 +123,19 @@ func goldenIDToken() string {
 // newACSRequest builds an HTTP POST request to /saml/acs with the given
 // SAMLResponse, RelayState, and state cookie.
 func newACSRequest(samlResponse, relayState, stateCookie string) *http.Request {
+	return newACSRequestWithRetry(samlResponse, relayState, stateCookie, false)
+}
+
+func newACSRequestWithRetry(
+	samlResponse, relayState, stateCookie string,
+	retry bool,
+) *http.Request {
 	form := url.Values{}
 	form.Set("SAMLResponse", samlResponse)
 	form.Set("RelayState", relayState)
+	if retry {
+		form.Set(stateCookieRetryField, "1")
+	}
 
 	r := httptest.NewRequest(http.MethodPost, "/saml/acs", strings.NewReader(form.Encode()))
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -165,8 +175,8 @@ func happyStore() *mockACSStore {
 			RelayState: "/app",
 			ACSURL:     "https://sp.example.com/saml/acs",
 		},
-		consumeOK:    true,
-		getIdPRec:    goldenIdP(),
+		consumeOK:     true,
+		getIdPRec:     goldenIdP(),
 		markSeenFresh: true,
 	}
 }
@@ -310,12 +320,58 @@ func TestACS_Accept_AuditRecord(t *testing.T) {
 // Reject-path tests
 // ---------------------------------------------------------------------------
 
-func TestACS_MissingState_Reject(t *testing.T) {
+func TestACS_MissingState_RepostsOnce(t *testing.T) {
 	emitter := &mockACSEmitter{}
 	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
 
 	// No state cookie attached.
-	r := newACSRequest(goldenResponseBase64(), "/app", "")
+	r := newACSRequest(goldenResponseBase64(), "/app?next=<dashboard>", "")
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := resp.Header.Get("Pragma"); got != "no-cache" {
+		t.Errorf("Pragma = %q, want no-cache", got)
+	}
+	if got := resp.Header.Get("Referrer-Policy"); got != "no-referrer" {
+		t.Errorf("Referrer-Policy = %q, want no-referrer", got)
+	}
+	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "form-action 'self'") ||
+		!strings.Contains(csp, "frame-ancestors 'none'") ||
+		!strings.Contains(csp, "script-src 'nonce-") {
+		t.Errorf("unexpected Content-Security-Policy: %q", csp)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `name="`+stateCookieRetryField+`" value="1"`) {
+		t.Errorf("repost marker missing from body: %s", body)
+	}
+	if strings.Contains(body, "<dashboard>") ||
+		!strings.Contains(body, "&lt;dashboard&gt;") {
+		t.Errorf("RelayState was not HTML escaped: %s", body)
+	}
+	if len(emitter.records) != 0 {
+		t.Fatalf("repost must not emit a final audit decision, got %d records", len(emitter.records))
+	}
+}
+
+func TestACS_MissingStateAfterRepost_Rejects(t *testing.T) {
+	emitter := &mockACSEmitter{}
+	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+
+	r := newACSRequestWithRetry(goldenResponseBase64(), "/app", "", true)
 	w := httptest.NewRecorder()
 
 	h.ACS(w, r)
@@ -327,16 +383,82 @@ func TestACS_MissingState_Reject(t *testing.T) {
 	if resp.StatusCode != wantStatus {
 		t.Errorf("status = %d, want %d", resp.StatusCode, wantStatus)
 	}
-
-	// Verify audit record.
-	if len(emitter.records) == 0 {
-		t.Fatal("no audit record for missing state rejection")
+	if strings.Contains(w.Body.String(), stateCookieRetryField) {
+		t.Fatal("second missing-cookie request must not render another repost")
 	}
-	if emitter.records[0].Decision != "reject" {
-		t.Errorf("audit decision = %q, want reject", emitter.records[0].Decision)
+	if len(emitter.records) != 1 {
+		t.Fatalf("expected one rejection audit record, got %d", len(emitter.records))
 	}
 	if emitter.records[0].Reason != string(ReasonRequestNotFound) {
 		t.Errorf("audit reason = %q, want %q", emitter.records[0].Reason, ReasonRequestNotFound)
+	}
+}
+
+func TestACS_RepostWithState_Accepts(t *testing.T) {
+	emitter := &mockACSEmitter{}
+	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+
+	r := newACSRequestWithRetry(goldenResponseBase64(), "/app", "req-001", true)
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	resp := w.Result()
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	if got := resp.Header.Get("Location"); got != "/app" {
+		t.Errorf("Location = %q, want /app", got)
+	}
+}
+
+func TestACS_MissingStateRepostEligibility(t *testing.T) {
+	tests := []struct {
+		name         string
+		samlResponse string
+		relayState   string
+		wantStatus   int
+	}{
+		{
+			name:         "valid response and relay",
+			samlResponse: goldenResponseBase64(),
+			relayState:   "/app",
+			wantStatus:   http.StatusOK,
+		},
+		{
+			name:         "empty response",
+			samlResponse: "",
+			relayState:   "/app",
+			wantStatus:   bucketToStatus(ReasonRequestNotFound.Bucket()),
+		},
+		{
+			name:         "oversized response",
+			samlResponse: strings.Repeat("A", maxRepostResponseSize+1),
+			relayState:   "/app",
+			wantStatus:   bucketToStatus(ReasonRequestNotFound.Bucket()),
+		},
+		{
+			name:         "oversized relay",
+			samlResponse: goldenResponseBase64(),
+			relayState:   strings.Repeat("A", maxRepostRelaySize+1),
+			wantStatus:   bucketToStatus(ReasonRequestNotFound.Bucket()),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := buildHandler(happyStore(), happyProvider(), happyBridge(), &mockACSEmitter{})
+			r := newACSRequest(tt.samlResponse, tt.relayState, "")
+			w := httptest.NewRecorder()
+
+			h.ACS(w, r)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d", w.Code, tt.wantStatus)
+			}
+		})
 	}
 }
 
@@ -827,7 +949,8 @@ func TestACS_AllRejectPaths_EmitAudit(t *testing.T) {
 			emitter := &mockACSEmitter{}
 			h := buildHandler(store, prov, bridge, emitter)
 
-			r := newACSRequest(goldenResponseBase64(), "/app", cookie)
+			retry := sc.name == "MissingStateCookie"
+			r := newACSRequestWithRetry(goldenResponseBase64(), "/app", cookie, retry)
 			w := httptest.NewRecorder()
 
 			h.ACS(w, r)

@@ -8,17 +8,18 @@ import (
 // Metrics holds all Prometheus collectors for the SAML subsystem.
 // Every field is safe for concurrent use. Construct via NewMetrics.
 type Metrics struct {
-	// Counters — 8 per HLD §18.
-	AuthnRequests      *prometheus.CounterVec
-	Responses          *prometheus.CounterVec
-	ValidationFailures *prometheus.CounterVec
-	JITProvisions      *prometheus.CounterVec
-	LogoutRequests     *prometheus.CounterVec
-	LogoutResponses    *prometheus.CounterVec
-	MetadataRefresh    *prometheus.CounterVec
-	ReplayBlocked      *prometheus.CounterVec
-	TIDOverrideIgnored *prometheus.CounterVec
-	IdPAdminChanges    *prometheus.CounterVec
+	// Counters.
+	AuthnRequests       *prometheus.CounterVec
+	Responses           *prometheus.CounterVec
+	ValidationFailures  *prometheus.CounterVec
+	JITProvisions       *prometheus.CounterVec
+	LogoutRequests      *prometheus.CounterVec
+	LogoutResponses     *prometheus.CounterVec
+	MetadataRefresh     *prometheus.CounterVec
+	ReplayBlocked       *prometheus.CounterVec
+	TIDOverrideIgnored  *prometheus.CounterVec
+	IdPAdminChanges     *prometheus.CounterVec
+	StateCookieRecovery *prometheus.CounterVec
 
 	// Histograms — 2 per HLD §18.
 	ValidationDuration *prometheus.HistogramVec
@@ -89,6 +90,11 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "tikti_saml_idp_admin_changes_total",
 			Help: "Total SAML IdP administration attempts.",
 		}, []string{"operation", "result"}),
+
+		StateCookieRecovery: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "tikti_saml_state_cookie_recovery_total",
+			Help: "Total same-origin state-cookie recovery outcomes.",
+		}, []string{"result"}),
 
 		// ── Histograms ──────────────────────────────────────────────
 		ValidationDuration: f.NewHistogramVec(prometheus.HistogramOpts{
