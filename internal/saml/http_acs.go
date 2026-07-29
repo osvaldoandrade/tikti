@@ -26,7 +26,7 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	retry := r.PostFormValue(stateCookieRetryField) == "1"
 
 	// 1. Require state cookie set at /saml/login and discover tid from it.
-	state, err := r.Cookie(stateCookieName)
+	state, err := stateCookieForResponse(r, raw)
 	if err != nil {
 		if !retry && canRepostACS(raw, relay) {
 			h.observeStateCookieRecovery(stateCookieRecoveryRepost)
@@ -42,14 +42,14 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	if retry {
 		h.observeStateCookieRecovery(stateCookieRecoverySuccess)
 	}
+	// The browser state is single-use even when the server-side request has
+	// already expired or was consumed by a prior callback.
+	h.clearStateCookie(w)
 	req, ok, err := h.store.ConsumeRequest(ctx, state.Value)
 	if err != nil || !ok {
 		h.reject(w, r, "", ReasonRequestNotFound)
 		return
 	}
-
-	// Clear the state cookie.
-	h.clearStateCookie(w)
 
 	// 2. Look up IdP trust material.
 	idp, err := h.store.GetIdP(ctx, req.TenantID)

@@ -1,6 +1,8 @@
 package saml
 
 import (
+	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -150,5 +152,65 @@ func TestClearState_RemovesCookie(t *testing.T) {
 	}
 	if found.SameSite != http.SameSiteNoneMode {
 		t.Errorf("SameSite = %v, want SameSiteNoneMode", found.SameSite)
+	}
+}
+
+func TestStateCookieForResponse_SelectsMatchingCookie(t *testing.T) {
+	response := base64.StdEncoding.EncodeToString([]byte(
+		`<samlp:Response xmlns:samlp="` + nsP + `" InResponseTo="_current"/>`,
+	))
+	r := httptest.NewRequest(http.MethodPost, "/saml/acs", nil)
+	r.AddCookie(&http.Cookie{Name: "unrelated", Value: "_current"})
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "_stale"})
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "_current"})
+
+	state, err := stateCookieForResponse(r, response)
+	if err != nil {
+		t.Fatalf("stateCookieForResponse: %v", err)
+	}
+	if state.Value != "_current" {
+		t.Fatalf("state cookie = %q, want matching request", state.Value)
+	}
+}
+
+func TestStateCookieForResponse_RejectsOnlyStaleCookie(t *testing.T) {
+	response := base64.StdEncoding.EncodeToString([]byte(
+		`<samlp:Response xmlns:samlp="` + nsP + `" InResponseTo="_current"/>`,
+	))
+	r := httptest.NewRequest(http.MethodPost, "/saml/acs", nil)
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "_stale"})
+
+	if _, err := stateCookieForResponse(r, response); !errors.Is(err, http.ErrNoCookie) {
+		t.Fatalf("error = %v, want http.ErrNoCookie", err)
+	}
+}
+
+func TestStateCookieForResponse_MalformedResponsePreservesFallback(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/saml/acs", nil)
+	r.AddCookie(&http.Cookie{Name: stateCookieName, Value: "_fallback"})
+
+	state, err := stateCookieForResponse(r, "not-base64")
+	if err != nil {
+		t.Fatalf("stateCookieForResponse: %v", err)
+	}
+	if state.Value != "_fallback" {
+		t.Fatalf("state cookie = %q, want fallback cookie", state.Value)
+	}
+}
+
+func TestResponseInResponseTo_RejectsInvalidEnvelopes(t *testing.T) {
+	tests := map[string]string{
+		"invalid XML":     `<samlp:Response`,
+		"wrong element":   `<samlp:Request xmlns:samlp="` + nsP + `" InResponseTo="_current"/>`,
+		"wrong namespace": `<samlp:Response xmlns:samlp="urn:example:wrong" InResponseTo="_current"/>`,
+	}
+
+	for name, response := range tests {
+		t.Run(name, func(t *testing.T) {
+			encoded := base64.StdEncoding.EncodeToString([]byte(response))
+			if requestID, ok := responseInResponseTo(encoded); ok {
+				t.Fatalf("request ID = %q, want invalid envelope rejection", requestID)
+			}
+		})
 	}
 }
