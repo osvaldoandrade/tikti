@@ -17,11 +17,13 @@ reproduces the baseline.
 ## Context
 
 Google Workspace returned valid SAML responses to the production ACS endpoint,
-but Chrome omitted `tikti_saml_state` from the cross-site form POST. Tikti
-rejected both attempts with `request_not_found` before reading tenant trust or
-validating the assertion. The state cookie uses `SameSite=None; Secure` as
-required by the HTTP-POST binding, but browser privacy controls may still
-withhold it.
+but Tikti rejected the attempts with `request_not_found` before reading tenant
+trust or validating the assertion. The initial evidence was consistent with a
+missing state cookie, so this ADR added a fail-closed same-origin recovery
+path. Later per-pod metrics showed that production Chrome did send a state
+cookie, while the current pending request remained in Kvrocks. ADR-0003
+therefore addresses the distinct stale-cookie collision without removing this
+fallback for browsers that actually withhold `SameSite=None` cookies.
 
 Tikti must keep the browser-bound state cookie requirement. Falling back to an
 untrusted `RelayState` or `InResponseTo` value would allow login-CSRF: an
@@ -30,7 +32,7 @@ and bind the victim to the attacker's session.
 
 ## Decision
 
-When the first ACS POST lacks `tikti_saml_state`, Tikti returns a
+When the first ACS POST lacks `__Host-tikti_saml_state`, Tikti returns a
 cache-disabled HTML page that reposts the same `SAMLResponse` and `RelayState`
 to `/saml/acs` from the Code Foundry origin. The browser then attaches the
 existing first-party state cookie. Tikti marks the repost and rejects a second

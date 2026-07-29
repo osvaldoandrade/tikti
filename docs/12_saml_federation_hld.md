@@ -814,7 +814,7 @@ Rollback at any phase consists of setting `saml.enabled=false`. All `/saml/*` ro
 
 **Q12. What if the IdP's `NotOnOrAfter` is shorter than Tikti's session TTL?** Tikti picks `min(assertion.NotOnOrAfter, now + sessionTTL)` as the session upper bound. If the IdP says the assertion is good for 1 hour and Tikti's session TTL is 8 hours, the session expires in 1 hour. This aligns SAML session lifetime with IdP expectations and avoids zombie sessions surviving an IdP-initiated lockout.
 
-**Q13. How does the HTTP-POST binding coexist with `SameSite=Lax`?** SAML IdPs deliver the Response via a top-level form POST from the IdP's page back to `/saml/acs`. `SameSite=Lax` allows cookies on top-level navigations for GET requests but **blocks** cookies on cross-site POST requests. The design sets `SameSite=Lax` on the **idToken** cookie, which is issued **after** `/saml/acs` processes the response, not before. The state cookie set at `/saml/login/{tid}` uses `SameSite=None; Secure` because it should accompany the IdP's POST-back. Some browser privacy controls may still omit that cookie. In that case Tikti returns one cache-disabled same-origin repost page and accepts the flow only if the original state cookie accompanies the repost. This is why two cookies exist: the state cookie (`None; Secure`) for browser-bound request correlation, and the idToken cookie (`Lax; Secure; HttpOnly`) for post-login.
+**Q13. How does the HTTP-POST binding coexist with `SameSite=Lax`?** SAML IdPs deliver the Response via a top-level form POST from the IdP's page back to `/saml/acs`. `SameSite=Lax` allows cookies on top-level navigations for GET requests but **blocks** cookies on cross-site POST requests. The design sets `SameSite=Lax` on the **idToken** cookie, which is issued **after** `/saml/acs` processes the response, not before. The state cookie set at `/saml/login/{tid}` is named `__Host-tikti_saml_state` and uses `Path=/`, no `Domain`, and `SameSite=None; Secure`; the `__Host-` contract prevents legacy or sibling-domain cookies from shadowing the current request. Some browser privacy controls may still omit that cookie. In that case Tikti returns one cache-disabled same-origin repost page and accepts the flow only if the original state cookie accompanies the repost. This is why two cookies exist: the host-bound state cookie (`None; Secure; HttpOnly`) for browser-bound request correlation, and the idToken cookie (`Lax; Secure; HttpOnly`) for post-login.
 
 **Q14. What is the cold-start time for IdP metadata?** The first request for a `tid` triggers a Redis `GET`. If the record is missing or stale (older than `refreshIntervalHours`), a background refresher re-fetches and re-validates the IdP metadata document. The user request blocks on the last-good record, which is not deleted until a new one validates. On a cold miss when Redis is empty, the cost is one HTTP fetch plus parse, budgeted at 2 s. The request fails with `idp_metadata_stale` if the source URL is down at that instant.
 
@@ -925,9 +925,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    // state cookie - SameSite=None so it rides the IdP POST-back
+    // __Host- prevents Domain-cookie collisions; SameSite=None permits the
+    // IdP POST-back when the browser's privacy policy allows it.
     http.SetCookie(w, &http.Cookie{
-        Name: "tikti_saml_state", Value: reqID, Path: "/saml",
+        Name: "__Host-tikti_saml_state", Value: reqID, Path: "/",
         Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
         MaxAge: int(h.cfg.SP.RequestTTL.Seconds()),
     })
@@ -949,7 +950,7 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
     relay := r.PostFormValue("RelayState")
 
     // 1. require state cookie set at /saml/login and discover tid from it
-    state, err := r.Cookie("tikti_saml_state")
+    state, err := r.Cookie("__Host-tikti_saml_state")
     if err != nil {
         h.reject(w, r, "", ReasonRequestNotFound); return
     }
@@ -959,7 +960,7 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
     }
     // clear the state cookie
     http.SetCookie(w, &http.Cookie{
-        Name: "tikti_saml_state", Path: "/saml", MaxAge: -1,
+        Name: "__Host-tikti_saml_state", Path: "/", MaxAge: -1,
         Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
     })
 

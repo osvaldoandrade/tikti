@@ -25,6 +25,7 @@ type mockACSStore struct {
 	consumeRec RequestRecord
 	consumeOK  bool
 	consumeErr error
+	consumeID  string
 
 	getIdPRec IdPRecord
 	getIdPErr error
@@ -35,7 +36,8 @@ type mockACSStore struct {
 	putIndexErr error
 }
 
-func (m *mockACSStore) ConsumeRequest(_ context.Context, _ string) (RequestRecord, bool, error) {
+func (m *mockACSStore) ConsumeRequest(_ context.Context, id string) (RequestRecord, bool, error) {
+	m.consumeID = id
 	return m.consumeRec, m.consumeOK, m.consumeErr
 }
 
@@ -141,7 +143,7 @@ func newACSRequestWithRetry(
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	if stateCookie != "" {
-		r.AddCookie(&http.Cookie{Name: "tikti_saml_state", Value: stateCookie})
+		r.AddCookie(&http.Cookie{Name: stateCookieName, Value: stateCookie})
 	}
 	return r
 }
@@ -285,7 +287,7 @@ func TestACS_Accept_ClearsStateCookie(t *testing.T) {
 	defer resp.Body.Close()
 
 	for _, c := range resp.Cookies() {
-		if c.Name == "tikti_saml_state" {
+		if c.Name == stateCookieName {
 			if c.MaxAge != -1 {
 				t.Errorf("state cookie MaxAge = %d, want -1 (deleted)", c.MaxAge)
 			}
@@ -293,6 +295,45 @@ func TestACS_Accept_ClearsStateCookie(t *testing.T) {
 		}
 	}
 	t.Fatal("state cookie deletion not found in response")
+}
+
+func TestACS_LegacyStateCookieCannotShadowHostCookie(t *testing.T) {
+	store := happyStore()
+	h := buildHandler(store, happyProvider(), happyBridge(), &mockACSEmitter{})
+
+	r := newACSRequest(goldenResponseBase64(), "/app", "req-001")
+	r.AddCookie(&http.Cookie{Name: "tikti_saml_state", Value: "stale-request"})
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	if w.Code != http.StatusFound {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusFound)
+	}
+	if got := w.Header().Get("Location"); got != "/app" {
+		t.Errorf("Location = %q, want /app", got)
+	}
+	if store.consumeID != "req-001" {
+		t.Errorf("consumed request ID = %q, want host-bound request", store.consumeID)
+	}
+}
+
+func TestACS_LegacyStateCookieAloneUsesMissingCookieRecovery(t *testing.T) {
+	store := happyStore()
+	h := buildHandler(store, happyProvider(), happyBridge(), &mockACSEmitter{})
+
+	r := newACSRequest(goldenResponseBase64(), "/app", "")
+	r.AddCookie(&http.Cookie{Name: "tikti_saml_state", Value: "stale-request"})
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+	}
+	if store.consumeID != "" {
+		t.Errorf("legacy cookie consumed request ID %q", store.consumeID)
+	}
 }
 
 func TestACS_Accept_AuditRecord(t *testing.T) {

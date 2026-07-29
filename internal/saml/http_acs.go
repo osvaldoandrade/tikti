@@ -26,7 +26,7 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	retry := r.PostFormValue(stateCookieRetryField) == "1"
 
 	// 1. Require state cookie set at /saml/login and discover tid from it.
-	state, err := r.Cookie("tikti_saml_state")
+	state, err := r.Cookie(stateCookieName)
 	if err != nil {
 		if !retry && canRepostACS(raw, relay) {
 			h.observeStateCookieRecovery(stateCookieRecoveryRepost)

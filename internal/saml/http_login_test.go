@@ -58,8 +58,10 @@ func (m *loginMockProvider) BuildAuthnRequest(ctx context.Context, in BuildAuthn
 // Helpers
 // ---------------------------------------------------------------------------
 
-const testTID = "t-login-001"
-const testSSOURL = "https://idp.example.com/sso"
+const (
+	testTID    = "t-login-001"
+	testSSOURL = "https://idp.example.com/sso"
+)
 
 func defaultIdP() IdPRecord {
 	return IdPRecord{
@@ -161,17 +163,20 @@ func TestLogin_StateCookieSet(t *testing.T) {
 
 	var found *http.Cookie
 	for _, c := range rr.Result().Cookies() {
-		if c.Name == "tikti_saml_state" {
+		if c.Name == stateCookieName {
 			found = c
 			break
 		}
 	}
 
 	if found == nil {
-		t.Fatal("tikti_saml_state cookie not set")
+		t.Fatalf("%s cookie not set", stateCookieName)
 	}
-	if found.Path != "/saml" {
-		t.Errorf("cookie Path = %q, want /saml", found.Path)
+	if found.Path != stateCookiePath {
+		t.Errorf("cookie Path = %q, want %s", found.Path, stateCookiePath)
+	}
+	if found.Domain != "" {
+		t.Errorf("cookie Domain = %q, want host-only cookie", found.Domain)
 	}
 	if !found.Secure {
 		t.Error("cookie Secure = false, want true")
@@ -226,13 +231,13 @@ func TestLogin_RequestRecordPersisted(t *testing.T) {
 	// Verify the cookie value matches the persisted request ID.
 	var cookie *http.Cookie
 	for _, c := range rr.Result().Cookies() {
-		if c.Name == "tikti_saml_state" {
+		if c.Name == stateCookieName {
 			cookie = c
 			break
 		}
 	}
 	if cookie == nil {
-		t.Fatal("tikti_saml_state cookie not found")
+		t.Fatalf("%s cookie not found", stateCookieName)
 	}
 	if cookie.Value != rec.ID {
 		t.Errorf("cookie value %q does not match persisted request ID %q", cookie.Value, rec.ID)

@@ -612,12 +612,12 @@ func testSSOFlow(t *testing.T) {
 
 	var stateCookie *http.Cookie
 	for _, c := range loginResp.Cookies() {
-		if c.Name == "tikti_saml_state" {
+		if c.Name == "__Host-tikti_saml_state" {
 			stateCookie = c
 		}
 	}
 	if stateCookie == nil {
-		t.Fatal("tikti_saml_state cookie not set")
+		t.Fatal("__Host-tikti_saml_state cookie not set")
 	}
 
 	// Step 2: GET IdP SSO → HTML form with SAMLResponse.

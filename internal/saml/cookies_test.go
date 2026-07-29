@@ -36,20 +36,26 @@ func TestStateCookie_Attributes(t *testing.T) {
 	cookies := w.Result().Cookies()
 	var found *http.Cookie
 	for _, c := range cookies {
-		if c.Name == "tikti_saml_state" {
+		if c.Name == stateCookieName {
 			found = c
 			break
 		}
 	}
 
 	if found == nil {
-		t.Fatal("tikti_saml_state cookie not set")
+		t.Fatalf("%s cookie not set", stateCookieName)
+	}
+	if found.Name != "__Host-tikti_saml_state" {
+		t.Errorf("Name = %q, want __Host- protected name", found.Name)
 	}
 	if found.Value != "req-123" {
 		t.Errorf("Value = %q, want %q", found.Value, "req-123")
 	}
-	if found.Path != "/saml" {
-		t.Errorf("Path = %q, want %q", found.Path, "/saml")
+	if found.Path != stateCookiePath {
+		t.Errorf("Path = %q, want %q", found.Path, stateCookiePath)
+	}
+	if found.Domain != "" {
+		t.Errorf("Domain = %q, want host-only cookie", found.Domain)
 	}
 	if !found.Secure {
 		t.Error("Secure = false, want true")
@@ -115,19 +121,34 @@ func TestClearState_RemovesCookie(t *testing.T) {
 	cookies := w.Result().Cookies()
 	var found *http.Cookie
 	for _, c := range cookies {
-		if c.Name == "tikti_saml_state" {
+		if c.Name == stateCookieName {
 			found = c
 			break
 		}
 	}
 
 	if found == nil {
-		t.Fatal("tikti_saml_state cookie not set")
+		t.Fatalf("%s cookie not set", stateCookieName)
 	}
 	if found.MaxAge != -1 {
 		t.Errorf("MaxAge = %d, want -1", found.MaxAge)
 	}
 	if found.Value != "" {
 		t.Errorf("Value = %q, want empty", found.Value)
+	}
+	if found.Path != stateCookiePath {
+		t.Errorf("Path = %q, want %q", found.Path, stateCookiePath)
+	}
+	if found.Domain != "" {
+		t.Errorf("Domain = %q, want host-only cookie", found.Domain)
+	}
+	if !found.Secure {
+		t.Error("Secure = false, want true")
+	}
+	if !found.HttpOnly {
+		t.Error("HttpOnly = false, want true")
+	}
+	if found.SameSite != http.SameSiteNoneMode {
+		t.Errorf("SameSite = %v, want SameSiteNoneMode", found.SameSite)
 	}
 }
