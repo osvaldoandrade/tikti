@@ -13,6 +13,8 @@ import (
 const (
 	stateCookieName = "__Host-tikti_saml_state"
 	stateCookiePath = "/"
+
+	samlAssertionNamespace = "urn:oasis:names:tc:SAML:2.0:assertion"
 )
 
 // setStateCookie writes the SAML state cookie used to correlate the
@@ -101,7 +103,28 @@ func responseInResponseTo(rawResponse string) (string, bool) {
 		return "", false
 	}
 	requestID := strings.TrimSpace(root.SelectAttrValue("InResponseTo", ""))
-	return requestID, requestID != ""
+	consistent := true
+	var inspectSubjectConfirmationData func(*etree.Element)
+	inspectSubjectConfirmationData = func(element *etree.Element) {
+		if element.Tag == "SubjectConfirmationData" &&
+			element.NamespaceURI() == samlAssertionNamespace {
+			candidate := strings.TrimSpace(element.SelectAttrValue("InResponseTo", ""))
+			if candidate != "" {
+				switch {
+				case requestID == "":
+					requestID = candidate
+				case requestID != candidate:
+					consistent = false
+				}
+			}
+		}
+		for _, child := range element.ChildElements() {
+			inspectSubjectConfirmationData(child)
+		}
+	}
+	inspectSubjectConfirmationData(root)
+
+	return requestID, consistent && requestID != ""
 }
 
 // parseSameSite converts a string cookie SameSite value to http.SameSite.
