@@ -23,12 +23,24 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := r.PostFormValue("SAMLResponse")
 	relay := r.PostFormValue("RelayState")
+	retry := r.PostFormValue(stateCookieRetryField) == "1"
 
 	// 1. Require state cookie set at /saml/login and discover tid from it.
 	state, err := r.Cookie("tikti_saml_state")
 	if err != nil {
+		if !retry && canRepostACS(raw, relay) {
+			h.observeStateCookieRecovery(stateCookieRecoveryRepost)
+			writeStateCookieRepost(w, raw, relay)
+			return
+		}
+		if retry {
+			h.observeStateCookieRecovery(stateCookieRecoveryFailure)
+		}
 		h.reject(w, r, "", ReasonRequestNotFound)
 		return
+	}
+	if retry {
+		h.observeStateCookieRecovery(stateCookieRecoverySuccess)
 	}
 	req, ok, err := h.store.ConsumeRequest(ctx, state.Value)
 	if err != nil || !ok {

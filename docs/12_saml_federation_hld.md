@@ -445,7 +445,7 @@ tikti saml domain remove --domain EXAMPLE.COM
 
 ## 18. Observability
 
-**Counters:** `tikti_saml_authn_requests_total{tid}`, `tikti_saml_responses_total{tid,result}`, `tikti_saml_validation_failures_total{tid,reason}`, `tikti_saml_jit_provisions_total{tid}`, `tikti_saml_logout_requests_total{tid}`, `tikti_saml_logout_responses_total{tid,result}`, `tikti_saml_metadata_refresh_total{tid,result}`, `tikti_saml_replay_blocked_total{tid}`, `tikti_saml_idp_admin_changes_total{operation,result}`.
+**Counters:** `tikti_saml_authn_requests_total{tid}`, `tikti_saml_responses_total{tid,result}`, `tikti_saml_validation_failures_total{tid,reason}`, `tikti_saml_jit_provisions_total{tid}`, `tikti_saml_logout_requests_total{tid}`, `tikti_saml_logout_responses_total{tid,result}`, `tikti_saml_metadata_refresh_total{tid,result}`, `tikti_saml_replay_blocked_total{tid}`, `tikti_saml_idp_admin_changes_total{operation,result}`, `tikti_saml_state_cookie_recovery_total{result}` where `result` is one of `repost`, `success`, or `failure`.
 
 **Histograms:** `tikti_saml_response_validation_duration_seconds{tid}` (buckets: .005, .01, .025, .05, .1, .25, .5, 1), `tikti_saml_idp_roundtrip_duration_seconds{tid}`.
 
@@ -486,7 +486,7 @@ Request TTL is 300 s. Clock skew tolerance is 120 s. The maximum window from `Au
 
 Transport security enforces HTTPS at ingress. The idToken cookie carries `SameSite=Lax` (required for the IdP's POST-back to carry the cookie on the first-party redirect chain), `HttpOnly=true`, and `Secure=true`.
 
-CSRF protection on the ACS endpoint relies on the `InResponseTo` and signature chain in place of a traditional CSRF token, since the POST contains a cryptographically bound correlation. A state cookie is additionally set at `/saml/login/{tid}` and checked at `/saml/acs` to defend against cross-tenant submission.
+CSRF protection on the ACS endpoint relies on the `InResponseTo` and signature chain in place of a traditional CSRF token, since the POST contains a cryptographically bound correlation. A state cookie is additionally set at `/saml/login/{tid}` and checked at `/saml/acs` to bind the response to the initiating browser and defend against login CSRF and cross-tenant submission. If browser privacy controls omit the state cookie on the cross-site IdP POST, Tikti returns a cache-disabled page that reposts once to the same ACS origin. The repost must carry the original state cookie; otherwise Tikti rejects it without validating or issuing a session.
 
 Session binding ties the idToken cookie to `tid` via the path `/` and rotates the cookie on every successful SAML login.
 
@@ -814,7 +814,7 @@ Rollback at any phase consists of setting `saml.enabled=false`. All `/saml/*` ro
 
 **Q12. What if the IdP's `NotOnOrAfter` is shorter than Tikti's session TTL?** Tikti picks `min(assertion.NotOnOrAfter, now + sessionTTL)` as the session upper bound. If the IdP says the assertion is good for 1 hour and Tikti's session TTL is 8 hours, the session expires in 1 hour. This aligns SAML session lifetime with IdP expectations and avoids zombie sessions surviving an IdP-initiated lockout.
 
-**Q13. How does the HTTP-POST binding coexist with `SameSite=Lax`?** SAML IdPs deliver the Response via a top-level form POST from the IdP's page back to `/saml/acs`. `SameSite=Lax` allows cookies on top-level navigations for GET requests but **blocks** cookies on cross-site POST requests. The design sets `SameSite=Lax` on the **idToken** cookie, which is issued **after** `/saml/acs` processes the response, not before. The state cookie set at `/saml/login/{tid}` uses `SameSite=None; Secure` because it must accompany the IdP's POST-back. This is why two cookies exist: the state cookie (`None; Secure`) for the round-trip, and the idToken cookie (`Lax; Secure; HttpOnly`) for post-login.
+**Q13. How does the HTTP-POST binding coexist with `SameSite=Lax`?** SAML IdPs deliver the Response via a top-level form POST from the IdP's page back to `/saml/acs`. `SameSite=Lax` allows cookies on top-level navigations for GET requests but **blocks** cookies on cross-site POST requests. The design sets `SameSite=Lax` on the **idToken** cookie, which is issued **after** `/saml/acs` processes the response, not before. The state cookie set at `/saml/login/{tid}` uses `SameSite=None; Secure` because it should accompany the IdP's POST-back. Some browser privacy controls may still omit that cookie. In that case Tikti returns one cache-disabled same-origin repost page and accepts the flow only if the original state cookie accompanies the repost. This is why two cookies exist: the state cookie (`None; Secure`) for browser-bound request correlation, and the idToken cookie (`Lax; Secure; HttpOnly`) for post-login.
 
 **Q14. What is the cold-start time for IdP metadata?** The first request for a `tid` triggers a Redis `GET`. If the record is missing or stale (older than `refreshIntervalHours`), a background refresher re-fetches and re-validates the IdP metadata document. The user request blocks on the last-good record, which is not deleted until a new one validates. On a cold miss when Redis is empty, the cost is one HTTP fetch plus parse, budgeted at 2 s. The request fails with `idp_metadata_stale` if the source URL is down at that instant.
 
