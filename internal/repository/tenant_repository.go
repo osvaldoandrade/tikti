@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"sort"
+	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -14,6 +16,7 @@ import (
 type TenantRepository interface {
 	Create(ctx context.Context, tenant *domain.Tenant) error
 	Get(ctx context.Context, tenantID string) (*domain.Tenant, error)
+	List(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error)
 	EnsureDefault(ctx context.Context) (*domain.Tenant, error)
 }
 
@@ -60,6 +63,42 @@ func (r *tenantRepo) Get(ctx context.Context, tenantID string) (*domain.Tenant, 
 		return nil, e
 	}
 	return &t, nil
+}
+
+func (r *tenantRepo) List(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error) {
+	keys, err := r.client.HKeys(ctx, tenantsHash).Result()
+	if err != nil {
+		return nil, "", err
+	}
+	sort.Strings(keys)
+	if offset >= uint64(len(keys)) {
+		return []domain.Tenant{}, "", nil
+	}
+	end := offset + uint64(pageSize)
+	if end > uint64(len(keys)) {
+		end = uint64(len(keys))
+	}
+	values, err := r.client.HMGet(ctx, tenantsHash, keys[offset:end]...).Result()
+	if err != nil {
+		return nil, "", err
+	}
+	tenants := make([]domain.Tenant, 0, len(values))
+	for _, value := range values {
+		encoded, ok := value.(string)
+		if !ok || encoded == "" {
+			continue
+		}
+		var tenant domain.Tenant
+		if err := json.Unmarshal([]byte(encoded), &tenant); err != nil {
+			return nil, "", err
+		}
+		tenants = append(tenants, tenant)
+	}
+	next := ""
+	if end < uint64(len(keys)) {
+		next = strconv.FormatUint(end, 10)
+	}
+	return tenants, next, nil
 }
 
 func (r *tenantRepo) EnsureDefault(ctx context.Context) (*domain.Tenant, error) {

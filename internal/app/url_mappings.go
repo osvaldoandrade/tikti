@@ -51,6 +51,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		protected.POST("/tenants/:tenantId/oob/send", controllers.NewOobDispatchController(userService).Handle)
 
 		protected.POST("/tenants", tenantCtrl.Create)
+		protected.GET("/tenants", tenantCtrl.List)
 		protected.GET("/tenants/id/:id", tenantCtrl.Get)
 		protected.GET("/tenants/:tenantId/users", memberCtrl.List)
 		protected.POST("/tenants/:tenantId/users", memberCtrl.Create)
