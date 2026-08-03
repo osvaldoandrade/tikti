@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -63,6 +64,40 @@ func (t *tenantController) Get(c *gin.Context) {
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
+func (t *tenantController) List(c *gin.Context) {
+	if !requireAdmin(c, t.cfg) {
+		return
+	}
+	pageSize := int64(50)
+	if raw := c.Query("pageSize"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed < 1 || parsed > 200 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pageSize"})
+			return
+		}
+		pageSize = parsed
+	}
+	var offset uint64
+	if raw := c.Query("pageToken"); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pageToken"})
+			return
+		}
+		offset = parsed
+	}
+	result, err := t.svc.List(c.Request.Context(), offset, pageSize)
+	if err != nil {
+		if err == domain.ErrInvalidArgument {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not list tenants"})
 		return
 	}
 	c.JSON(http.StatusOK, result)

@@ -29,3 +29,9 @@ type TenantResp struct {
 	Status    TenantStatus `json:"status"`
 	CreatedAt time.Time    `json:"createdAt"`
 }
+
+// TenantsPage is the administrative, paginated tenant directory projection.
+type TenantsPage struct {
+	Tenants       []TenantResp `json:"tenants"`
+	NextPageToken string       `json:"nextPageToken"`
+}

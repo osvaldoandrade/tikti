@@ -604,6 +604,34 @@ Response 200:
 
 Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 
+### GET /v1/tenants
+
+Lists the tenant directory for global administrators. The response contains
+tenant identity, slug, lifecycle status, and creation time without credentials
+or authentication secrets.
+
+Query parameters:
+
+- `pageSize`: optional, from 1 to 200; defaults to 50.
+- `pageToken`: optional opaque cursor returned by the previous page.
+
+Response 200:
+
+```json
+{
+  "tenants": [
+    {
+      "id": "tenant-1",
+      "name": "Code Company",
+      "slug": "codecompany",
+      "status": "ACTIVE",
+      "createdAt": "2026-01-28T12:00:00Z"
+    }
+  ],
+  "nextPageToken": ""
+}
+```
+
 ## Membership management (admin)
 
 ### GET /v1/tenants/{tenantId}/users

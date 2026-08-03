@@ -13,6 +13,7 @@ import (
 type TenantService interface {
 	Create(ctx context.Context, req domain.TenantCreateReq) (*domain.TenantResp, error)
 	Get(ctx context.Context, tenantID string) (*domain.TenantResp, error)
+	List(ctx context.Context, offset uint64, pageSize int64) (*domain.TenantsPage, error)
 	EnsureDefault(ctx context.Context) (*domain.TenantResp, error)
 }
 
@@ -64,6 +65,24 @@ func (s *tenantService) Get(ctx context.Context, tenantID string) (*domain.Tenan
 		Status:    tenant.Status,
 		CreatedAt: tenant.CreatedAt,
 	}, nil
+}
+
+func (s *tenantService) List(ctx context.Context, offset uint64, pageSize int64) (*domain.TenantsPage, error) {
+	if pageSize < 1 || pageSize > 200 {
+		return nil, domain.ErrInvalidArgument
+	}
+	tenants, next, err := s.repo.List(ctx, offset, pageSize)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]domain.TenantResp, 0, len(tenants))
+	for _, tenant := range tenants {
+		items = append(items, domain.TenantResp{
+			Id: tenant.Id, Slug: tenant.Slug, Name: tenant.Name,
+			Status: tenant.Status, CreatedAt: tenant.CreatedAt,
+		})
+	}
+	return &domain.TenantsPage{Tenants: items, NextPageToken: next}, nil
 }
 
 func (s *tenantService) EnsureDefault(ctx context.Context) (*domain.TenantResp, error) {

@@ -148,6 +148,7 @@ func (f *fakeUserService) GetAllUsers(ctx context.Context) ([]*domain.User, erro
 type fakeTenantService struct {
 	createFn        func(context.Context, domain.TenantCreateReq) (*domain.TenantResp, error)
 	getFn           func(context.Context, string) (*domain.TenantResp, error)
+	listFn          func(context.Context, uint64, int64) (*domain.TenantsPage, error)
 	ensureDefaultFn func(context.Context) (*domain.TenantResp, error)
 }
 
@@ -162,6 +163,12 @@ func (f *fakeTenantService) Get(ctx context.Context, tenantID string) (*domain.T
 		return f.getFn(ctx, tenantID)
 	}
 	return nil, nil
+}
+func (f *fakeTenantService) List(ctx context.Context, offset uint64, pageSize int64) (*domain.TenantsPage, error) {
+	if f.listFn != nil {
+		return f.listFn(ctx, offset, pageSize)
+	}
+	return &domain.TenantsPage{Tenants: []domain.TenantResp{}}, nil
 }
 func (f *fakeTenantService) EnsureDefault(ctx context.Context) (*domain.TenantResp, error) {
 	if f.ensureDefaultFn != nil {

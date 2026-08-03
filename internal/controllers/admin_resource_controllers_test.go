@@ -142,6 +142,7 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 
 	r := gin.New()
 	r.POST("/tenants", tenantCtrl.Create)
+	r.GET("/tenants", tenantCtrl.List)
 	r.GET("/tenants/id/:id", tenantCtrl.Get)
 	r.GET("/tenants/:tenantId/users", memberCtrl.List)
 	r.POST("/tenants/:tenantId/users", memberCtrl.Create)
@@ -169,6 +170,25 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	rec = performJSON(t, r, http.MethodPost, "/tenants", domain.TenantCreateReq{Name: "n", Slug: "s"}, admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tenant create ok: expected 200, got %d", rec.Code)
+	}
+
+	rec = performJSON(t, r, http.MethodGet, "/tenants?pageSize=0", nil, admin)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("tenant list invalid page size: expected 400, got %d", rec.Code)
+	}
+	rec = performJSON(t, r, http.MethodGet, "/tenants?pageToken=invalid", nil, admin)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("tenant list invalid page token: expected 400, got %d", rec.Code)
+	}
+	tenantSvc.listFn = func(_ context.Context, offset uint64, pageSize int64) (*domain.TenantsPage, error) {
+		if offset != 7 || pageSize != 20 {
+			t.Fatalf("unexpected tenant list request: offset=%d pageSize=%d", offset, pageSize)
+		}
+		return &domain.TenantsPage{Tenants: []domain.TenantResp{{Id: "t1", Status: domain.TenantStatusActive}}}, nil
+	}
+	rec = performJSON(t, r, http.MethodGet, "/tenants?pageSize=20&pageToken=7", nil, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tenant list: expected 200, got %d", rec.Code)
 	}
 
 	memberSvc.listFn = func(_ context.Context, tenantID string, cursor uint64, pageSize int64) (*domain.TenantUsersPage, error) {

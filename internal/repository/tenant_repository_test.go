@@ -72,6 +72,28 @@ func TestTenantRepo_Get_NotFoundAndInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestTenantRepo_ListIsStableAndPaginated(t *testing.T) {
+	_, repo := newTenantRepoForTest(t)
+	ctx := context.Background()
+	for _, tenant := range []*domain.Tenant{
+		{Id: "tenant-c", Name: "C", Slug: "c"},
+		{Id: "tenant-a", Name: "A", Slug: "a"},
+		{Id: "tenant-b", Name: "B", Slug: "b", Status: domain.TenantStatusDisabled},
+	} {
+		if err := repo.Create(ctx, tenant); err != nil {
+			t.Fatalf("create tenant: %v", err)
+		}
+	}
+	first, next, err := repo.List(ctx, 0, 2)
+	if err != nil || len(first) != 2 || first[0].Id != "tenant-a" || first[1].Id != "tenant-b" || next != "2" {
+		t.Fatalf("unexpected first page: %+v next=%q err=%v", first, next, err)
+	}
+	second, next, err := repo.List(ctx, 2, 2)
+	if err != nil || len(second) != 1 || second[0].Id != "tenant-c" || next != "" {
+		t.Fatalf("unexpected second page: %+v next=%q err=%v", second, next, err)
+	}
+}
+
 func TestTenantRepo_EnsureDefault(t *testing.T) {
 	_, repo := newTenantRepoForTest(t)
 	ctx := context.Background()
