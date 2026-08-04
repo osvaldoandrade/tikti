@@ -228,6 +228,52 @@ workloadIdentity:
 	}
 }
 
+func TestLoadConfig_WorkloadIdentityProviders(t *testing.T) {
+	t.Setenv("CLUSTER_B_ISSUER", "https://cluster-b.example")
+	path := writeTempConfig(t, `
+workloadIdentity:
+  audience: tikti-workload-exchange
+  providers:
+    - clusterRef: code-cloud-acceptance
+      issuer: https://cluster-a.example
+      jwksUrl: https://cluster-a.example/openid/v1/jwks
+    - clusterRef: itransform-cluster
+      issuer: ${CLUSTER_B_ISSUER}
+      jwksUrl: https://cluster-b.example/openid/v1/jwks
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if len(cfg.WorkloadIdentity.Providers) != 2 ||
+		cfg.WorkloadIdentity.Providers[1].Issuer != "https://cluster-b.example" ||
+		cfg.WorkloadIdentity.Providers[1].ClusterRef != "itransform-cluster" {
+		t.Fatalf("providers = %#v", cfg.WorkloadIdentity.Providers)
+	}
+}
+
+func TestLoadConfig_WorkloadIdentityProvidersFailClosed(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{name: "missing endpoint", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://cluster.example}]}}`},
+		{name: "duplicate ref", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://a.example/jwks}, {clusterRef: cluster-a, issuer: https://b.example, jwksUrl: https://b.example/jwks}]}}`},
+		{name: "duplicate issuer", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://same.example, jwksUrl: https://same.example/a}, {clusterRef: cluster-b, issuer: https://same.example, jwksUrl: https://same.example/b}]}}`},
+		{name: "legacy issuer collision", yaml: `{workloadIdentity: {issuer: https://same.example, jwksUrl: https://same.example/legacy, providers: [{clusterRef: cluster-a, issuer: https://same.example, jwksUrl: https://same.example/a}]}}`},
+		{name: "unknown authentication", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://a.example/jwks, authentication: static}]}}`},
+		{name: "gcp host boundary", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://attacker.example/jwks, authentication: gcp}]}}`},
+		{name: "gcp bearer ambiguity", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://container.googleapis.com/v1/projects/p/locations/l/clusters/c/jwks, jwksBearerTokenFile: /secret, authentication: gcp}]}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := LoadConfig(writeTempConfig(t, test.yaml)); err == nil {
+				t.Fatal("invalid provider configuration was accepted")
+			}
+		})
+	}
+}
+
 func TestSAMLConfig_DefaultDisabled(t *testing.T) {
 	path := writeTempConfig(t, "{}")
 	cfg, err := LoadConfig(path)

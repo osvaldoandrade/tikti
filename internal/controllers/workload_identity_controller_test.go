@@ -15,9 +15,17 @@ import (
 )
 
 type fakeWorkloadIdentityService struct {
+	verifyFn   func(context.Context, string) (domain.WorkloadSubject, error)
 	exchangeFn func(context.Context, domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error)
 	upsertFn   func(context.Context, domain.WorkloadBindingUpsertReq) (*domain.WorkloadBinding, error)
 	revokeFn   func(context.Context, domain.WorkloadBindingRevokeReq) (*domain.WorkloadBinding, error)
+}
+
+func (s *fakeWorkloadIdentityService) VerifyProjectedToken(ctx context.Context, token string) (domain.WorkloadSubject, error) {
+	if s.verifyFn == nil {
+		return domain.WorkloadSubject{}, domain.ErrWorkloadTokenInvalid
+	}
+	return s.verifyFn(ctx, token)
 }
 
 func (s *fakeWorkloadIdentityService) Exchange(ctx context.Context, req domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error) {

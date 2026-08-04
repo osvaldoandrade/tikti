@@ -53,13 +53,24 @@ type ForwardAuthConfig struct {
 // WorkloadIdentityConfig validates Kubernetes projected ServiceAccount tokens
 // and controls the short-lived access tokens issued to bound controllers.
 type WorkloadIdentityConfig struct {
-	Issuer                string `yaml:"issuer"`
-	Audience              string `yaml:"audience"`
-	JWKSURL               string `yaml:"jwksUrl"`
-	JWKSBearerTokenFile   string `yaml:"jwksBearerTokenFile"`
-	HTTPTimeoutSeconds    int    `yaml:"httpTimeoutSeconds"`
-	JWKSCacheTTLSeconds   int    `yaml:"jwksCacheTtlSeconds"`
-	AccessTokenTTLSeconds int    `yaml:"accessTokenTtlSeconds"`
+	Issuer                string                           `yaml:"issuer"`
+	Audience              string                           `yaml:"audience"`
+	JWKSURL               string                           `yaml:"jwksUrl"`
+	JWKSBearerTokenFile   string                           `yaml:"jwksBearerTokenFile"`
+	Providers             []WorkloadIdentityProviderConfig `yaml:"providers"`
+	HTTPTimeoutSeconds    int                              `yaml:"httpTimeoutSeconds"`
+	JWKSCacheTTLSeconds   int                              `yaml:"jwksCacheTtlSeconds"`
+	AccessTokenTTLSeconds int                              `yaml:"accessTokenTtlSeconds"`
+}
+
+// WorkloadIdentityProviderConfig declares one trusted Kubernetes token issuer.
+// ClusterRef is an operator-facing identifier and is not trusted as a claim.
+type WorkloadIdentityProviderConfig struct {
+	ClusterRef          string `yaml:"clusterRef"`
+	Issuer              string `yaml:"issuer"`
+	JWKSURL             string `yaml:"jwksUrl"`
+	JWKSBearerTokenFile string `yaml:"jwksBearerTokenFile"`
+	Authentication      string `yaml:"authentication"`
 }
 
 // SAMLConfig holds top-level SAML integration settings.
@@ -301,6 +312,48 @@ func LoadConfig(filePath string) (*Config, error) {
 	c.WorkloadIdentity.Issuer = optionalExpandedValue(c.WorkloadIdentity.Issuer)
 	c.WorkloadIdentity.JWKSURL = optionalExpandedValue(c.WorkloadIdentity.JWKSURL)
 	c.WorkloadIdentity.JWKSBearerTokenFile = optionalExpandedValue(c.WorkloadIdentity.JWKSBearerTokenFile)
+	if len(c.WorkloadIdentity.Providers) > 16 {
+		return nil, fmt.Errorf("workload identity supports at most 16 providers")
+	}
+	seenProviderRefs := make(map[string]struct{}, len(c.WorkloadIdentity.Providers))
+	seenProviderIssuers := make(map[string]struct{}, len(c.WorkloadIdentity.Providers)+1)
+	if strings.TrimSpace(c.WorkloadIdentity.Issuer) != "" {
+		seenProviderIssuers[c.WorkloadIdentity.Issuer] = struct{}{}
+	}
+	for index := range c.WorkloadIdentity.Providers {
+		provider := &c.WorkloadIdentity.Providers[index]
+		provider.ClusterRef = strings.TrimSpace(provider.ClusterRef)
+		provider.Issuer = optionalExpandedValue(provider.Issuer)
+		provider.JWKSURL = optionalExpandedValue(provider.JWKSURL)
+		provider.JWKSBearerTokenFile = optionalExpandedValue(provider.JWKSBearerTokenFile)
+		provider.Authentication = strings.ToLower(strings.TrimSpace(provider.Authentication))
+		if provider.Authentication == "" {
+			provider.Authentication = "none"
+		}
+		if provider.ClusterRef == "" || provider.Issuer == "" || provider.JWKSURL == "" {
+			return nil, fmt.Errorf("workload identity provider %d requires clusterRef, issuer, and jwksUrl", index)
+		}
+		if strings.ContainsAny(provider.ClusterRef, " \t\r\n/:") || len(provider.ClusterRef) > 128 {
+			return nil, fmt.Errorf("workload identity provider %d has an invalid clusterRef", index)
+		}
+		if provider.Authentication != "none" && provider.Authentication != "gcp" {
+			return nil, fmt.Errorf("workload identity provider %d has an invalid authentication mode", index)
+		}
+		if provider.Authentication == "gcp" {
+			parsedJWKS, parseErr := url.Parse(provider.JWKSURL)
+			if parseErr != nil || parsedJWKS.Scheme != "https" || parsedJWKS.Hostname() != "container.googleapis.com" || provider.JWKSBearerTokenFile != "" {
+				return nil, fmt.Errorf("workload identity provider %d must use the authenticated GKE JWKS endpoint", index)
+			}
+		}
+		if _, exists := seenProviderRefs[provider.ClusterRef]; exists {
+			return nil, fmt.Errorf("workload identity provider clusterRef %q is duplicated", provider.ClusterRef)
+		}
+		if _, exists := seenProviderIssuers[provider.Issuer]; exists {
+			return nil, fmt.Errorf("workload identity provider issuer %q is duplicated", provider.Issuer)
+		}
+		seenProviderRefs[provider.ClusterRef] = struct{}{}
+		seenProviderIssuers[provider.Issuer] = struct{}{}
+	}
 	if c.WorkloadIdentity.Audience == "" {
 		c.WorkloadIdentity.Audience = "tikti-workload-exchange"
 	}

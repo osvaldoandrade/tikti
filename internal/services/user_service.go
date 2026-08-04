@@ -420,7 +420,9 @@ func (s *userService) ValidateIDToken(ctx context.Context, tokenString string, i
 	return claims, nil
 }
 
-// ValidateAccessToken validates an RS256 access token and enforces token version.
+// ValidateAccessToken validates an RS256 access token. User tokens enforce the
+// current token version; short-lived workload tokens use their verified
+// Kubernetes ServiceAccount subject and binding-time authorization instead.
 func (s *userService) ValidateAccessToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, error) {
 	key, err := s.getRSAPrivateKey()
 	if err != nil {
@@ -433,6 +435,13 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 	claims, err := utils.ValidateRS256(tokenString, &priv.PublicKey, issuer, audience)
 	if err != nil {
 		return nil, err
+	}
+	subject, _ := claims["sub"].(string)
+	if workload, ok := domain.ParseWorkloadSubject(subject); ok && workload.Subject == subject {
+		if strings.TrimSpace(claimStringValue(claims, "tid")) == "" {
+			return nil, domain.ErrInvalidToken
+		}
+		return claims, nil
 	}
 	version, ok := tokenVersion(claims)
 	if !ok {
@@ -463,6 +472,11 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 		return nil, domain.ErrInvalidToken
 	}
 	return claims, nil
+}
+
+func claimStringValue(claims jwt.MapClaims, key string) string {
+	value, _ := claims[key].(string)
+	return value
 }
 
 func tokenVersion(claims jwt.MapClaims) (int, bool) {

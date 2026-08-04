@@ -68,6 +68,10 @@ config:
     audience: "tikti-workload-exchange"
     jwksUrl: ""
     jwksBearerTokenFile: ""
+    # Trust each workload cluster explicitly. The legacy single issuer fields
+    # above remain supported for existing installations. GKE providers use
+    # authentication: gcp with the container.googleapis.com JWKS endpoint.
+    providers: []
     httpTimeoutSeconds: 5
     jwksCacheTtlSeconds: 300
     accessTokenTtlSeconds: 300
