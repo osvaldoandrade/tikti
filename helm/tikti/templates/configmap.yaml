@@ -21,6 +21,8 @@ data:
       audience: {{ .Values.config.workloadIdentity.audience | quote }}
       jwksUrl: {{ .Values.config.workloadIdentity.jwksUrl | quote }}
       jwksBearerTokenFile: {{ .Values.config.workloadIdentity.jwksBearerTokenFile | quote }}
+      providers:
+        {{- toYaml .Values.config.workloadIdentity.providers | nindent 8 }}
       httpTimeoutSeconds: {{ .Values.config.workloadIdentity.httpTimeoutSeconds }}
       jwksCacheTtlSeconds: {{ .Values.config.workloadIdentity.jwksCacheTtlSeconds }}
       accessTokenTtlSeconds: {{ .Values.config.workloadIdentity.accessTokenTtlSeconds }}

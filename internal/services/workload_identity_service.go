@@ -29,9 +29,25 @@ type WorkloadTokenVerifier interface {
 }
 
 type WorkloadIdentityService interface {
+	VerifyProjectedToken(ctx context.Context, subjectToken string) (domain.WorkloadSubject, error)
 	Exchange(ctx context.Context, req domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error)
 	UpsertBinding(ctx context.Context, req domain.WorkloadBindingUpsertReq) (*domain.WorkloadBinding, error)
 	RevokeBinding(ctx context.Context, req domain.WorkloadBindingRevokeReq) (*domain.WorkloadBinding, error)
+}
+
+func (s *workloadIdentityService) VerifyProjectedToken(ctx context.Context, subjectToken string) (domain.WorkloadSubject, error) {
+	if s.verifier == nil {
+		return domain.WorkloadSubject{}, domain.ErrWorkloadIdentityUnavailable
+	}
+	subject, err := s.verifier.Verify(ctx, subjectToken)
+	if err == nil {
+		return subject, nil
+	}
+	if errors.Is(err, domain.ErrWorkloadTokenInvalid) {
+		return domain.WorkloadSubject{}, domain.ErrWorkloadTokenInvalid
+	}
+	log.Printf("workload identity verifier unavailable: %v", err)
+	return domain.WorkloadSubject{}, domain.ErrWorkloadIdentityUnavailable
 }
 
 type workloadIdentityService struct {
@@ -82,7 +98,7 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 		return nil, domain.ErrWorkloadIdentityUnavailable
 	}
 
-	subject, err := s.verifier.Verify(ctx, req.SubjectToken)
+	subject, err := s.VerifyProjectedToken(ctx, req.SubjectToken)
 	if err != nil {
 		if errors.Is(err, domain.ErrWorkloadTokenInvalid) {
 			return nil, domain.ErrWorkloadTokenInvalid

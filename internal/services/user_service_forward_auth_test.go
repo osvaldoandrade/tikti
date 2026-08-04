@@ -77,6 +77,44 @@ func TestValidateIDTokenEnforcesIdentityIssuerAudienceStatusAndVersion(t *testin
 	}
 }
 
+func TestValidateAccessTokenAcceptsBoundShortLivedWorkloadIdentity(t *testing.T) {
+	t.Parallel()
+	svc := NewUserService(
+		&mockUserRepo{}, nil, nil, nil, "session-secret",
+		"https://identity.example.com", "tikti", makePEMKey(t), "kid",
+	).(*userService)
+	key, err := svc.getRSAPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss": "https://identity.example.com", "aud": "payments-api",
+		"sub": "system:serviceaccount:workload-payments:payments-web",
+		"tid": "payments", "scope": "payments:read",
+		"iat": time.Now().Add(-time.Minute).Unix(), "exp": time.Now().Add(10 * time.Minute).Unix(),
+	})
+	signed, err := token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := svc.ValidateAccessToken(
+		context.Background(), signed, "https://identity.example.com", "payments-api",
+	)
+	if err != nil || claims["tid"] != "payments" {
+		t.Fatalf("workload token claims=%#v err=%v", claims, err)
+	}
+	delete(token.Claims.(jwt.MapClaims), "tid")
+	signed, err = token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ValidateAccessToken(
+		context.Background(), signed, "https://identity.example.com", "payments-api",
+	); err == nil {
+		t.Fatal("tenantless workload token was accepted")
+	}
+}
+
 func TestSignInAcceptsImportedArgon2idPassword(t *testing.T) {
 	salt := []byte("0123456789abcdef")
 	hash := argon2.IDKey([]byte("correct-password"), salt, 3, 64*1024, 4, 32)

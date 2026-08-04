@@ -18,7 +18,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	signInCtrl := controllers.NewSignInController(userService, cfg)
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
 	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
-	v1.GET("/auth/forward", controllers.NewForwardAuthController(userService, cfg).Handle)
+	v1.GET("/auth/forward", controllers.NewForwardAuthController(userService, workloadService, cfg).Handle)
 	v1.GET("/.well-known/jwks.json", controllers.NewJWKSController(userService).Handle)
 	workloadCtrl := controllers.NewWorkloadIdentityController(workloadService)
 	v1.POST("/workloads/token/exchange", workloadCtrl.Exchange)

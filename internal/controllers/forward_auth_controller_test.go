@@ -11,6 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/osvaldoandrade/tikti/pkg/config"
+	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 func TestForwardAuthControllerAccessToken(t *testing.T) {
@@ -46,6 +47,101 @@ func TestForwardAuthControllerAccessToken(t *testing.T) {
 	}
 	if recorder.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("missing no-store response header")
+	}
+}
+
+func TestForwardAuthControllerEnforcesServiceAndScopeRoutePolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &fakeUserService{
+		validateAccessTokenFn: func(context.Context, string, string, string) (jwt.MapClaims, error) {
+			return jwt.MapClaims{
+				"sub": "system:serviceaccount:workload-payments:payments-web",
+				"tid": "tenant-1", "scope": "payments:read payments:write",
+			}, nil
+		},
+	}
+	router := forwardAuthRouter(svc)
+	request := func(services, scopes string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/auth/forward", nil)
+		req.Header.Set("Authorization", "Bearer access-token")
+		req.Header.Set(forwardAuthAudienceHeader, "payments-api")
+		req.Header.Set(forwardAuthTenantHeader, "tenant-1")
+		req.Header.Set(forwardAuthServicesHeader, services)
+		req.Header.Set(forwardAuthScopesHeader, scopes)
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+
+	if response := request("payments-web,settlement-worker", "payments:read"); response.Code != http.StatusNoContent {
+		t.Fatalf("valid route policy status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request("settlement-worker", "payments:read"); response.Code != http.StatusForbidden {
+		t.Fatalf("caller denial status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request("payments-web", "payments:delete"); response.Code != http.StatusForbidden {
+		t.Fatalf("scope denial status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := request("payments-web,payments-web", "payments:read"); response.Code != http.StatusUnauthorized {
+		t.Fatalf("malformed policy status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestForwardAuthControllerAcceptsAllowlistedProjectedWorkloadToken(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	users := &fakeUserService{validateAccessTokenFn: func(context.Context, string, string, string) (jwt.MapClaims, error) {
+		return nil, errors.New("not a Tikti access token")
+	}}
+	workloads := &fakeWorkloadIdentityService{verifyFn: func(_ context.Context, token string) (domain.WorkloadSubject, error) {
+		if token != "projected-token" {
+			t.Fatalf("projected token = %q", token)
+		}
+		return domain.WorkloadSubject{
+			Subject:   "system:serviceaccount:workload-local-tenant:payments-web",
+			Namespace: "workload-local-tenant", ServiceAccount: "payments-web",
+		}, nil
+	}}
+	router := forwardAuthRouterWithWorkload(users, workloads)
+	request := func(callers string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/v1/auth/forward", nil)
+		req.Header.Set("Authorization", "Bearer projected-token")
+		req.Header.Set(forwardAuthAudienceHeader, "payments-api")
+		req.Header.Set(forwardAuthTenantHeader, "local-tenant")
+		req.Header.Set(forwardAuthServicesHeader, callers)
+		// User scopes do not broaden or restrict an explicitly allowlisted
+		// projected ServiceAccount identity.
+		req.Header.Set(forwardAuthScopesHeader, "payments:write")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	if response := request("payments-web"); response.Code != http.StatusNoContent ||
+		response.Header().Get("X-Tikti-Subject") != "system:serviceaccount:workload-local-tenant:payments-web" ||
+		response.Header().Get("X-Tikti-Tenant") != "local-tenant" {
+		t.Fatalf("allowlisted workload status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	if response := request("settlement-worker"); response.Code != http.StatusForbidden {
+		t.Fatalf("unlisted workload status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestForwardAuthControllerDoesNotAcceptProjectedTokenWithoutCallerPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	users := &fakeUserService{validateAccessTokenFn: func(context.Context, string, string, string) (jwt.MapClaims, error) {
+		return nil, errors.New("invalid")
+	}}
+	workloads := &fakeWorkloadIdentityService{verifyFn: func(context.Context, string) (domain.WorkloadSubject, error) {
+		t.Fatal("projected verifier must not run without an explicit caller allowlist")
+		return domain.WorkloadSubject{}, nil
+	}}
+	router := forwardAuthRouterWithWorkload(users, workloads)
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/forward", nil)
+	req.Header.Set("Authorization", "Bearer projected-token")
+	req.Header.Set(forwardAuthAudienceHeader, "payments-api")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -161,8 +257,12 @@ func TestForwardAuthControllerDoesNotReflectInjectedIdentityHeader(t *testing.T)
 }
 
 func forwardAuthRouter(svc *fakeUserService) http.Handler {
+	return forwardAuthRouterWithWorkload(svc, nil)
+}
+
+func forwardAuthRouterWithWorkload(svc *fakeUserService, workloadSvc *fakeWorkloadIdentityService) http.Handler {
 	router := gin.New()
-	router.GET("/v1/auth/forward", NewForwardAuthController(svc, &config.Config{
+	router.GET("/v1/auth/forward", NewForwardAuthController(svc, workloadSvc, &config.Config{
 		IssuerBaseURL:   "https://identity.example.com",
 		DefaultAudience: "tikti",
 		SAML:            config.SAMLConfig{ACS: config.ACSConfig{CookieName: "tikti_idt"}},

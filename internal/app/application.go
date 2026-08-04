@@ -8,6 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 
@@ -66,27 +69,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		cfg.JwksPrivateKey,
 		cfg.JwksKeyID,
 	)
-	var workloadVerifier services.WorkloadTokenVerifier
-	if strings.TrimSpace(cfg.WorkloadIdentity.Issuer) != "" {
-		httpClient := &http.Client{Timeout: time.Duration(cfg.WorkloadIdentity.HTTPTimeoutSeconds) * time.Second}
-		if tokenFile := strings.TrimSpace(cfg.WorkloadIdentity.JWKSBearerTokenFile); tokenFile != "" {
-			transport, transportErr := workloadidentity.NewBearerTokenFileTransport(tokenFile, http.DefaultTransport)
-			if transportErr != nil {
-				return nil, fmt.Errorf("init workload identity JWKS authentication: %w", transportErr)
-			}
-			httpClient.Transport = transport
-		}
-		verifier, verifierErr := workloadidentity.NewJWKSVerifier(
-			cfg.WorkloadIdentity.Issuer,
-			cfg.WorkloadIdentity.Audience,
-			cfg.WorkloadIdentity.JWKSURL,
-			httpClient,
-			time.Duration(cfg.WorkloadIdentity.JWKSCacheTTLSeconds)*time.Second,
-		)
-		if verifierErr != nil {
-			return nil, fmt.Errorf("init workload identity verifier: %w", verifierErr)
-		}
-		workloadVerifier = verifier
+	workloadVerifier, err := newWorkloadTokenVerifier(cfg.WorkloadIdentity)
+	if err != nil {
+		return nil, err
 	}
 	workloadService := services.NewWorkloadIdentityService(
 		workloadRepo,
@@ -114,11 +99,63 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}, nil
 }
 
+func newWorkloadTokenVerifier(cfg config.WorkloadIdentityConfig) (services.WorkloadTokenVerifier, error) {
+	type provider struct {
+		issuer, jwksURL, bearerTokenFile, authentication string
+	}
+	providers := make([]provider, 0, len(cfg.Providers)+1)
+	if strings.TrimSpace(cfg.Issuer) != "" {
+		providers = append(providers, provider{cfg.Issuer, cfg.JWKSURL, cfg.JWKSBearerTokenFile, "none"})
+	}
+	for _, item := range cfg.Providers {
+		providers = append(providers, provider{item.Issuer, item.JWKSURL, item.JWKSBearerTokenFile, item.Authentication})
+	}
+	if len(providers) == 0 {
+		return nil, nil
+	}
+	trusted := make(map[string]workloadidentity.TokenVerifier, len(providers))
+	for _, item := range providers {
+		httpClient := &http.Client{Timeout: time.Duration(cfg.HTTPTimeoutSeconds) * time.Second}
+		if item.authentication == "gcp" {
+			tokenSource, tokenErr := google.DefaultTokenSource(context.Background(), "https://www.googleapis.com/auth/cloud-platform")
+			if tokenErr != nil {
+				return nil, fmt.Errorf("init GCP workload identity JWKS authentication: %w", tokenErr)
+			}
+			httpClient = oauth2.NewClient(context.Background(), tokenSource)
+			httpClient.Timeout = time.Duration(cfg.HTTPTimeoutSeconds) * time.Second
+		} else if tokenFile := strings.TrimSpace(item.bearerTokenFile); tokenFile != "" {
+			transport, transportErr := workloadidentity.NewBearerTokenFileTransport(tokenFile, http.DefaultTransport)
+			if transportErr != nil {
+				return nil, fmt.Errorf("init workload identity JWKS authentication: %w", transportErr)
+			}
+			httpClient.Transport = transport
+		}
+		verifier, verifierErr := workloadidentity.NewJWKSVerifier(
+			item.issuer, cfg.Audience, item.jwksURL, httpClient,
+			time.Duration(cfg.JWKSCacheTTLSeconds)*time.Second,
+		)
+		if verifierErr != nil {
+			return nil, fmt.Errorf("init workload identity verifier for issuer %q: %w", item.issuer, verifierErr)
+		}
+		trusted[strings.TrimSpace(item.issuer)] = verifier
+	}
+	if len(trusted) == 1 {
+		for _, verifier := range trusted {
+			return verifier, nil
+		}
+	}
+	verifier, err := workloadidentity.NewMultiIssuerVerifier(trusted)
+	if err != nil {
+		return nil, fmt.Errorf("init multi-cluster workload identity verifier: %w", err)
+	}
+	return verifier, nil
+}
+
 func validateWorkloadIdentityRuntimeConfig(cfg *config.Config) error {
 	if cfg == nil {
 		return fmt.Errorf("configuration is required")
 	}
-	if strings.TrimSpace(cfg.WorkloadIdentity.Issuer) == "" {
+	if strings.TrimSpace(cfg.WorkloadIdentity.Issuer) == "" && len(cfg.WorkloadIdentity.Providers) == 0 {
 		return nil
 	}
 	if isUnresolvedPlaceholder(cfg.ApiKey) {

@@ -8,24 +8,51 @@ the projected JWT is the client credential.
 
 ```yaml
 workloadIdentity:
-  issuer: https://kubernetes.example.com
   audience: tikti-workload-exchange
-  jwksUrl: https://kubernetes.example.com/openid/v1/jwks
+  providers:
+    - clusterRef: code-cloud-acceptance
+      issuer: https://kubernetes-master.example.com
+      jwksUrl: https://container.googleapis.com/v1/projects/example/locations/us-central1-a/clusters/code-cloud-acceptance/jwks
+      authentication: gcp
+    - clusterRef: itransform-cluster
+      issuer: https://kubernetes-workload.example.com
+      jwksUrl: https://container.googleapis.com/v1/projects/example/locations/us-central1-a/clusters/itransform-cluster/jwks
+      authentication: gcp
   httpTimeoutSeconds: 5
   jwksCacheTtlSeconds: 300
   accessTokenTtlSeconds: 300
 ```
 
-The issuer and JWKS URL must be configured together. The JWKS URL requires
+Each provider's issuer and JWKS URL must be configured together, and issuers
+and cluster references must be unique. The legacy top-level `issuer`, `jwksUrl`,
+and `jwksBearerTokenFile` fields remain supported for one cluster. The JWKS URL requires
 HTTPS outside loopback tests. Tikti accepts only RS256, an exact issuer and
 single audience, a non-expired token, an RSA key of at least 2048 bits, and
 matching Kubernetes namespace, ServiceAccount, and `sub` claims. JWKS
 redirects are rejected, responses are capped at 1 MiB, and unknown `kid`
 refreshes are rate-limited to protect the issuer.
 
+`authentication: gcp` obtains an Application Default Credentials access token
+and is accepted only for `https://container.googleapis.com/...` JWKS URLs. The
+Tikti Google ServiceAccount therefore needs read-only `container.clusters.get`
+access in every trusted GKE project. Non-GKE and on-premises clusters use
+`authentication: none` with a reachable HTTPS JWKS endpoint, or the existing
+bounded bearer-token-file option.
+
 Environment variables with the `WORKLOAD_IDENTITY_` prefix override these
 values. `WORKLOAD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS` must be from 1 through
 3600.
+
+## Direct API Gateway authentication
+
+A managed Code Cloud workload receives the same short-lived projected token at
+`$TIKTI_WORKLOAD_TOKEN_FILE`. It may send that token directly as a Bearer
+credential to a public or internal API Gateway route. Tikti accepts it only
+when the route has an explicit `allowedServiceRefs` entry matching the token's
+ServiceAccount and the `workload-<tenant>` namespace matches the route tenant.
+No workload binding is required for this flow: the route allowlist is the
+authorization boundary. User scopes still apply to user/access tokens; they do
+not replace or broaden the workload caller allowlist.
 
 ## Register a binding
 
