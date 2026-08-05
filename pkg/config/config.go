@@ -340,8 +340,7 @@ func LoadConfig(filePath string) (*Config, error) {
 			return nil, fmt.Errorf("workload identity provider %d has an invalid authentication mode", index)
 		}
 		if provider.Authentication == "gcp" {
-			parsedJWKS, parseErr := url.Parse(provider.JWKSURL)
-			if parseErr != nil || parsedJWKS.Scheme != "https" || parsedJWKS.Hostname() != "container.googleapis.com" || provider.JWKSBearerTokenFile != "" {
+			if !validAuthenticatedGKEJWKSURL(provider.JWKSURL) || provider.JWKSBearerTokenFile != "" {
 				return nil, fmt.Errorf("workload identity provider %d must use the authenticated GKE JWKS endpoint", index)
 			}
 		}
@@ -395,6 +394,20 @@ func LoadConfig(filePath string) (*Config, error) {
 		c.SAML.SP.AllowedSigAlgs = []string{"rsa-sha256"}
 	}
 	return &c, nil
+}
+
+func validAuthenticatedGKEJWKSURL(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" || parsed.Port() != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	path := parsed.EscapedPath()
+	if host == "container.googleapis.com" {
+		return strings.HasPrefix(path, "/v1/projects/") && strings.HasSuffix(path, "/jwks")
+	}
+	dnsPrefix, found := strings.CutSuffix(host, ".gke.goog")
+	return found && dnsPrefix != "" && path == "/openid/v1/jwks"
 }
 
 func loadSecretFile(environmentVariable string, target *string) error {

@@ -16,7 +16,7 @@ workloadIdentity:
       authentication: gcp
     - clusterRef: itransform-cluster
       issuer: https://kubernetes-workload.example.com
-      jwksUrl: https://container.googleapis.com/v1/projects/example/locations/us-central1-a/clusters/itransform-cluster/jwks
+      jwksUrl: https://gke-example.us-central1-a.gke.goog/openid/v1/jwks
       authentication: gcp
   httpTimeoutSeconds: 5
   jwksCacheTtlSeconds: 300
@@ -33,9 +33,11 @@ redirects are rejected, responses are capped at 1 MiB, and unknown `kid`
 refreshes are rate-limited to protect the issuer.
 
 `authentication: gcp` obtains an Application Default Credentials access token
-and is accepted only for `https://container.googleapis.com/...` JWKS URLs. The
-Tikti Google ServiceAccount therefore needs read-only `container.clusters.get`
-access in every trusted GKE project. Non-GKE and on-premises clusters use
+and is accepted only for the GKE REST `https://container.googleapis.com/.../jwks`
+resource or an exact `https://*.gke.goog/openid/v1/jwks` DNS endpoint. The Tikti
+Google ServiceAccount therefore needs read-only cluster access in every trusted
+GKE project; DNS endpoints also require a Kubernetes authorization grant for
+the non-resource JWKS path. Non-GKE and on-premises clusters use
 `authentication: none` with a reachable HTTPS JWKS endpoint, or the existing
 bounded bearer-token-file option.
 
