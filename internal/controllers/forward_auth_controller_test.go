@@ -90,6 +90,79 @@ func TestForwardAuthControllerEnforcesServiceAndScopeRoutePolicy(t *testing.T) {
 	}
 }
 
+func TestForwardAuthControllerUsesControllerOwnedQueryPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &fakeUserService{
+		validateAccessTokenFn: func(_ context.Context, token, issuer, audience string) (jwt.MapClaims, error) {
+			if token != "access-token" || issuer != "https://identity.example.com" || audience != "payments-api" {
+				t.Fatalf("validation inputs token=%q issuer=%q audience=%q", token, issuer, audience)
+			}
+			return jwt.MapClaims{
+				"sub": "system:serviceaccount:workload-tenant-1:payments-web",
+				"tid": "tenant-1", "scope": "payments:read",
+			}, nil
+		},
+	}
+	router := forwardAuthRouter(svc)
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/auth/forward?tikti_audience=payments-api&tikti_tenant=tenant-1&tikti_allowed_services=payments-web&tikti_required_scopes=payments%3Aread",
+		nil,
+	)
+	req.Header.Set("Authorization", "Bearer access-token")
+	req.Header.Set(forwardAuthAudienceHeader, "attacker-api")
+	req.Header.Set(forwardAuthTenantHeader, "attacker-tenant")
+	req.Header.Set(forwardAuthServicesHeader, "attacker-service")
+	req.Header.Set(forwardAuthScopesHeader, "admin:write")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestForwardAuthControllerEmptyQueryPolicyClearsInjectedOptionalHeaders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &fakeUserService{
+		validateAccessTokenFn: func(context.Context, string, string, string) (jwt.MapClaims, error) {
+			return jwt.MapClaims{"sub": "user-1", "tid": "tenant-1"}, nil
+		},
+	}
+	router := forwardAuthRouter(svc)
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/auth/forward?tikti_audience=payments-api&tikti_tenant=tenant-1&tikti_allowed_services=&tikti_required_scopes=",
+		nil,
+	)
+	req.Header.Set("Authorization", "Bearer access-token")
+	req.Header.Set(forwardAuthServicesHeader, "attacker-service")
+	req.Header.Set(forwardAuthScopesHeader, "admin:write")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestForwardAuthControllerRejectsAmbiguousQueryPolicy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := forwardAuthRouter(&fakeUserService{})
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/auth/forward?tikti_audience=payments-api&tikti_audience=attacker-api",
+		nil,
+	)
+	req.Header.Set("Authorization", "Bearer private-token")
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusUnauthorized || strings.Contains(recorder.Body.String(), "private-token") {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestForwardAuthControllerAcceptsAllowlistedProjectedWorkloadToken(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	users := &fakeUserService{validateAccessTokenFn: func(context.Context, string, string, string) (jwt.MapClaims, error) {
