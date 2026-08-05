@@ -1,10 +1,13 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -232,6 +235,59 @@ func TestForwardAuthControllerRejectsMissingPolicyInvalidTokenAndTenant(t *testi
 			}
 			if test.noToken != "" && contains(recorder.Body.String(), test.noToken) {
 				t.Fatalf("response leaked token: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestForwardAuthControllerLogsSafeEarlyDenialReasons(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &fakeUserService{}
+	router := forwardAuthRouter(svc)
+
+	var output bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&output)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+
+	tests := []struct {
+		name   string
+		setup  func(*http.Request)
+		reason string
+	}{
+		{name: "missing authentication", setup: func(*http.Request) {}, reason: "missing_authentication"},
+		{name: "invalid allowed services", setup: func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer private-token")
+			req.Header.Set(forwardAuthServicesHeader, "invalid/service")
+		}, reason: "invalid_allowed_services_policy"},
+		{name: "invalid required scopes", setup: func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer private-token")
+			req.Header.Set(forwardAuthScopesHeader, "invalid,scope")
+		}, reason: "invalid_required_scopes_policy"},
+		{name: "missing audience", setup: func(req *http.Request) {
+			req.Header.Set("Authorization", "Bearer private-token")
+		}, reason: "missing_audience_policy"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			output.Reset()
+			req := httptest.NewRequest(http.MethodGet, "/v1/auth/forward", nil)
+			req.Header.Set("X-Request-Id", "req-safe-telemetry")
+			test.setup(req)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, req)
+
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+			logged := output.String()
+			if !strings.Contains(logged, "reason="+test.reason) ||
+				!strings.Contains(logged, `request_id="req-safe-telemetry"`) {
+				t.Fatalf("missing denial telemetry: %s", logged)
+			}
+			if strings.Contains(logged, "private-token") {
+				t.Fatalf("telemetry leaked credential: %s", logged)
 			}
 		})
 	}
