@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -96,6 +97,12 @@ func (f *forwardAuthController) Handle(c *gin.Context) {
 		claims, err = f.validateSession(c.Request.Context(), token)
 	}
 	if err != nil {
+		log.Printf(
+			"forward auth: result=deny credential=%s reason=token_validation error=%q request_id=%q",
+			forwardAuthCredentialName(credential),
+			err.Error(),
+			strings.TrimSpace(c.GetHeader("X-Request-Id")),
+		)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authentication"})
 		return
 	}
@@ -130,6 +137,13 @@ func (f *forwardAuthController) Handle(c *gin.Context) {
 	setIdentityHeader(c, "X-Tikti-Role", claimString(claims, "role"))
 	setIdentityHeader(c, "X-Tikti-Scope", claimString(claims, "scope"))
 	c.Status(http.StatusNoContent)
+}
+
+func forwardAuthCredentialName(credential forwardAuthCredential) string {
+	if credential == forwardAuthCredentialAccess {
+		return "access"
+	}
+	return "session"
 }
 
 func workloadTenant(namespace string) (string, bool) {
