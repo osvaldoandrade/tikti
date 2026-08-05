@@ -96,14 +96,18 @@ func newLoginHandler(store *loginMockStore, prov *loginMockProvider) *Handler {
 }
 
 // execLogin performs a GET /saml/login/{tid} through a chi router.
-func execLogin(h *Handler, tid string) *httptest.ResponseRecorder {
+func execLoginURL(h *Handler, target string) *httptest.ResponseRecorder {
 	r := chi.NewRouter()
 	r.Get("/saml/login/{tid}", h.Login)
 
-	req := httptest.NewRequest(http.MethodGet, "/saml/login/"+tid, nil)
+	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rr := httptest.NewRecorder()
 	r.ServeHTTP(rr, req)
 	return rr
+}
+
+func execLogin(h *Handler, tid string) *httptest.ResponseRecorder {
+	return execLoginURL(h, "/saml/login/"+tid)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +147,42 @@ func TestLogin_Redirects302(t *testing.T) {
 	// Acceptance: RedirectURL under 8 KiB.
 	if len(redirectURL) > 8192 {
 		t.Errorf("redirect URL length %d exceeds 8 KiB", len(redirectURL))
+	}
+}
+
+func TestLogin_PropagatesExplicitForceAuthn(t *testing.T) {
+	store := &loginMockStore{
+		getIdPFn: func(_ context.Context, _ string) (IdPRecord, error) {
+			return defaultIdP(), nil
+		},
+	}
+
+	for _, test := range []struct {
+		name   string
+		query  string
+		forced bool
+	}{
+		{name: "requested", query: "?forceAuthn=true", forced: true},
+		{name: "omitted", forced: false},
+		{name: "invalid value", query: "?forceAuthn=TRUE", forced: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var captured BuildAuthnRequestInput
+			prov := &loginMockProvider{
+				buildAuthnFn: func(_ context.Context, input BuildAuthnRequestInput) (*AuthnRequest, error) {
+					captured = input
+					return &AuthnRequest{ID: "_force", RedirectURL: testSSOURL}, nil
+				},
+			}
+
+			rr := execLoginURL(newLoginHandler(store, prov), "/saml/login/"+testTID+test.query)
+			if rr.Code != http.StatusFound {
+				t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
+			}
+			if captured.ForceAuthn != test.forced {
+				t.Fatalf("ForceAuthn = %t, want %t", captured.ForceAuthn, test.forced)
+			}
+		})
 	}
 }
 
