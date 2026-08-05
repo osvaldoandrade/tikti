@@ -15,6 +15,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	tid := chi.URLParam(r, "tid")
 	relay := r.URL.Query().Get("RelayState")
+	forceAuthn := r.URL.Query().Get("forceAuthn") == "true"
 
 	idp, err := h.store.GetIdP(ctx, tid)
 	if errors.Is(err, ErrIdPNotFound) {
@@ -37,6 +38,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		RequestID:    reqID,
 		IssueInstant: now,
 		NameIDFormat: idp.NameIDFormat,
+		ForceAuthn:   forceAuthn,
 	})
 	if err != nil {
 		h.renderError(w, r, ReasonInternal, http.StatusInternalServerError)
