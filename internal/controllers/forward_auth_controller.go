@@ -52,16 +52,19 @@ func (f *forwardAuthController) Handle(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
 	token, credential := f.requestToken(c)
 	if token == "" {
+		logForwardAuthDeny(c, credential, "missing_authentication", "")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authentication"})
 		return
 	}
 	allowedServices, valid := forwardAuthPolicyValues(c.GetHeader(forwardAuthServicesHeader), ",", forwardAuthServicePattern)
 	if !valid {
+		logForwardAuthDeny(c, credential, "invalid_allowed_services_policy", "")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication policy unavailable"})
 		return
 	}
 	requiredScopes, valid := forwardAuthPolicyValues(c.GetHeader(forwardAuthScopesHeader), " ", forwardAuthScopePattern)
 	if !valid {
+		logForwardAuthDeny(c, credential, "invalid_required_scopes_policy", "")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication policy unavailable"})
 		return
 	}
@@ -74,6 +77,7 @@ func (f *forwardAuthController) Handle(c *gin.Context) {
 	if credential == forwardAuthCredentialAccess {
 		audience := strings.TrimSpace(c.GetHeader(forwardAuthAudienceHeader))
 		if audience == "" {
+			logForwardAuthDeny(c, credential, "missing_audience_policy", "")
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication policy unavailable"})
 			return
 		}
@@ -97,12 +101,7 @@ func (f *forwardAuthController) Handle(c *gin.Context) {
 		claims, err = f.validateSession(c.Request.Context(), token)
 	}
 	if err != nil {
-		log.Printf(
-			"forward auth: result=deny credential=%s reason=token_validation error=%q request_id=%q",
-			forwardAuthCredentialName(credential),
-			err.Error(),
-			strings.TrimSpace(c.GetHeader("X-Request-Id")),
-		)
+		logForwardAuthDeny(c, credential, "token_validation", err.Error())
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid authentication"})
 		return
 	}
@@ -137,6 +136,16 @@ func (f *forwardAuthController) Handle(c *gin.Context) {
 	setIdentityHeader(c, "X-Tikti-Role", claimString(claims, "role"))
 	setIdentityHeader(c, "X-Tikti-Scope", claimString(claims, "scope"))
 	c.Status(http.StatusNoContent)
+}
+
+func logForwardAuthDeny(c *gin.Context, credential forwardAuthCredential, reason, detail string) {
+	log.Printf(
+		"forward auth: result=deny credential=%s reason=%s error=%q request_id=%q",
+		forwardAuthCredentialName(credential),
+		reason,
+		detail,
+		strings.TrimSpace(c.GetHeader("X-Request-Id")),
+	)
 }
 
 func forwardAuthCredentialName(credential forwardAuthCredential) string {
