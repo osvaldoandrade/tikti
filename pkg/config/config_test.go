@@ -252,6 +252,24 @@ workloadIdentity:
 	}
 }
 
+func TestLoadConfig_WorkloadIdentityProviderUsesAuthenticatedGKEDNSEndpoint(t *testing.T) {
+	path := writeTempConfig(t, `
+workloadIdentity:
+  providers:
+    - clusterRef: itransform-cluster
+      issuer: https://container.googleapis.com/v1/projects/itransform-cloud/locations/us-central1-a/clusters/itransform-cluster
+      jwksUrl: https://gke-2a781.example.us-central1-a.gke.goog/openid/v1/jwks
+      authentication: gcp
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := cfg.WorkloadIdentity.Providers[0].JWKSURL; got != "https://gke-2a781.example.us-central1-a.gke.goog/openid/v1/jwks" {
+		t.Fatalf("jwksUrl = %q", got)
+	}
+}
+
 func TestLoadConfig_WorkloadIdentityProvidersFailClosed(t *testing.T) {
 	tests := []struct {
 		name string
@@ -263,6 +281,11 @@ func TestLoadConfig_WorkloadIdentityProvidersFailClosed(t *testing.T) {
 		{name: "legacy issuer collision", yaml: `{workloadIdentity: {issuer: https://same.example, jwksUrl: https://same.example/legacy, providers: [{clusterRef: cluster-a, issuer: https://same.example, jwksUrl: https://same.example/a}]}}`},
 		{name: "unknown authentication", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://a.example/jwks, authentication: static}]}}`},
 		{name: "gcp host boundary", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://attacker.example/jwks, authentication: gcp}]}}`},
+		{name: "gcp dns suffix boundary", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://attacker.gke.goog.example/openid/v1/jwks, authentication: gcp}]}}`},
+		{name: "gcp dns wrong path", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://cluster.gke.goog/admin, authentication: gcp}]}}`},
+		{name: "gcp dns query", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://cluster.gke.goog/openid/v1/jwks?target=attacker, authentication: gcp}]}}`},
+		{name: "gcp dns user info", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://user@cluster.gke.goog/openid/v1/jwks, authentication: gcp}]}}`},
+		{name: "gcp dns port", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://cluster.gke.goog:8443/openid/v1/jwks, authentication: gcp}]}}`},
 		{name: "gcp bearer ambiguity", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://container.googleapis.com/v1/projects/p/locations/l/clusters/c/jwks, jwksBearerTokenFile: /secret, authentication: gcp}]}}`},
 	}
 	for _, test := range tests {
