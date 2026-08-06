@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -88,10 +89,10 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 	if strings.TrimSpace(req.SubjectToken) == "" || req.SubjectTokenType != domain.WorkloadSubjectTokenType {
 		return nil, domain.ErrWorkloadTokenInvalid
 	}
-	if req.Audience != domain.WorkloadTargetAudience || !tenantIDPattern.MatchString(req.TenantID) {
+	if !workloadAudienceAllowed(req.Audience) || !tenantIDPattern.MatchString(req.TenantID) {
 		return nil, domain.ErrInvalidArgument
 	}
-	if !exactWorkloadScopes(req.Scopes) {
+	if !workloadScopesAllowed(req.Audience, req.Scopes) {
 		return nil, domain.ErrWorkloadBindingDenied
 	}
 	if s.verifier == nil || s.repo == nil {
@@ -111,7 +112,8 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 		log.Printf("workload identity binding lookup unavailable: %v", err)
 		return nil, domain.ErrWorkloadIdentityUnavailable
 	}
-	if !bindingAllows(binding, subject, req.TenantID, req.Audience, req.Scopes) {
+	grant, allowed := workloadBindingGrant(binding, subject, req.TenantID, req.Audience, req.Scopes)
+	if !allowed {
 		return nil, domain.ErrWorkloadBindingDenied
 	}
 
@@ -129,10 +131,13 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 		"aud":   req.Audience,
 		"sub":   subject.Subject,
 		"tid":   req.TenantID,
-		"scope": domain.WorkloadAdminScope,
+		"scope": strings.Join(normalizedWorkloadScopes(req.Scopes), " "),
 		"iat":   now.Unix(),
 		"exp":   now.Add(s.ttl).Unix(),
 		"jti":   uuid.NewString(),
+	}
+	if len(grant.EventTypes) > 0 {
+		claims["eventTypes"] = grant.EventTypes
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	if s.keyID != "" {
@@ -147,8 +152,9 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 		TokenType:   "Bearer",
 		ExpiresIn:   int(s.ttl / time.Second),
 		Audience:    req.Audience,
-		Scopes:      []string{domain.WorkloadAdminScope},
+		Scopes:      normalizedWorkloadScopes(req.Scopes),
 		TenantID:    req.TenantID,
+		EventTypes:  slices.Clone(grant.EventTypes),
 	}, nil
 }
 
@@ -163,15 +169,21 @@ func (s *workloadIdentityService) UpsertBinding(ctx context.Context, req domain.
 	grants := make([]domain.WorkloadGrant, 0, len(req.Grants))
 	seen := make(map[string]struct{}, len(req.Grants))
 	for _, grant := range req.Grants {
-		if !tenantIDPattern.MatchString(grant.TenantID) || grant.Audience != domain.WorkloadTargetAudience || !exactWorkloadScopes(grant.Scopes) {
+		if !tenantIDPattern.MatchString(grant.TenantID) ||
+			!workloadAudienceAllowed(grant.Audience) ||
+			!workloadScopesAllowed(grant.Audience, grant.Scopes) ||
+			!workloadEventTypesAllowed(grant.Audience, grant.EventTypes) {
 			return nil, domain.ErrInvalidArgument
 		}
-		if _, duplicate := seen[grant.TenantID]; duplicate {
+		grantKey := grant.TenantID + "\x00" + grant.Audience
+		if _, duplicate := seen[grantKey]; duplicate {
 			return nil, domain.ErrInvalidArgument
 		}
-		seen[grant.TenantID] = struct{}{}
+		seen[grantKey] = struct{}{}
 		grants = append(grants, domain.WorkloadGrant{
-			TenantID: grant.TenantID, Audience: grant.Audience, Scopes: []string{domain.WorkloadAdminScope},
+			TenantID: grant.TenantID, Audience: grant.Audience,
+			Scopes:     normalizedWorkloadScopes(grant.Scopes),
+			EventTypes: normalizedWorkloadEventTypes(grant.EventTypes),
 		})
 	}
 	binding := &domain.WorkloadBinding{
@@ -215,18 +227,66 @@ func (s *workloadIdentityService) signingKey() (*rsa.PrivateKey, error) {
 	return s.key, s.keyErr
 }
 
-func exactWorkloadScopes(scopes []string) bool {
-	return len(scopes) == 1 && scopes[0] == domain.WorkloadAdminScope
+func workloadAudienceAllowed(audience string) bool {
+	return audience == domain.WorkloadProducerAudience || audience == domain.WorkloadWorkerAudience
 }
 
-func bindingAllows(binding *domain.WorkloadBinding, subject domain.WorkloadSubject, tenantID, audience string, scopes []string) bool {
-	if binding == nil || binding.Revoked || binding.Subject != subject.Subject || binding.Namespace != subject.Namespace || binding.ServiceAccount != subject.ServiceAccount {
+func normalizedWorkloadScopes(scopes []string) []string {
+	normalized := normalizeList(scopes)
+	slices.Sort(normalized)
+	return slices.Compact(normalized)
+}
+
+func workloadScopesAllowed(audience string, scopes []string) bool {
+	normalized := normalizedWorkloadScopes(scopes)
+	switch audience {
+	case domain.WorkloadProducerAudience:
+		return slices.Equal(normalized, []string{domain.WorkloadAdminScope})
+	case domain.WorkloadWorkerAudience:
+		return slices.Equal(normalized, []string{
+			domain.WorkloadClaimScope,
+			domain.WorkloadNackScope,
+			domain.WorkloadResultScope,
+		})
+	default:
 		return false
 	}
-	for _, grant := range binding.Grants {
-		if grant.TenantID == tenantID && grant.Audience == audience && exactWorkloadScopes(grant.Scopes) && exactWorkloadScopes(scopes) {
-			return true
+}
+
+func normalizedWorkloadEventTypes(eventTypes []string) []string {
+	normalized := normalizeList(eventTypes)
+	slices.Sort(normalized)
+	return slices.Compact(normalized)
+}
+
+func workloadEventTypesAllowed(audience string, eventTypes []string) bool {
+	normalized := normalizedWorkloadEventTypes(eventTypes)
+	if audience == domain.WorkloadProducerAudience {
+		return len(normalized) == 0
+	}
+	if audience != domain.WorkloadWorkerAudience || len(normalized) == 0 || len(normalized) > domain.MaxWorkloadEventTypes {
+		return false
+	}
+	for _, eventType := range normalized {
+		if len(eventType) > 128 || strings.ContainsAny(eventType, "\r\n\t") {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+func workloadBindingGrant(binding *domain.WorkloadBinding, subject domain.WorkloadSubject, tenantID, audience string, scopes []string) (domain.WorkloadGrant, bool) {
+	if binding == nil || binding.Revoked || binding.Subject != subject.Subject || binding.Namespace != subject.Namespace || binding.ServiceAccount != subject.ServiceAccount {
+		return domain.WorkloadGrant{}, false
+	}
+	for _, grant := range binding.Grants {
+		if grant.TenantID == tenantID && grant.Audience == audience &&
+			slices.Equal(normalizedWorkloadScopes(grant.Scopes), normalizedWorkloadScopes(scopes)) &&
+			workloadEventTypesAllowed(grant.Audience, grant.EventTypes) {
+			grant.Scopes = normalizedWorkloadScopes(grant.Scopes)
+			grant.EventTypes = normalizedWorkloadEventTypes(grant.EventTypes)
+			return grant, true
+		}
+	}
+	return domain.WorkloadGrant{}, false
 }
