@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -116,6 +117,47 @@ func TestWorkloadIdentityExchangeIssuesTenantBoundRS256Token(t *testing.T) {
 	}
 }
 
+func TestWorkloadIdentityExchangeIssuesTopicBoundCodeQWorkerToken(t *testing.T) {
+	privateKey, privatePEM := workloadTestKey(t)
+	repo := &memoryWorkloadBindingRepo{binding: &domain.WorkloadBinding{
+		Subject: testWorkloadSubject, Namespace: "code-admin", ServiceAccount: "code-admin-controller-queue",
+		Grants: []domain.WorkloadGrant{{
+			TenantID: "payments", Audience: domain.WorkloadWorkerAudience,
+			Scopes:     []string{domain.WorkloadResultScope, domain.WorkloadNackScope, domain.WorkloadClaimScope},
+			EventTypes: []string{"payments.crud-demo-events"},
+		}},
+	}}
+	service := NewWorkloadIdentityService(repo, validWorkloadVerifier(), "https://tikti.example.com", privatePEM, "tikti-workload-1", 5*time.Minute).(*workloadIdentityService)
+	now := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
+
+	request := validWorkloadExchangeRequest()
+	request.Audience = domain.WorkloadWorkerAudience
+	request.Scopes = []string{domain.WorkloadResultScope, domain.WorkloadNackScope, domain.WorkloadClaimScope}
+	response, err := service.Exchange(context.Background(), request)
+	if err != nil {
+		t.Fatalf("Exchange() error = %v", err)
+	}
+	if !slices.Equal(response.Scopes, []string{domain.WorkloadClaimScope, domain.WorkloadNackScope, domain.WorkloadResultScope}) ||
+		!slices.Equal(response.EventTypes, []string{"payments.crud-demo-events"}) {
+		t.Fatalf("Exchange() worker metadata = %#v", response)
+	}
+	claims := jwt.MapClaims{}
+	token, err := jwt.ParseWithClaims(response.AccessToken, claims, func(token *jwt.Token) (interface{}, error) {
+		return &privateKey.PublicKey, nil
+	}, jwt.WithIssuer("https://tikti.example.com"), jwt.WithAudience(domain.WorkloadWorkerAudience), jwt.WithTimeFunc(func() time.Time { return now }))
+	if err != nil || !token.Valid {
+		t.Fatalf("parse worker access token: %v", err)
+	}
+	if claims["scope"] != "codeq:claim codeq:nack codeq:result" || claims["tid"] != "payments" {
+		t.Fatalf("worker claims = %#v", claims)
+	}
+	eventTypes, ok := claims["eventTypes"].([]interface{})
+	if !ok || len(eventTypes) != 1 || eventTypes[0] != "payments.crud-demo-events" {
+		t.Fatalf("worker event types = %#v", claims["eventTypes"])
+	}
+}
+
 func TestWorkloadIdentityExchangeFailsClosed(t *testing.T) {
 	_, privatePEM := workloadTestKey(t)
 	tests := []struct {
@@ -218,6 +260,23 @@ func TestWorkloadBindingValidationLimitsGrantsAndAcceptsDottedServiceAccounts(t 
 	})
 	if err != nil || binding.Subject != dottedSubject {
 		t.Fatalf("dotted binding = %#v, %v", binding, err)
+	}
+}
+
+func TestWorkloadBindingRequiresBoundEventTypesForCodeQWorkers(t *testing.T) {
+	service := NewWorkloadIdentityService(&memoryWorkloadBindingRepo{}, validWorkloadVerifier(), "issuer", "key", "kid", time.Minute)
+	for _, grant := range []domain.WorkloadGrant{
+		{TenantID: "payments", Audience: domain.WorkloadWorkerAudience, Scopes: []string{domain.WorkloadClaimScope, domain.WorkloadNackScope, domain.WorkloadResultScope}},
+		{TenantID: "payments", Audience: domain.WorkloadWorkerAudience, Scopes: []string{domain.WorkloadClaimScope, domain.WorkloadNackScope, domain.WorkloadResultScope}, EventTypes: []string{"payments.events\nother"}},
+		{TenantID: "payments", Audience: domain.WorkloadProducerAudience, Scopes: []string{domain.WorkloadAdminScope}, EventTypes: []string{"payments.events"}},
+	} {
+		_, err := service.UpsertBinding(context.Background(), domain.WorkloadBindingUpsertReq{
+			Subject: testWorkloadSubject, Namespace: "code-admin", ServiceAccount: "code-admin-controller-queue",
+			Grants: []domain.WorkloadGrant{grant},
+		})
+		if !errors.Is(err, domain.ErrInvalidArgument) {
+			t.Fatalf("UpsertBinding(%#v) error = %v", grant, err)
+		}
 	}
 }
 

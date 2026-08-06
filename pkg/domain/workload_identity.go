@@ -8,9 +8,16 @@ import (
 
 const (
 	WorkloadSubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
-	WorkloadTargetAudience   = "codeq-producer"
+	WorkloadProducerAudience = "codeq-producer"
+	WorkloadWorkerAudience   = "codeq-worker"
 	WorkloadAdminScope       = "codeq:admin"
-	MaxWorkloadGrants        = 100
+	WorkloadClaimScope       = "codeq:claim"
+	WorkloadNackScope        = "codeq:nack"
+	WorkloadResultScope      = "codeq:result"
+	// WorkloadTargetAudience preserves the producer contract for existing clients.
+	WorkloadTargetAudience = WorkloadProducerAudience
+	MaxWorkloadGrants      = 100
+	MaxWorkloadEventTypes  = 100
 )
 
 const workloadSubjectPrefix = "system:serviceaccount:"
@@ -59,9 +66,10 @@ func validDNSSubdomain(value string) bool {
 // WorkloadGrant authorizes one workload subject to mint a narrowly scoped
 // access token for one tenant.
 type WorkloadGrant struct {
-	TenantID string   `json:"tenantId"`
-	Audience string   `json:"audience"`
-	Scopes   []string `json:"scopes"`
+	TenantID   string   `json:"tenantId"`
+	Audience   string   `json:"audience"`
+	Scopes     []string `json:"scopes"`
+	EventTypes []string `json:"eventTypes,omitempty"`
 }
 
 // WorkloadBinding is the durable subject-to-tenant authorization record.
@@ -100,4 +108,5 @@ type WorkloadTokenExchangeResp struct {
 	Audience    string   `json:"audience"`
 	Scopes      []string `json:"scopes"`
 	TenantID    string   `json:"tenantId"`
+	EventTypes  []string `json:"eventTypes,omitempty"`
 }
