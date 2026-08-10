@@ -3,16 +3,32 @@ package services
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
+
+	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 type fakeTenantRepo struct {
 	createFn        func(ctx context.Context, tenant *domain.Tenant) error
+	createAbsentFn  func(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error)
 	getFn           func(ctx context.Context, tenantID string) (*domain.Tenant, error)
 	listFn          func(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error)
 	ensureDefaultFn func(ctx context.Context) (*domain.Tenant, error)
+}
+
+func (f *fakeTenantRepo) CreateIfAbsent(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error) {
+	if f.createAbsentFn != nil {
+		return f.createAbsentFn(ctx, tenant)
+	}
+	return tenant, true, nil
 }
 
 func (f *fakeTenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
@@ -79,6 +95,168 @@ func TestTenantService_Create(t *testing.T) {
 	}
 	if resp.Name != "Name" || resp.Slug != "slug" || resp.Status != domain.TenantStatusActive {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestTenantService_CreateWithID(t *testing.T) {
+	var stored *domain.Tenant
+	repo := &fakeTenantRepo{createAbsentFn: func(
+		ctx context.Context,
+		tenant *domain.Tenant,
+	) (*domain.Tenant, bool, error) {
+		if stored == nil {
+			copy := *tenant
+			stored = &copy
+			return stored, true, nil
+		}
+		return stored, false, nil
+	}}
+	svc := NewTenantService(repo)
+	req := domain.TenantCreateReq{Name: " Bereia ", Slug: "bereia"}
+
+	createdTenant, created, err := svc.CreateWithID(context.Background(), "bereia", req)
+	if err != nil || !created || createdTenant.Id != "bereia" || createdTenant.Name != "Bereia" {
+		t.Fatalf("unexpected deterministic create: tenant=%+v created=%v err=%v", createdTenant, created, err)
+	}
+	stored.Status = domain.TenantStatusDisabled
+	stored.CreatedAt = time.Unix(1_700_000_000, 0).UTC()
+	snapshot := *stored
+	replayed, created, err := svc.CreateWithID(context.Background(), "bereia", req)
+	if err != nil || created || replayed.Status != snapshot.Status || replayed.CreatedAt != snapshot.CreatedAt {
+		t.Fatalf("unexpected semantic replay: tenant=%+v created=%v err=%v", replayed, created, err)
+	}
+	_, _, err = svc.CreateWithID(context.Background(), "bereia", domain.TenantCreateReq{
+		Name: "Different", Slug: "bereia",
+	})
+	if !errors.Is(err, domain.ErrTenantConflict) || *stored != snapshot {
+		t.Fatalf("expected conflict without overwrite, stored=%+v err=%v", stored, err)
+	}
+}
+
+func TestTenantService_CreateWithIDValidation(t *testing.T) {
+	longName := strings.Repeat("n", 129)
+	tests := []struct {
+		name     string
+		tenantID string
+		req      domain.TenantCreateReq
+	}{
+		{name: "empty id", tenantID: "", req: domain.TenantCreateReq{Name: "Bereia", Slug: ""}},
+		{name: "uppercase id", tenantID: "Bereia", req: domain.TenantCreateReq{Name: "Bereia", Slug: "bereia"}},
+		{name: "spaced id", tenantID: " bereia ", req: domain.TenantCreateReq{Name: "Bereia", Slug: "bereia"}},
+		{name: "long id", tenantID: strings.Repeat("a", 64), req: domain.TenantCreateReq{Name: "Bereia", Slug: "bereia"}},
+		{name: "invalid slug", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Bereia", Slug: "bereia_org"}},
+		{name: "spaced slug", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Bereia", Slug: " bereia "}},
+		{name: "slug differs from id", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Bereia", Slug: "other"}},
+		{name: "empty name", tenantID: "bereia", req: domain.TenantCreateReq{Name: "", Slug: "bereia"}},
+		{name: "long name", tenantID: "bereia", req: domain.TenantCreateReq{Name: longName, Slug: "bereia"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			svc := NewTenantService(&fakeTenantRepo{})
+			if _, _, err := svc.CreateWithID(context.Background(), test.tenantID, test.req); !errors.Is(err, domain.ErrInvalidArgument) {
+				t.Fatalf("expected invalid argument, got %v", err)
+			}
+		})
+	}
+}
+
+func TestTenantService_CreateWithIDAcceptsExactBoundaries(t *testing.T) {
+	tests := []struct {
+		tenantID string
+		name     string
+	}{
+		{tenantID: "a", name: "x"},
+		{tenantID: strings.Repeat("a", 63), name: strings.Repeat("é", 128)},
+	}
+	for _, test := range tests {
+		t.Run(test.tenantID, func(t *testing.T) {
+			response, created, err := NewTenantService(&fakeTenantRepo{}).CreateWithID(
+				context.Background(),
+				test.tenantID,
+				domain.TenantCreateReq{Name: test.name, Slug: test.tenantID},
+			)
+			if err != nil || !created || response.Id != test.tenantID {
+				t.Fatalf("expected accepted boundary, response=%+v created=%v err=%v", response, created, err)
+			}
+		})
+	}
+}
+
+func TestTenantService_CreateWithIDRepositoryFailures(t *testing.T) {
+	repositoryError := errors.New("repository failure")
+	tests := []struct {
+		name string
+		repo *fakeTenantRepo
+	}{
+		{
+			name: "repository error",
+			repo: &fakeTenantRepo{createAbsentFn: func(
+				context.Context,
+				*domain.Tenant,
+			) (*domain.Tenant, bool, error) {
+				return nil, false, repositoryError
+			}},
+		},
+		{
+			name: "missing stored tenant",
+			repo: &fakeTenantRepo{createAbsentFn: func(
+				context.Context,
+				*domain.Tenant,
+			) (*domain.Tenant, bool, error) {
+				return nil, false, nil
+			}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, _, err := NewTenantService(test.repo).CreateWithID(
+				context.Background(),
+				"bereia",
+				domain.TenantCreateReq{Name: "Bereia", Slug: "bereia"},
+			)
+			if err == nil {
+				t.Fatal("expected repository failure")
+			}
+			if test.name == "repository error" && !errors.Is(err, repositoryError) {
+				t.Fatalf("expected wrapped repository error, got %v", err)
+			}
+		})
+	}
+}
+
+func TestTenantService_CreateWithIDConcurrentMismatch(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	svc := NewTenantService(repository.NewTenantRepo(client))
+
+	var created atomic.Int32
+	var conflicts atomic.Int32
+	var wg sync.WaitGroup
+	for index := range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			name := "Bereia"
+			if index%2 == 1 {
+				name = "Other"
+			}
+			_, wasCreated, err := svc.CreateWithID(context.Background(), "bereia", domain.TenantCreateReq{
+				Name: name, Slug: "bereia",
+			})
+			if wasCreated {
+				created.Add(1)
+			}
+			if errors.Is(err, domain.ErrTenantConflict) {
+				conflicts.Add(1)
+			} else if err != nil {
+				t.Errorf("unexpected create error: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if created.Load() != 1 || conflicts.Load() != 16 {
+		t.Fatalf("expected one creator and 16 conflicts, got creators=%d conflicts=%d", created.Load(), conflicts.Load())
 	}
 }
 

@@ -577,7 +577,7 @@ These endpoints support multi-tenant operations. They require an ADMIN token.
 
 ### POST /v1/tenants
 
-Creates a tenant.
+Creates a tenant with a generated UUID. This existing behavior is unchanged.
 
 Request:
 
@@ -599,6 +599,28 @@ Response 200:
   "createdAt": "2026-01-28T12:00:00Z"
 }
 ```
+
+### PUT /v1/tenants/{tenantId}
+
+Creates without overwrite. `tenantId` and `slug` must be identical 1–63 byte
+canonical DNS labels (lowercase ASCII letters, digits, or internal hyphens,
+beginning and ending alphanumeric). `name` is trimmed to 1–128 Unicode
+characters; the 4096-byte JSON body accepts exactly one `name` and one `slug`.
+
+```http
+PUT /v1/tenants/bereia
+X-API-Key: API_KEY
+Authorization: Bearer ADMIN_TOKEN
+Content-Type: application/json
+
+{"name":"Bereia","slug":"bereia"}
+```
+
+Creation returns `201`; an identical replay returns `200` with the stored
+`createdAt` and current status. Different metadata returns `409` without any
+overwrite. Malformed, duplicate, case-variant, unknown, or invalid fields
+return `400`; over 4096 bytes returns `413`; missing or non-JSON `Content-Type`
+returns `415`.
 
 ### GET /v1/tenants/id/{tenantId}
 
