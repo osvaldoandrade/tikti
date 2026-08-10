@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -92,6 +94,78 @@ func TestRoleRepo_GetNotFoundAndInvalidJSON(t *testing.T) {
 	if _, err := r.Get(ctx, "t1", "bad"); err == nil {
 		t.Fatalf("expected unmarshal error")
 	}
+}
+
+func TestRoleRepo_ExactReadsPreserveHashIdentityAndRedactCorruption(t *testing.T) {
+	rdb, repository := newRoleRepoForTest(t)
+	repo := repository.(*roleRepo)
+	ctx := context.Background()
+	valid := &domain.Role{Name: "read", TenantId: "bereia", Permissions: []string{"scope:read"}}
+	if err := repo.Create(ctx, "bereia", valid); err != nil {
+		t.Fatalf("create exact role: %v", err)
+	}
+	got, err := repo.GetExact(ctx, "bereia", "read")
+	if err != nil || got == nil || got.Name != "read" {
+		t.Fatalf("GetExact() = %+v, %v", got, err)
+	}
+	listed, err := repo.ListExact(ctx, "bereia")
+	if err != nil || len(listed) != 1 || listed[0].Name != "read" {
+		t.Fatalf("ListExact() = %+v, %v", listed, err)
+	}
+	missing, err := repo.GetExact(ctx, "bereia", "missing")
+	if err != nil || missing != nil {
+		t.Fatalf("missing exact role = %+v, %v", missing, err)
+	}
+	empty, err := repo.ListExact(ctx, "empty")
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty exact list = %#v, %v", empty, err)
+	}
+
+	for _, corrupt := range []struct{ field, value string }{
+		{field: "empty", value: ""},
+		{field: "alias", value: `{"name":"admin","tenantId":"bereia","permissions":["credential-canary"]}`},
+		{field: "json", value: "redis-password-canary"},
+	} {
+		if err := rdb.HSet(ctx, rolesKey("corrupt"), corrupt.field, corrupt.value).Err(); err != nil {
+			t.Fatalf("seed corrupt role: %v", err)
+		}
+		_, exactErr := repo.GetExact(ctx, "corrupt", corrupt.field)
+		_, listErr := repo.ListExact(ctx, "corrupt")
+		leaked := corrupt.value != "" && (strings.Contains(exactErr.Error(), corrupt.value) || strings.Contains(listErr.Error(), corrupt.value))
+		if !errors.Is(exactErr, errStoredRoleContract) || !errors.Is(listErr, errStoredRoleContract) || leaked {
+			t.Fatalf("corruption was not redacted: exact=%v list=%v", exactErr, listErr)
+		}
+		if err := rdb.Del(ctx, rolesKey("corrupt")).Err(); err != nil {
+			t.Fatalf("clear corrupt role: %v", err)
+		}
+	}
+	closed := NewRoleRepo(closedRedisClient()).(*roleRepo)
+	if _, err := closed.GetExact(ctx, "bereia", "read"); err == nil {
+		t.Fatal("closed Redis exact get succeeded")
+	}
+	if _, err := closed.ListExact(ctx, "bereia"); err == nil {
+		t.Fatal("closed Redis exact list succeeded")
+	}
+}
+
+func FuzzDecodeExactRole(f *testing.F) {
+	for _, seed := range [][2]string{
+		{"read", `{"name":"read","tenantId":"bereia","permissions":["scope:read"]}`},
+		{"alias", `{"name":"admin"}`},
+		{"empty", ""},
+		{"json", "{"},
+	} {
+		f.Add(seed[0], seed[1])
+	}
+	f.Fuzz(func(t *testing.T, name, value string) {
+		if len(name) > 256 || len(value) > 4096 {
+			return
+		}
+		role, err := decodeExactRole(name, value)
+		if err == nil && (value == "" || role == nil || role.Name != name) {
+			t.Fatalf("invalid exact role accepted: name=%q role=%+v", name, role)
+		}
+	})
 }
 
 func TestRoleRepo_ListInvalidJSON(t *testing.T) {

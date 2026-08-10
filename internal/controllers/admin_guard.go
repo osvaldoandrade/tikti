@@ -14,6 +14,7 @@ import (
 
 const (
 	platformTenantAdminScope = "code-admin:tenants:admin"
+	tenantIdentityReadScope  = "code-admin:identity:read"
 	tenantIdentityWriteScope = "code-admin:identity:write"
 )
 
@@ -58,6 +59,21 @@ func requireTenantIAMWrite(c *gin.Context, cfg *config.Config, tenantID string) 
 	}
 	platform := hasClaimScope(claims, platformTenantAdminScope)
 	local := hasClaimScope(claims, tenantIdentityWriteScope) && claimString(claims, "tid") == tenantID
+	if claimString(claims, "sub") == "" || !platform && !local {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient tenant administration scope"})
+		return nil, false
+	}
+	return claims, true
+}
+
+func requireTenantIAMRead(c *gin.Context, cfg *config.Config, tenantID string) (jwt.MapClaims, bool) {
+	claims, ok := privilegedBearerClaims(c, cfg)
+	if !ok {
+		return nil, false
+	}
+	platform := hasClaimScope(claims, platformTenantAdminScope)
+	local := claimString(claims, "tid") == tenantID &&
+		(hasClaimScope(claims, tenantIdentityReadScope) || hasClaimScope(claims, tenantIdentityWriteScope))
 	if claimString(claims, "sub") == "" || !platform && !local {
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient tenant administration scope"})
 		return nil, false

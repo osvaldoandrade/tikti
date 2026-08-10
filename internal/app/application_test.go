@@ -21,6 +21,7 @@ import (
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/pkg/config"
+	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 func TestValidateWorkloadIdentityRuntimeConfig(t *testing.T) {
@@ -62,7 +63,10 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	for _, route := range router.Routes() {
 		routes[route.Method+" "+route.Path] = true
 	}
-	if !routes["PUT /v1/admin/tenants/:tenantId/roles/:roleName"] || !routes["POST /v1/tenants/:tenantId/roles"] {
+	if !routes["PUT /v1/admin/tenants/:tenantId/roles/:roleName"] ||
+		!routes["GET /v1/admin/tenants/:tenantId/roles/:roleName"] ||
+		!routes["GET /v1/admin/tenants/:tenantId/roles"] ||
+		!routes["POST /v1/tenants/:tenantId/roles"] {
 		t.Fatalf("role routes missing: %+v", routes)
 	}
 	token := func(scope, tenant, subject string) string {
@@ -80,6 +84,7 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	}
 	platform := "Bearer " + token("code-admin:tenants:admin", "home", "same-user")
 	bereia := "Bearer " + token("code-admin:identity:write", "bereia", "same-user")
+	bereiaRead := "Bearer " + token("code-admin:identity:read", "bereia", "same-user")
 	storifly := "Bearer " + token("code-admin:identity:write", "storifly", "same-user")
 	hs, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "same-user", "scope": "code-admin:tenants:admin", "exp": time.Now().Add(time.Hour).Unix()}).SignedString([]byte("legacy"))
 	tests := []struct {
@@ -102,6 +107,36 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 			t.Fatalf("%s: response=%d %s", test.name, rec.Code, rec.Body.String())
 		}
 	}
+	reads := []struct {
+		name, target, auth, key, body string
+		want                          int
+	}{
+		{name: "list query API key rejected", target: "/v1/admin/tenants/bereia/roles?key=secret", auth: platform, want: http.StatusUnauthorized},
+		{name: "exact query API key rejected", target: "/v1/admin/tenants/bereia/roles/bereia-read?key=secret", auth: platform, want: http.StatusUnauthorized},
+		{name: "HS read rejected", target: "/v1/admin/tenants/bereia/roles", auth: "Bearer " + hs, key: "secret", want: http.StatusUnauthorized},
+		{name: "ADMIN alone denied", target: "/v1/admin/tenants/bereia/roles", auth: "Bearer " + applicationRoleToken(t, privateKey, jwt.MapClaims{"sub": "same-user", "role": "ADMIN", "tid": "bereia"}), key: "secret", want: http.StatusForbidden},
+		{name: "local read exact after put", target: "/v1/admin/tenants/bereia/roles/bereia-read", auth: bereiaRead, key: "secret", want: http.StatusOK, body: `"permissions":["bereia:read"]`},
+		{name: "local write list", target: "/v1/admin/tenants/bereia/roles", auth: bereia, key: "secret", want: http.StatusOK, body: `"name":"bereia-read"`},
+		{name: "local read foreign denied", target: "/v1/admin/tenants/storifly/roles", auth: bereiaRead, key: "secret", want: http.StatusForbidden},
+		{name: "platform exact cross tenant", target: "/v1/admin/tenants/storifly/roles/storifly-admin", auth: platform, key: "secret", want: http.StatusOK, body: `"name":"storifly-admin"`},
+		{name: "exact not found", target: "/v1/admin/tenants/bereia/roles/missing", auth: platform, key: "secret", want: http.StatusNotFound, body: `{"error":"role not found"}`},
+		{name: "invalid tenant", target: "/v1/admin/tenants/Bereia/roles", auth: platform, key: "secret", want: http.StatusBadRequest, body: `{"error":"invalid tenant"}`},
+		{name: "invalid role", target: "/v1/admin/tenants/bereia/roles/role.name-", auth: platform, key: "secret", want: http.StatusBadRequest, body: `{"error":"invalid argument"}`},
+	}
+	for _, test := range reads {
+		rec := request(http.MethodGet, test.target, test.auth, test.key)
+		if rec.Code != test.want || test.body != "" && !strings.Contains(rec.Body.String(), test.body) || strings.Contains(rec.Body.String(), `"secret"`) {
+			t.Fatalf("%s: response=%d %s", test.name, rec.Code, rec.Body.String())
+		}
+	}
+	for range 5 {
+		rec := request(http.MethodGet, "/v1/admin/tenants/storifly/roles", platform, "secret")
+		platformIndex := strings.Index(rec.Body.String(), `"name":"platform"`)
+		storiflyIndex := strings.Index(rec.Body.String(), `"name":"storifly-admin"`)
+		if rec.Code != http.StatusOK || platformIndex < 0 || storiflyIndex < 0 || platformIndex > storiflyIndex {
+			t.Fatalf("role list is not deterministic: %d %s", rec.Code, rec.Body.String())
+		}
+	}
 	bereiaRole, _ := repo.Get(context.Background(), "bereia", "bereia-read")
 	storiflyRole, _ := repo.Get(context.Background(), "storifly", "storifly-admin")
 	bereiaRoles, _ := repo.List(context.Background(), "bereia")
@@ -109,16 +144,43 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	if len(bereiaRoles) != 1 || len(storiflyRoles) != 2 || bereiaRole == nil || storiflyRole == nil || bereiaRole.Permissions[0] != "bereia:read" || storiflyRole.Permissions[0] != "storifly:read" {
 		t.Fatalf("tenant isolation failed: bereia=%+v storifly=%+v", bereiaRole, storiflyRole)
 	}
+	if err := repo.Create(context.Background(), "bereia", &domain.Role{Name: "corrupt", TenantId: "bereia"}); err != nil {
+		t.Fatalf("seed corrupt role: %v", err)
+	}
+	corrupt := request(http.MethodGet, "/v1/admin/tenants/bereia/roles/corrupt", platform, "secret")
+	if corrupt.Code != http.StatusInternalServerError || corrupt.Body.String() != `{"error":"could not read role"}` {
+		t.Fatalf("corrupt stored role did not fail closed: %d %s", corrupt.Code, corrupt.Body.String())
+	}
+	if err := client.HSet(context.Background(), "roles:mismatch", "alias", `{"name":"admin","tenantId":"mismatch","permissions":["credential-canary"]}`).Err(); err != nil {
+		t.Fatalf("seed mismatched role field: %v", err)
+	}
+	if err := client.HSet(context.Background(), "roles:empty-state", "read", "").Err(); err != nil {
+		t.Fatalf("seed empty role field: %v", err)
+	}
+	for _, corruptRead := range []struct{ target, body string }{
+		{target: "/v1/admin/tenants/mismatch/roles", body: `{"error":"could not list roles"}`},
+		{target: "/v1/admin/tenants/empty-state/roles/read", body: `{"error":"could not read role"}`},
+	} {
+		rec := request(http.MethodGet, corruptRead.target, platform, "secret")
+		if rec.Code != http.StatusInternalServerError || rec.Body.String() != corruptRead.body || strings.Contains(rec.Body.String(), "credential-canary") {
+			t.Fatalf("stored identity corruption was not redacted: %d %s", rec.Code, rec.Body.String())
+		}
+	}
 	empty := gin.New()
 	SetupMappings(empty, &config.Config{JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}, nil, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil)
 	SetupMappings(gin.New(), cfg, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPut, "/v1/admin/tenants/bereia/roles/empty", strings.NewReader(`{"permissions":["empty:read"]}`))
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/tenants/bereia/roles", nil)
 	req.Header.Set("X-API-Key", "secret")
 	req.Header.Set("Authorization", platform)
 	empty.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("empty configured API key did not fail closed: %d", rec.Code)
+	}
+	server.Close()
+	rec = request(http.MethodGet, "/v1/admin/tenants/bereia/roles/bereia-read", platform, "secret")
+	if rec.Code != http.StatusInternalServerError || rec.Body.String() != `{"error":"could not read role"}` {
+		t.Fatalf("storage failure was not redacted: %d %s", rec.Code, rec.Body.String())
 	}
 }
 
