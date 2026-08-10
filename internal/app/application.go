@@ -68,6 +68,11 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		cfg.DefaultAudience,
 		cfg.JwksPrivateKey,
 		cfg.JwksKeyID,
+		services.WithTenantScopedTokenClaimsV1(
+			cfg.TenantScopedTokenClaimsV1,
+			cfg.TenantScopedTokenClaimsV1Tenants,
+			tenantRepo,
+		),
 	)
 	workloadVerifier, err := newWorkloadTokenVerifier(cfg.WorkloadIdentity)
 	if err != nil {

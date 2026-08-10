@@ -3,6 +3,9 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -18,11 +21,20 @@ type MembershipRepository interface {
 	Delete(ctx context.Context, tenantID string, userID string) error
 }
 
+// ExactMembershipRepository exposes fail-closed reads for token authorization
+// without changing the legacy membership read contract.
+type ExactMembershipRepository interface {
+	GetExact(ctx context.Context, tenantID string, userID string) (*domain.Membership, error)
+	ListTenantIDsByUserExact(ctx context.Context, userID string) ([]string, error)
+}
+
 type membershipRepo struct {
 	client *redis.Client
 }
 
 const membershipsByUserPrefix = "membershipsByUser:"
+
+var errStoredMembershipContract = errors.New("stored membership contract mismatch")
 
 func NewMembershipRepo(rdb *redis.Client) MembershipRepository {
 	return &membershipRepo{client: rdb}
@@ -61,6 +73,24 @@ func (r *membershipRepo) Get(ctx context.Context, tenantID string, userID string
 	return &m, nil
 }
 
+func (r *membershipRepo) GetExact(ctx context.Context, tenantID string, userID string) (*domain.Membership, error) {
+	value, err := r.client.HGet(ctx, membershipsKey(tenantID), userID).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if value == "" {
+		return nil, errStoredMembershipContract
+	}
+	var membership domain.Membership
+	if json.Unmarshal([]byte(value), &membership) != nil || membership.TenantId != tenantID || membership.UserId != userID {
+		return nil, errStoredMembershipContract
+	}
+	return &membership, nil
+}
+
 func (r *membershipRepo) ListByTenant(ctx context.Context, tenantID string, cursor uint64, count int64) ([]*domain.Membership, uint64, error) {
 	values, nextCursor, err := r.client.HScan(ctx, membershipsKey(tenantID), cursor, "", count).Result()
 	if err == redis.Nil {
@@ -91,6 +121,26 @@ func (r *membershipRepo) ListTenantIDsByUser(ctx context.Context, userID string)
 	return vals, nil
 }
 
+func (r *membershipRepo) ListTenantIDsByUserExact(ctx context.Context, userID string) ([]string, error) {
+	if userID == "" || strings.TrimSpace(userID) != userID {
+		return nil, errStoredMembershipContract
+	}
+	values, err := r.client.SMembers(ctx, membershipsByUserPrefix+userID).Result()
+	if err == redis.Nil {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, tenantID := range values {
+		if !canonicalMembershipTenantID(tenantID) {
+			return nil, errStoredMembershipContract
+		}
+	}
+	sort.Strings(values)
+	return values, nil
+}
+
 func (r *membershipRepo) Delete(ctx context.Context, tenantID string, userID string) error {
 	_ = r.client.HDel(ctx, membershipsKey(tenantID), userID).Err()
 	_ = r.client.SRem(ctx, membershipsByUserPrefix+userID, tenantID).Err()
@@ -99,4 +149,16 @@ func (r *membershipRepo) Delete(ctx context.Context, tenantID string, userID str
 
 func membershipsKey(tenantID string) string {
 	return "memberships:" + tenantID
+}
+
+func canonicalMembershipTenantID(value string) bool {
+	if len(value) < 1 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, character := range []byte(value) {
+		if strings.IndexByte("abcdefghijklmnopqrstuvwxyz0123456789-", character) < 0 {
+			return false
+		}
+	}
+	return true
 }

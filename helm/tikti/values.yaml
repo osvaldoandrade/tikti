@@ -63,6 +63,8 @@ config:
   defaultAudience: "tikti"
   jwksPrivateKey: ""
   jwksKeyId: "tikti-local-1"
+  tenantScopedTokenClaimsV1: false
+  tenantScopedTokenClaimsV1Tenants: []
   workloadIdentity:
     issuer: ""
     audience: "tikti-workload-exchange"
