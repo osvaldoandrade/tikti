@@ -719,6 +719,8 @@ Request:
 ## Role management (admin)
 `PUT /v1/admin/tenants/{tenantId}/roles/{roleName}` creates an immutable tenant role from the exact body `{"permissions":[...]}`; it requires `X-API-Key` plus an RS256 bearer with `code-admin:tenants:admin`, or `code-admin:identity:write` with matching `tid`, and accepts 1–500 unique scope strings of 1–128 characters (`[A-Za-z0-9._:/*-]`). Create returns 201, an identical replay 200, and a conflicting definition 409; the legacy POST below is unchanged.
 
+`GET /v1/admin/tenants/{tenantId}/roles/{roleName}` and `GET /v1/admin/tenants/{tenantId}/roles` require `X-API-Key` in the header and a strict RS256 bearer with a non-empty `sub`. `code-admin:tenants:admin` may read any target tenant; otherwise the bearer needs `code-admin:identity:read` or `code-admin:identity:write` and an exact matching `tid`. Tenant IDs use the 1–63 character lowercase DNS-label grammar and role names use the published 1–128 character role grammar. Exact lookup returns 200 or `404 {"error":"role not found"}`; list returns at most 500 roles in a 200 JSON array sorted by role name. Both reads fail closed with 500 when a stored Redis value is empty or malformed, its hash field differs from the embedded role name, or tenant ownership, permission count, or permission grammar violate the immutable role contract; the legacy GET remains available for legacy projections. Read audit records contain only bounded actor, target tenant, role, request ID, and outcome metadata, never permissions, credentials, or the API key. Query-string API keys are rejected.
+
 ### POST /v1/tenants/{tenantId}/roles
 
 Creates a role and its permissions.

@@ -30,6 +30,8 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	}
 	roleCtrl := controllers.NewRoleController(roleService, cfg)
 	roleAdmin := v1.Group("/admin/tenants/:tenantId/roles", utils.RequiredApiKeyHeader(cfg.ApiKey))
+	roleAdmin.GET("", roleCtrl.ListAdmin)
+	roleAdmin.GET("/:roleName", roleCtrl.Get)
 	roleAdmin.PUT("/:roleName", roleCtrl.Put)
 
 	protected := v1.Group("/")

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/go-redis/redis/v8"
@@ -11,12 +12,20 @@ import (
 )
 
 type RoleRepository interface {
-	// Four methods keep legacy overwrite and immutable create behind one storage boundary.
+	// Legacy overwrite and reads remain unchanged for existing consumers.
 	Create(ctx context.Context, tenantID string, role *domain.Role) error
 	CreateIfAbsent(ctx context.Context, tenantID string, role *domain.Role) (*domain.Role, bool, error)
 	Get(ctx context.Context, tenantID string, name string) (*domain.Role, error)
 	List(ctx context.Context, tenantID string) ([]*domain.Role, error)
 }
+
+// ExactRoleRepository validates Redis field identity for privileged read routes.
+type ExactRoleRepository interface {
+	GetExact(ctx context.Context, tenantID string, name string) (*domain.Role, error)
+	ListExact(ctx context.Context, tenantID string) ([]*domain.Role, error)
+}
+
+var errStoredRoleContract = errors.New("stored role contract mismatch")
 
 type roleRepo struct {
 	client *redis.Client
@@ -80,6 +89,17 @@ func (r *roleRepo) Get(ctx context.Context, tenantID string, name string) (*doma
 	return &role, nil
 }
 
+func (r *roleRepo) GetExact(ctx context.Context, tenantID string, name string) (*domain.Role, error) {
+	value, err := r.client.HGet(ctx, rolesKey(tenantID), name).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return decodeExactRole(name, value)
+}
+
 func (r *roleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, error) {
 	vals, err := r.client.HGetAll(ctx, rolesKey(tenantID)).Result()
 	if err != nil {
@@ -94,6 +114,33 @@ func (r *roleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, e
 		out = append(out, &role)
 	}
 	return out, nil
+}
+
+func (r *roleRepo) ListExact(ctx context.Context, tenantID string) ([]*domain.Role, error) {
+	values, err := r.client.HGetAll(ctx, rolesKey(tenantID)).Result()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*domain.Role, 0, len(values))
+	for name, value := range values {
+		role, err := decodeExactRole(name, value)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, role)
+	}
+	return out, nil
+}
+
+func decodeExactRole(name, value string) (*domain.Role, error) {
+	if value == "" {
+		return nil, errStoredRoleContract
+	}
+	var role domain.Role
+	if json.Unmarshal([]byte(value), &role) != nil || role.Name != name {
+		return nil, errStoredRoleContract
+	}
+	return &role, nil
 }
 
 func rolesKey(tenantID string) string {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -17,6 +18,8 @@ type fakeRoleRepo struct {
 	getFn          func(ctx context.Context, tenantID string, name string) (*domain.Role, error)
 	listFn         func(ctx context.Context, tenantID string) ([]*domain.Role, error)
 }
+
+type legacyOnlyRoleRepo struct{ repository.RoleRepository }
 
 func (f *fakeRoleRepo) Create(ctx context.Context, tenantID string, role *domain.Role) error {
 	if f.createFn != nil {
@@ -39,6 +42,10 @@ func (f *fakeRoleRepo) Get(ctx context.Context, tenantID string, name string) (*
 	return nil, nil
 }
 
+func (f *fakeRoleRepo) GetExact(ctx context.Context, tenantID string, name string) (*domain.Role, error) {
+	return f.Get(ctx, tenantID, name)
+}
+
 func (f *fakeRoleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, error) {
 	if f.listFn != nil {
 		return f.listFn(ctx, tenantID)
@@ -46,10 +53,24 @@ func (f *fakeRoleRepo) List(ctx context.Context, tenantID string) ([]*domain.Rol
 	return nil, nil
 }
 
+func (f *fakeRoleRepo) ListExact(ctx context.Context, tenantID string) ([]*domain.Role, error) {
+	return f.List(ctx, tenantID)
+}
+
 func TestNewRoleService(t *testing.T) {
 	svc := NewRoleService(&fakeRoleRepo{})
 	if svc == nil {
 		t.Fatalf("expected service")
+	}
+}
+
+func TestRoleService_CanonicalReadsRequireExactRepository(t *testing.T) {
+	svc := NewRoleService(legacyOnlyRoleRepo{RoleRepository: &fakeRoleRepo{}})
+	if _, err := svc.GetByName(context.Background(), "bereia", "read"); err == nil {
+		t.Fatal("canonical get accepted a legacy-only repository")
+	}
+	if _, err := svc.ListCanonical(context.Background(), "bereia"); err == nil {
+		t.Fatal("canonical list accepted a legacy-only repository")
 	}
 }
 
@@ -257,4 +278,149 @@ func TestRoleService_CreateWithNameStorageFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRoleService_GetByNameCanonicalContract(t *testing.T) {
+	stored := &domain.Role{Name: "bereia-read", TenantId: "bereia", Permissions: []string{"scope:read"}}
+	svc := NewRoleService(&fakeRoleRepo{getFn: func(_ context.Context, tenantID, name string) (*domain.Role, error) {
+		if tenantID != "bereia" || name != stored.Name {
+			t.Fatalf("repository target = %q %q", tenantID, name)
+		}
+		return stored, nil
+	}})
+	got, err := svc.GetByName(context.Background(), "bereia", stored.Name)
+	if err != nil || got.Name != stored.Name || !reflect.DeepEqual(got.Permissions, stored.Permissions) {
+		t.Fatalf("GetByName() = %+v, %v", got, err)
+	}
+	got.Permissions[0] = "mutated"
+	if stored.Permissions[0] != "scope:read" {
+		t.Fatalf("response aliased stored permissions: %+v", stored)
+	}
+
+	for _, test := range []struct {
+		name, tenant, role string
+		wantErr            error
+	}{
+		{name: "invalid tenant", tenant: "Bereia", role: "read", wantErr: domain.ErrInvalidTenant},
+		{name: "invalid role", tenant: "bereia", role: "read/../../secret", wantErr: domain.ErrInvalidArgument},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewRoleService(&fakeRoleRepo{}).GetByName(context.Background(), test.tenant, test.role)
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("GetByName() error = %v, want %v", err, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestRoleService_GetByNameMissingAndStorageFailures(t *testing.T) {
+	repoFailure := errors.New("redis credential canary")
+	for _, test := range []struct {
+		name string
+		repo *fakeRoleRepo
+		want error
+	}{
+		{name: "missing", repo: &fakeRoleRepo{}, want: domain.ErrRoleNotFound},
+		{name: "repository", repo: &fakeRoleRepo{getFn: func(context.Context, string, string) (*domain.Role, error) { return nil, repoFailure }}, want: repoFailure},
+		{name: "wrong tenant in storage", repo: &fakeRoleRepo{getFn: func(context.Context, string, string) (*domain.Role, error) {
+			return &domain.Role{Name: "read", TenantId: "storifly"}, nil
+		}}},
+		{name: "wrong name in storage", repo: &fakeRoleRepo{getFn: func(context.Context, string, string) (*domain.Role, error) {
+			return &domain.Role{Name: "write", TenantId: "bereia"}, nil
+		}}},
+		{name: "invalid permissions in storage", repo: &fakeRoleRepo{getFn: func(context.Context, string, string) (*domain.Role, error) {
+			return &domain.Role{Name: "read", TenantId: "bereia", Permissions: []string{"scope:read", "scope:read"}}, nil
+		}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewRoleService(test.repo).GetByName(context.Background(), "bereia", "read")
+			if err == nil || test.want != nil && !errors.Is(err, test.want) {
+				t.Fatalf("GetByName() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRoleService_ListCanonicalDeterministicAndIsolated(t *testing.T) {
+	stored := []*domain.Role{
+		{Name: "z-admin", TenantId: "bereia", Permissions: []string{"z:admin"}},
+		{Name: "a-read", TenantId: "bereia", Permissions: []string{"a:read"}},
+	}
+	svc := NewRoleService(&fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) { return stored, nil }})
+	got, err := svc.ListCanonical(context.Background(), "bereia")
+	if err != nil || len(got) != 2 || got[0].Name != "a-read" || got[1].Name != "z-admin" {
+		t.Fatalf("ListCanonical() = %+v, %v", got, err)
+	}
+	got[0].Permissions[0] = "mutated"
+	if stored[1].Permissions[0] != "a:read" {
+		t.Fatalf("response aliased stored permissions: %+v", stored)
+	}
+	empty, err := NewRoleService(&fakeRoleRepo{}).ListCanonical(context.Background(), "bereia")
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty list = %#v, %v", empty, err)
+	}
+	roles500 := canonicalRoles(500)
+	maximum, err := NewRoleService(&fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) {
+		return roles500, nil
+	}}).ListCanonical(context.Background(), "bereia")
+	if err != nil || len(maximum) != 500 {
+		t.Fatalf("500-role boundary = %d, %v", len(maximum), err)
+	}
+}
+
+func TestRoleService_ListCanonicalRejectsInvalidOrCorruptState(t *testing.T) {
+	repoFailure := errors.New("redis credential canary")
+	for _, test := range []struct {
+		name, tenant string
+		repo         *fakeRoleRepo
+		want         error
+	}{
+		{name: "invalid tenant", tenant: "../bereia", repo: &fakeRoleRepo{}, want: domain.ErrInvalidTenant},
+		{name: "repository", tenant: "bereia", repo: &fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) { return nil, repoFailure }}, want: repoFailure},
+		{name: "nil role", tenant: "bereia", repo: &fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) { return []*domain.Role{nil}, nil }}},
+		{name: "wrong tenant", tenant: "bereia", repo: &fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) {
+			return []*domain.Role{{Name: "read", TenantId: "storifly"}}, nil
+		}}},
+		{name: "invalid stored name", tenant: "bereia", repo: &fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) {
+			return []*domain.Role{{Name: "../read", TenantId: "bereia"}}, nil
+		}}},
+		{name: "duplicate stored name", tenant: "bereia", repo: &fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) {
+			return []*domain.Role{{Name: "read", TenantId: "bereia", Permissions: []string{"read"}}, {Name: "read", TenantId: "bereia", Permissions: []string{"read"}}}, nil
+		}}},
+		{name: "invalid stored permissions", tenant: "bereia", repo: &fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) {
+			return []*domain.Role{{Name: "read", TenantId: "bereia", Permissions: []string{}}}, nil
+		}}},
+		{name: "stored role limit", tenant: "bereia", repo: &fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) {
+			return canonicalRoles(501), nil
+		}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := NewRoleService(test.repo).ListCanonical(context.Background(), test.tenant)
+			if err == nil || test.want != nil && !errors.Is(err, test.want) {
+				t.Fatalf("ListCanonical() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func canonicalRoles(count int) []*domain.Role {
+	roles := make([]*domain.Role, count)
+	for index := range roles {
+		roles[index] = &domain.Role{Name: fmt.Sprintf("role-%03d", index), TenantId: "bereia", Permissions: []string{"read"}}
+	}
+	return roles
+}
+
+func FuzzRoleServiceCanonicalReadIdentifiers(f *testing.F) {
+	for _, seed := range [][2]string{{"bereia", "bereia-read"}, {"../bad", "read"}, {"bereia", "read/secret"}, {"0", "A"}} {
+		f.Add(seed[0], seed[1])
+	}
+	f.Fuzz(func(t *testing.T, tenantID, roleName string) {
+		if len(tenantID) > 256 || len(roleName) > 256 {
+			return
+		}
+		svc := NewRoleService(&fakeRoleRepo{})
+		_, _ = svc.GetByName(context.Background(), tenantID, roleName)
+		_, _ = svc.ListCanonical(context.Background(), tenantID)
+	})
 }

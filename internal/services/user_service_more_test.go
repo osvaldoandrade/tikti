@@ -142,6 +142,12 @@ func (m *mockRoleService) Create(context.Context, string, domain.RoleCreateReq) 
 func (m *mockRoleService) CreateWithName(context.Context, string, string, domain.RolePutReq) (*domain.RoleResp, bool, error) {
 	return nil, false, nil
 }
+func (m *mockRoleService) GetByName(context.Context, string, string) (*domain.RoleResp, error) {
+	return nil, nil
+}
+func (m *mockRoleService) ListCanonical(context.Context, string) ([]*domain.RoleResp, error) {
+	return nil, nil
+}
 func (m *mockRoleService) List(context.Context, string) ([]*domain.RoleResp, error) { return nil, nil }
 func (m *mockRoleService) ResolvePermissions(ctx context.Context, tenantID string, roles []string) ([]string, error) {
 	if m.resolvePermissionsFn != nil {

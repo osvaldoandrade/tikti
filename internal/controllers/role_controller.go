@@ -94,6 +94,68 @@ func (r *roleController) Put(c *gin.Context) {
 	c.JSON(status, result)
 }
 
+func (r *roleController) Get(c *gin.Context) {
+	tenantID, roleName := c.Param("tenantId"), c.Param("roleName")
+	claims, ok := requireTenantIAMRead(c, r.cfg, tenantID)
+	if !ok {
+		return
+	}
+	outcome := "failure"
+	defer func() { logRoleRead(c, "tenant_role_get", claimString(claims, "sub"), tenantID, roleName, outcome) }()
+	result, err := r.svc.GetByName(c.Request.Context(), tenantID, roleName)
+	if err != nil {
+		outcome = roleReadOutcome(err)
+		writeRoleReadError(c, err, "could not read role")
+		return
+	}
+	outcome = "success"
+	c.JSON(http.StatusOK, result)
+}
+
+func (r *roleController) ListAdmin(c *gin.Context) {
+	tenantID := c.Param("tenantId")
+	claims, ok := requireTenantIAMRead(c, r.cfg, tenantID)
+	if !ok {
+		return
+	}
+	outcome := "failure"
+	defer func() { logRoleRead(c, "tenant_role_list", claimString(claims, "sub"), tenantID, "*", outcome) }()
+	result, err := r.svc.ListCanonical(c.Request.Context(), tenantID)
+	if err != nil {
+		outcome = roleReadOutcome(err)
+		writeRoleReadError(c, err, "could not list roles")
+		return
+	}
+	outcome = "success"
+	c.JSON(http.StatusOK, result)
+}
+
+func roleReadOutcome(err error) string {
+	if errors.Is(err, domain.ErrInvalidTenant) || errors.Is(err, domain.ErrInvalidArgument) {
+		return "invalid"
+	}
+	if errors.Is(err, domain.ErrRoleNotFound) {
+		return "not_found"
+	}
+	return "failure"
+}
+
+func logRoleRead(c *gin.Context, event, actor, tenantID, roleName, outcome string) {
+	log.Printf("audit event=%s actor=%.128q tenant=%.128q role=%.128q request_id=%.128q result=%s",
+		event, actor, tenantID, roleName, c.GetHeader("X-Request-Id"), outcome)
+}
+
+func writeRoleReadError(c *gin.Context, err error, internalMessage string) {
+	switch {
+	case errors.Is(err, domain.ErrInvalidTenant), errors.Is(err, domain.ErrInvalidArgument):
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	case errors.Is(err, domain.ErrRoleNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": domain.ErrRoleNotFound.Error()})
+	default:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": internalMessage})
+	}
+}
+
 func logRolePut(c *gin.Context, actor, tenantID, roleName, result string) {
 	log.Printf("audit event=tenant_role_put actor=%.128q tenant=%.128q role=%.128q request_id=%.128q result=%s",
 		actor, tenantID, roleName, c.GetHeader("X-Request-Id"), result)

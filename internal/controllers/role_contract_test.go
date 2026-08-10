@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -88,6 +90,98 @@ func TestRoleControllerPutStrictContract(t *testing.T) {
 				t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestRoleControllerReadAuthorizationAndErrors(t *testing.T) {
+	cfg, key := roleAccessConfig(t)
+	bearer := func(claims jwt.MapClaims) string { return "Bearer " + signRoleAccessToken(t, key, claims) }
+	platform := bearer(jwt.MapClaims{"sub": "platform-operator", "scope": platformTenantAdminScope, "tid": "home"})
+	localRead := bearer(jwt.MapClaims{"sub": "tenant-operator", "scope": tenantIdentityReadScope, "tid": "bereia"})
+	localWrite := bearer(jwt.MapClaims{"sub": "tenant-operator", "scope": tenantIdentityWriteScope, "tid": "bereia"})
+	storageCanary := errors.New("redis-password=must-not-leak")
+	svc := &fakeRoleService{
+		getByNameFn: func(_ context.Context, tenantID, roleName string) (*domain.RoleResp, error) {
+			switch roleName {
+			case "missing":
+				return nil, domain.ErrRoleNotFound
+			case "storage":
+				return nil, storageCanary
+			case "bad-role":
+				return nil, domain.ErrInvalidArgument
+			}
+			if tenantID == "bad-tenant" {
+				return nil, domain.ErrInvalidTenant
+			}
+			return &domain.RoleResp{Name: roleName, Permissions: []string{"scope:permission-canary"}}, nil
+		},
+		listCanonicalFn: func(_ context.Context, tenantID string) ([]*domain.RoleResp, error) {
+			if tenantID == "storage" {
+				return nil, storageCanary
+			}
+			return []*domain.RoleResp{{Name: "bereia-read", Permissions: []string{"scope:permission-canary"}}}, nil
+		},
+	}
+	router := gin.New()
+	controller := NewRoleController(svc, cfg)
+	router.GET("/tenants/:tenantId/roles", controller.ListAdmin)
+	router.GET("/tenants/:tenantId/roles/:roleName", controller.Get)
+	var audit bytes.Buffer
+	previousLogOutput := log.Writer()
+	log.SetOutput(&audit)
+	t.Cleanup(func() { log.SetOutput(previousLogOutput) })
+	tests := []struct {
+		name, target, authorization string
+		want                        int
+		body                        string
+	}{
+		{name: "platform exact cross tenant", target: "/tenants/bereia/roles/bereia-read", authorization: platform, want: http.StatusOK, body: `"name":"bereia-read"`},
+		{name: "platform list cross tenant", target: "/tenants/bereia/roles", authorization: platform, want: http.StatusOK, body: `"name":"bereia-read"`},
+		{name: "local read exact", target: "/tenants/bereia/roles/bereia-read", authorization: localRead, want: http.StatusOK},
+		{name: "local read list", target: "/tenants/bereia/roles", authorization: localRead, want: http.StatusOK},
+		{name: "local write exact", target: "/tenants/bereia/roles/bereia-read", authorization: localWrite, want: http.StatusOK},
+		{name: "local write implies read", target: "/tenants/bereia/roles", authorization: localWrite, want: http.StatusOK},
+		{name: "local foreign target", target: "/tenants/storifly/roles/bereia-read", authorization: localRead, want: http.StatusForbidden},
+		{name: "scope suffix", target: "/tenants/bereia/roles/bereia-read", authorization: bearer(jwt.MapClaims{"sub": "operator", "scope": tenantIdentityReadScope + "-extra", "tid": "bereia"}), want: http.StatusForbidden},
+		{name: "missing subject", target: "/tenants/bereia/roles", authorization: bearer(jwt.MapClaims{"scope": platformTenantAdminScope}), want: http.StatusForbidden},
+		{name: "missing bearer", target: "/tenants/bereia/roles", authorization: " ", want: http.StatusUnauthorized},
+		{name: "raw token", target: "/tenants/bereia/roles", authorization: strings.TrimPrefix(platform, "Bearer "), want: http.StatusUnauthorized},
+		{name: "missing exact", target: "/tenants/bereia/roles/missing", authorization: platform, want: http.StatusNotFound, body: `{"error":"role not found"}`},
+		{name: "invalid tenant", target: "/tenants/bad-tenant/roles/bereia-read", authorization: platform, want: http.StatusBadRequest, body: `{"error":"invalid tenant"}`},
+		{name: "invalid role", target: "/tenants/bereia/roles/bad-role", authorization: platform, want: http.StatusBadRequest, body: `{"error":"invalid argument"}`},
+		{name: "get storage redacted", target: "/tenants/bereia/roles/storage", authorization: platform, want: http.StatusInternalServerError, body: `{"error":"could not read role"}`},
+		{name: "list storage redacted", target: "/tenants/storage/roles", authorization: platform, want: http.StatusInternalServerError, body: `{"error":"could not list roles"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, test.target, nil)
+			req.Header.Set("Authorization", test.authorization)
+			req.Header.Set("X-Request-Id", "req-role-read")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != test.want || test.body != "" && !strings.Contains(rec.Body.String(), test.body) || strings.Contains(rec.Body.String(), storageCanary.Error()) {
+				t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	logged := audit.String()
+	for _, expected := range []string{"event=tenant_role_get", "event=tenant_role_list", `actor="platform-operator"`, `tenant="bereia"`, `role="*"`, `request_id="req-role-read"`, "result=success", "result=not_found", "result=invalid", "result=failure"} {
+		if !strings.Contains(logged, expected) {
+			t.Fatalf("audit log missing %q: %s", expected, logged)
+		}
+	}
+	for _, forbidden := range []string{"scope:permission-canary", storageCanary.Error(), strings.TrimPrefix(platform, "Bearer ")} {
+		if strings.Contains(logged, forbidden) {
+			t.Fatalf("audit log disclosed %q: %s", forbidden, logged)
+		}
+	}
+	bounded := strings.Repeat("x", 129)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx.Request.Header.Set("X-Request-Id", bounded)
+	logRoleRead(ctx, "tenant_role_get", bounded, bounded, bounded, "success")
+	if strings.Contains(audit.String(), bounded) {
+		t.Fatal("audit metadata exceeded its 128-character bound")
 	}
 }
 
