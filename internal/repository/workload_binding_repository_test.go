@@ -46,6 +46,12 @@ func TestWorkloadBindingRepositoryLifecycle(t *testing.T) {
 	if unknown, err := repo.Revoke(context.Background(), "system:serviceaccount:code-admin:missing", revokedAt); err != nil || unknown != nil {
 		t.Fatalf("unknown Revoke() = %#v, %v", unknown, err)
 	}
+	if err := client.HSet(context.Background(), workloadBindingsKey, "bad", "{").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Get(context.Background(), "bad"); err == nil {
+		t.Fatal("invalid stored binding was accepted")
+	}
 }
 
 func TestWorkloadBindingRepositoryRejectsInvalidInput(t *testing.T) {

@@ -93,4 +93,8 @@ func TestRepository_ErrorBranches_WithClosedRedisClient(t *testing.T) {
 	if _, err := ur.GetAllUsers(ctx); err == nil {
 		t.Fatalf("expected get all users error")
 	}
+	wr := NewWorkloadBindingRepo(rdb)
+	if err := wr.Upsert(ctx, &domain.WorkloadBinding{Subject: "subject"}); err == nil {
+		t.Fatal("expected workload upsert error")
+	}
 }

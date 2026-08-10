@@ -89,6 +89,13 @@ func TestMembershipRepo_GetInvalidJSON(t *testing.T) {
 	if _, err := r.Get(ctx, "t1", "u1"); err == nil {
 		t.Fatalf("expected unmarshal error")
 	}
+	if _, _, err := r.ListByTenant(ctx, "t1", 0, 10); err == nil {
+		t.Fatal("expected list unmarshal error")
+	}
+	rdb.AddHook(commandErrorHook{byName: map[string]error{"hscan": context.Canceled}})
+	if _, _, err := r.ListByTenant(ctx, "t1", 0, 10); err == nil {
+		t.Fatal("expected list storage error")
+	}
 }
 
 func TestMembershipRepo_ListTenantIDsByUser_NotFoundReturnsEmpty(t *testing.T) {

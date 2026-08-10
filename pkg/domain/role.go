@@ -21,6 +21,11 @@ type RoleCreateReq struct {
 	Permissions []string `json:"permissions"`
 }
 
+// RolePutReq is the immutable definition accepted by deterministic role creation.
+type RolePutReq struct {
+	Permissions []string `json:"permissions"`
+}
+
 type RoleResp struct {
 	Name        string   `json:"name"`
 	Permissions []string `json:"permissions"`

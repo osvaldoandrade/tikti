@@ -28,13 +28,15 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		workloadAdmin.POST("/bindings", workloadCtrl.UpsertBinding)
 		workloadAdmin.POST("/bindings/revoke", workloadCtrl.RevokeBinding)
 	}
+	roleCtrl := controllers.NewRoleController(roleService, cfg)
+	roleAdmin := v1.Group("/admin/tenants/:tenantId/roles", utils.RequiredApiKeyHeader(cfg.ApiKey))
+	roleAdmin.PUT("/:roleName", roleCtrl.Put)
 
 	protected := v1.Group("/")
 	protected.Use(utils.ApiKey(cfg.ApiKey))
 	{
 		tenantCtrl := controllers.NewTenantController(tenantService, cfg)
 		memberCtrl := controllers.NewMembershipController(membershipService, cfg)
-		roleCtrl := controllers.NewRoleController(roleService, cfg)
 		clientCtrl := controllers.NewClientController(clientService, cfg)
 
 		protected.POST("/accounts/signInWithPassword", signInCtrl.Handle)

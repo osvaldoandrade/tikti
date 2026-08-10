@@ -203,6 +203,7 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 | `/tenants/:id?key=...` | GET | Retrieve a tenant |
 | `/tenants/:tenantId/users?key=...` | POST | Add a user to a tenant |
 | `/tenants/:tenantId/roles?key=...` | POST | Create a role within a tenant |
+| `/admin/tenants/:tenantId/roles/:roleName` | PUT | Create-if-absent tenant role using `X-API-Key` and a scoped RS256 bearer |
 | `/tenants/:tenantId/roles?key=...` | GET | List roles within a tenant |
 | `/tenants/:tenantId/clients?key=...` | POST | Register a client for a tenant |
 | `/tenants/:tenantId/clients?key=...` | GET | List clients for a tenant |

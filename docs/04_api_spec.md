@@ -717,6 +717,7 @@ Request:
 ```
 
 ## Role management (admin)
+`PUT /v1/admin/tenants/{tenantId}/roles/{roleName}` creates an immutable tenant role from the exact body `{"permissions":[...]}`; it requires `X-API-Key` plus an RS256 bearer with `code-admin:tenants:admin`, or `code-admin:identity:write` with matching `tid`, and accepts 1–500 unique scope strings of 1–128 characters (`[A-Za-z0-9._:/*-]`). Create returns 201, an identical replay 200, and a conflicting definition 409; the legacy POST below is unchanged.
 
 ### POST /v1/tenants/{tenantId}/roles
 

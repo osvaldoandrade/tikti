@@ -211,6 +211,7 @@ func (f *fakeMembershipService) ListTenantIDsByUser(ctx context.Context, userID 
 
 type fakeRoleService struct {
 	createFn             func(context.Context, string, domain.RoleCreateReq) (*domain.RoleResp, error)
+	createWithNameFn     func(context.Context, string, string, domain.RolePutReq) (*domain.RoleResp, bool, error)
 	listFn               func(context.Context, string) ([]*domain.RoleResp, error)
 	resolvePermissionsFn func(context.Context, string, []string) ([]string, error)
 }
@@ -220,6 +221,9 @@ func (f *fakeRoleService) Create(ctx context.Context, tenantID string, req domai
 		return f.createFn(ctx, tenantID, req)
 	}
 	return nil, nil
+}
+func (f *fakeRoleService) CreateWithName(ctx context.Context, tenantID, name string, req domain.RolePutReq) (*domain.RoleResp, bool, error) {
+	return f.createWithNameFn(ctx, tenantID, name, req)
 }
 func (f *fakeRoleService) List(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
 	if f.listFn != nil {

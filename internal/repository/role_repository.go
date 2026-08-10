@@ -11,7 +11,9 @@ import (
 )
 
 type RoleRepository interface {
+	// Four methods keep legacy overwrite and immutable create behind one storage boundary.
 	Create(ctx context.Context, tenantID string, role *domain.Role) error
+	CreateIfAbsent(ctx context.Context, tenantID string, role *domain.Role) (*domain.Role, bool, error)
 	Get(ctx context.Context, tenantID string, name string) (*domain.Role, error)
 	List(ctx context.Context, tenantID string) ([]*domain.Role, error)
 }
@@ -39,6 +41,25 @@ func (r *roleRepo) Create(ctx context.Context, tenantID string, role *domain.Rol
 		return err
 	}
 	return r.client.HSet(ctx, rolesKey(tenantID), roleName, data).Err()
+}
+
+func (r *roleRepo) CreateIfAbsent(ctx context.Context, tenantID string, role *domain.Role) (*domain.Role, bool, error) {
+	if tenantID == "" || role == nil || role.Name == "" {
+		return nil, false, domain.ErrInvalidArgument
+	}
+	data, err := json.Marshal(role)
+	if err != nil {
+		return nil, false, err
+	}
+	created, err := r.client.HSetNX(ctx, rolesKey(tenantID), role.Name, data).Result()
+	if err != nil {
+		return nil, false, err
+	}
+	if created {
+		return role, true, nil
+	}
+	stored, err := r.Get(ctx, tenantID, role.Name)
+	return stored, false, err
 }
 
 func (r *roleRepo) Get(ctx context.Context, tenantID string, name string) (*domain.Role, error) {

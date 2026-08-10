@@ -70,10 +70,13 @@ func TestTenantRepo_Get_NotFoundAndInvalidJSON(t *testing.T) {
 	if _, err := tr.Get(ctx, "bad"); err == nil {
 		t.Fatalf("expected unmarshal error")
 	}
+	if _, _, err := tr.List(ctx, 0, 10); err == nil {
+		t.Fatal("expected list unmarshal error")
+	}
 }
 
 func TestTenantRepo_ListIsStableAndPaginated(t *testing.T) {
-	_, repo := newTenantRepoForTest(t)
+	rdb, repo := newTenantRepoForTest(t)
 	ctx := context.Background()
 	for _, tenant := range []*domain.Tenant{
 		{Id: "tenant-c", Name: "C", Slug: "c"},
@@ -91,6 +94,13 @@ func TestTenantRepo_ListIsStableAndPaginated(t *testing.T) {
 	second, next, err := repo.List(ctx, 2, 2)
 	if err != nil || len(second) != 1 || second[0].Id != "tenant-c" || next != "" {
 		t.Fatalf("unexpected second page: %+v next=%q err=%v", second, next, err)
+	}
+	if empty, _, err := repo.List(ctx, 99, 2); err != nil || len(empty) != 0 {
+		t.Fatalf("offset page: %+v, %v", empty, err)
+	}
+	_ = rdb.HSet(ctx, tenantsHash, "empty", "").Err()
+	if tenants, _, err := repo.List(ctx, 0, 10); err != nil || len(tenants) != 3 {
+		t.Fatalf("empty tenant value was not skipped: %+v, %v", tenants, err)
 	}
 }
 
