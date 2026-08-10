@@ -16,6 +16,8 @@ data:
     defaultAudience: {{ .Values.config.defaultAudience | quote }}
     jwksPrivateKey: {{- if .Values.secrets.enabled }} "${JWKS_PRIVATE_KEY}"{{- else }} {{ .Values.config.jwksPrivateKey | quote }}{{- end }}
     jwksKeyId: {{ .Values.config.jwksKeyId | quote }}
+    tenantScopedTokenClaimsV1: {{ .Values.config.tenantScopedTokenClaimsV1 }}
+    tenantScopedTokenClaimsV1Tenants: {{ .Values.config.tenantScopedTokenClaimsV1Tenants | toJson }}
     workloadIdentity:
       issuer: {{ .Values.config.workloadIdentity.issuer | quote }}
       audience: {{ .Values.config.workloadIdentity.audience | quote }}

@@ -132,3 +132,69 @@ func TestMembershipsKey(t *testing.T) {
 		t.Fatalf("unexpected key: %s", got)
 	}
 }
+
+func TestMembershipRepoExactReadsFailClosed(t *testing.T) {
+	rdb, legacy := newMembershipRepoForTest(t)
+	repo := legacy.(ExactMembershipRepository)
+	ctx := context.Background()
+	for _, membership := range []*domain.Membership{
+		{Id: "m2", TenantId: "storifly", UserId: "user-1", Roles: []string{"storifly-admin"}},
+		{Id: "m1", TenantId: "bereia", UserId: "user-1", Roles: []string{"bereia-read"}},
+	} {
+		if err := legacy.Create(ctx, membership); err != nil {
+			t.Fatalf("create membership: %v", err)
+		}
+	}
+	tenants, err := repo.ListTenantIDsByUserExact(ctx, "user-1")
+	if err != nil || len(tenants) != 2 || tenants[0] != "bereia" || tenants[1] != "storifly" {
+		t.Fatalf("exact tenants=%v err=%v", tenants, err)
+	}
+	membership, err := repo.GetExact(ctx, "bereia", "user-1")
+	if err != nil || membership == nil || membership.Roles[0] != "bereia-read" {
+		t.Fatalf("exact membership=%+v err=%v", membership, err)
+	}
+	missing, err := repo.GetExact(ctx, "missing", "user-1")
+	if err != nil || missing != nil {
+		t.Fatalf("missing membership=%+v err=%v", missing, err)
+	}
+
+	for name, value := range map[string]string{
+		"empty":           "",
+		"malformed":       "{",
+		"tenant-mismatch": `{"tenantId":"other","userId":"user-1"}`,
+		"user-mismatch":   `{"tenantId":"user-mismatch","userId":"other"}`,
+	} {
+		if err := rdb.HSet(ctx, membershipsKey(name), "user-1", value).Err(); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+		if _, err := repo.GetExact(ctx, name, "user-1"); err != errStoredMembershipContract {
+			t.Fatalf("%s exact error=%v", name, err)
+		}
+	}
+	if err := rdb.SAdd(ctx, membershipsByUserPrefix+"unsafe", "Bereia").Err(); err != nil {
+		t.Fatalf("seed reverse index: %v", err)
+	}
+	if _, err := repo.ListTenantIDsByUserExact(ctx, "unsafe"); err != errStoredMembershipContract {
+		t.Fatalf("unsafe reverse index error=%v", err)
+	}
+	if _, err := repo.ListTenantIDsByUserExact(ctx, " user-1"); err != errStoredMembershipContract {
+		t.Fatalf("unsafe user identity error=%v", err)
+	}
+	if canonicalMembershipTenantID("-bereia") {
+		t.Fatal("non-canonical tenant boundary accepted")
+	}
+}
+
+func TestMembershipRepoExactReadsPropagateRedisErrors(t *testing.T) {
+	rdb, legacy := newMembershipRepoForTest(t)
+	repo := legacy.(ExactMembershipRepository)
+	if err := rdb.Close(); err != nil {
+		t.Fatalf("close Redis client: %v", err)
+	}
+	if _, err := repo.ListTenantIDsByUserExact(context.Background(), "user-1"); err == nil {
+		t.Fatal("reverse-index storage error was swallowed")
+	}
+	if _, err := repo.GetExact(context.Background(), "bereia", "user-1"); err == nil {
+		t.Fatal("exact membership storage error was swallowed")
+	}
+}

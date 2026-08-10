@@ -64,6 +64,53 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.JwksKeyID != "tikti-local-1" {
 		t.Fatalf("unexpected kid: %s", cfg.JwksKeyID)
 	}
+	if cfg.TenantScopedTokenClaimsV1 || len(cfg.TenantScopedTokenClaimsV1Tenants) != 0 {
+		t.Fatalf("tenant-scoped token canary must default off: %#v", cfg.TenantScopedTokenClaimsV1Tenants)
+	}
+}
+
+func TestLoadConfigTenantScopedTokenCanary(t *testing.T) {
+	t.Run("environment explicitly disables", func(t *testing.T) {
+		t.Setenv("TENANT_SCOPED_TOKEN_CLAIMS_V1", "false")
+		if cfg, err := LoadConfig(writeTempConfig(t, `{}`)); err != nil || cfg.TenantScopedTokenClaimsV1 {
+			t.Fatalf("disabled tenant token canary=%#v err=%v", cfg, err)
+		}
+	})
+	t.Run("environment enables canonical allowlist", func(t *testing.T) {
+		t.Setenv("TENANT_SCOPED_TOKEN_CLAIMS_V1", "true")
+		t.Setenv("TENANT_SCOPED_TOKEN_CLAIMS_V1_TENANTS", "storifly,bereia")
+		cfg, err := LoadConfig(writeTempConfig(t, `{}`))
+		if err != nil || !cfg.TenantScopedTokenClaimsV1 || strings.Join(cfg.TenantScopedTokenClaimsV1Tenants, ",") != "bereia,storifly" {
+			t.Fatalf("tenant token canary=%#v err=%v", cfg, err)
+		}
+	})
+	t.Run("yaml enables canonical allowlist", func(t *testing.T) {
+		cfg, err := LoadConfig(writeTempConfig(t, `
+tenantScopedTokenClaimsV1: true
+tenantScopedTokenClaimsV1Tenants: [bereia]
+`))
+		if err != nil || !cfg.TenantScopedTokenClaimsV1 || len(cfg.TenantScopedTokenClaimsV1Tenants) != 1 {
+			t.Fatalf("tenant token YAML canary=%#v err=%v", cfg, err)
+		}
+	})
+	for _, test := range []struct {
+		name, flag, tenants string
+	}{
+		{name: "invalid boolean", flag: "1", tenants: "bereia"},
+		{name: "missing allowlist", flag: "true"},
+		{name: "invalid tenant", flag: "true", tenants: "Bereia"},
+		{name: "invalid tenant boundary", flag: "true", tenants: "-bereia"},
+		{name: "duplicate tenant", flag: "true", tenants: "bereia,bereia"},
+		{name: "tenant limit", flag: "true", tenants: strings.Repeat("t,", 128) + "t"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("TENANT_SCOPED_TOKEN_CLAIMS_V1", test.flag)
+			t.Setenv("TENANT_SCOPED_TOKEN_CLAIMS_V1_TENANTS", test.tenants)
+			if _, err := LoadConfig(writeTempConfig(t, `{}`)); err == nil {
+				t.Fatal("unsafe tenant token canary configuration was accepted")
+			}
+		})
+	}
 }
 
 func TestLoadConfigReadsRuntimeSecretsFromFiles(t *testing.T) {

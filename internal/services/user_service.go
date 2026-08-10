@@ -41,33 +41,47 @@ type UserService interface {
 
 // userService is the concrete UserService backed by the repository and JWT utilities.
 type userService struct {
-	repo            repository.UserRepository
-	membershipRepo  repository.MembershipRepository
-	jwtSecret       string
-	issuerBaseURL   string
-	defaultAudience string
-	jwksPrivateKey  string
-	jwksKeyID       string
-	roleSvc         RoleService
-	clientSvc       ClientService
-	rsaOnce         sync.Once
-	rsaKey          interface{}
-	rsaErr          error
+	repo                       repository.UserRepository
+	membershipRepo             repository.MembershipRepository
+	exactMembershipRepo        repository.ExactMembershipRepository
+	tenantRepo                 repository.TenantRepository
+	tenantScopedTokenClaimsV1  bool
+	tenantScopedTokenAllowlist map[string]struct{}
+	jwtSecret                  string
+	issuerBaseURL              string
+	defaultAudience            string
+	jwksPrivateKey             string
+	jwksKeyID                  string
+	roleSvc                    RoleService
+	clientSvc                  ClientService
+	rsaOnce                    sync.Once
+	rsaKey                     interface{}
+	rsaErr                     error
 }
 
+type UserServiceOption func(*userService)
+
 // NewUserService builds a service instance that signs JWTs with the provided secret.
-func NewUserService(r repository.UserRepository, membershipRepo repository.MembershipRepository, roleSvc RoleService, clientSvc ClientService, jwtSecret string, issuerBaseURL string, defaultAudience string, jwksPrivateKey string, jwksKeyID string) UserService {
-	return &userService{
-		repo:            r,
-		membershipRepo:  membershipRepo,
-		roleSvc:         roleSvc,
-		clientSvc:       clientSvc,
-		jwtSecret:       jwtSecret,
-		issuerBaseURL:   issuerBaseURL,
-		defaultAudience: defaultAudience,
-		jwksPrivateKey:  jwksPrivateKey,
-		jwksKeyID:       jwksKeyID,
+func NewUserService(r repository.UserRepository, membershipRepo repository.MembershipRepository, roleSvc RoleService, clientSvc ClientService, jwtSecret string, issuerBaseURL string, defaultAudience string, jwksPrivateKey string, jwksKeyID string, options ...UserServiceOption) UserService {
+	exactMembershipRepo, _ := membershipRepo.(repository.ExactMembershipRepository)
+	service := &userService{
+		repo:                r,
+		membershipRepo:      membershipRepo,
+		exactMembershipRepo: exactMembershipRepo,
+		roleSvc:             roleSvc,
+		clientSvc:           clientSvc,
+		jwtSecret:           jwtSecret,
+		issuerBaseURL:       issuerBaseURL,
+		defaultAudience:     defaultAudience,
+		jwksPrivateKey:      jwksPrivateKey,
+		jwksKeyID:           jwksKeyID,
 	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service
 }
 
 // SignUp validates uniqueness, hashes the password and persists a new user.
@@ -269,7 +283,11 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if email == "" {
 		return nil, domain.ErrInvalidToken
 	}
-	u, _ := s.repo.FindByEmail(ctx, email)
+	u, userErr := s.repo.FindByEmail(ctx, email)
+	strictTarget, protectedTarget := s.tenantScopedTokenTarget(req.TenantID)
+	if protectedTarget && userErr != nil {
+		return nil, domain.ErrInvalidToken
+	}
 	if u == nil {
 		return nil, domain.ErrNotFound
 	}
@@ -279,24 +297,37 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
 	}
+	if protectedTarget && strictTarget == "" {
+		return nil, domain.ErrInvalidTenant
+	}
 
-	tenantID := strings.TrimSpace(req.TenantID)
-	memberTenants := s.listTenantIDs(ctx, u.Id)
-	if tenantID == "" {
-		if len(memberTenants) > 0 {
-			tenantID = memberTenants[0]
-		} else {
-			tenantID = derefString(u.CompanyId)
+	tenantID := strictTarget
+	var tenantRoles, tenantPermissions []string
+	if strictTarget != "" {
+		authorization, authErr := s.resolveTenantScopedTokenAuthorization(ctx, u, strictTarget)
+		if authErr != nil {
+			return nil, authErr
 		}
-	}
-	if tenantID == "" {
-		return nil, domain.ErrInvalidTenant
-	}
-	if len(memberTenants) > 0 && !containsString(memberTenants, tenantID) {
-		return nil, domain.ErrInvalidTenant
-	}
-	if len(memberTenants) == 0 && u.CompanyId != nil && *u.CompanyId != tenantID {
-		return nil, domain.ErrInvalidTenant
+		tenantRoles, tenantPermissions = authorization.roles, authorization.permissions
+	} else {
+		tenantID = strings.TrimSpace(req.TenantID)
+		memberTenants := s.listTenantIDs(ctx, u.Id)
+		if tenantID == "" {
+			if len(memberTenants) > 0 {
+				tenantID = memberTenants[0]
+			} else {
+				tenantID = derefString(u.CompanyId)
+			}
+		}
+		if tenantID == "" {
+			return nil, domain.ErrInvalidTenant
+		}
+		if len(memberTenants) > 0 && !containsString(memberTenants, tenantID) {
+			return nil, domain.ErrInvalidTenant
+		}
+		if len(memberTenants) == 0 && u.CompanyId != nil && *u.CompanyId != tenantID {
+			return nil, domain.ErrInvalidTenant
+		}
 	}
 
 	scopes := normalizeList(req.Scopes)
@@ -318,7 +349,12 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			return nil, domain.ErrUnauthorizedScope
 		}
 	}
-	if len(scopes) > 0 && !s.scopesAllowed(ctx, tenantID, u, scopes) {
+	if strictTarget != "" {
+		scopes = normalizePermissions(scopes)
+		if !subset(scopes, tenantPermissions) {
+			return nil, domain.ErrUnauthorizedScope
+		}
+	} else if len(scopes) > 0 && !s.scopesAllowed(ctx, tenantID, u, scopes) {
 		return nil, domain.ErrUnauthorizedScope
 	}
 
@@ -357,6 +393,10 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		"iat":   time.Now().Unix(),
 		"exp":   time.Now().Add(time.Duration(ttl) * time.Second).Unix(),
 		"jti":   uuid.NewString(),
+	}
+	if strictTarget != "" {
+		delete(claimsOut, "role")
+		claimsOut["roles"] = tenantRoles
 	}
 	if scopeString != "" {
 		claimsOut["scope"] = scopeString
