@@ -28,11 +28,14 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		workloadAdmin.POST("/bindings", workloadCtrl.UpsertBinding)
 		workloadAdmin.POST("/bindings/revoke", workloadCtrl.RevokeBinding)
 	}
+	tenantCtrl := controllers.NewTenantController(tenantService, cfg)
+	tenantProvisioning := v1.Group("/tenants")
+	tenantProvisioning.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
+	tenantProvisioning.PUT("/:tenantId", tenantCtrl.CreateWithID)
 
 	protected := v1.Group("/")
 	protected.Use(utils.ApiKey(cfg.ApiKey))
 	{
-		tenantCtrl := controllers.NewTenantController(tenantService, cfg)
 		memberCtrl := controllers.NewMembershipController(membershipService, cfg)
 		roleCtrl := controllers.NewRoleController(roleService, cfg)
 		clientCtrl := controllers.NewClientController(clientService, cfg)

@@ -2,7 +2,11 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
@@ -49,6 +53,54 @@ func TestTenantRepo_CreateAndGet(t *testing.T) {
 	if got == nil || got.Id != tenant.Id {
 		t.Fatalf("unexpected tenant: %+v", got)
 	}
+	invalidTime := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	if err := tr.Create(ctx, &domain.Tenant{Id: "invalid", CreatedAt: invalidTime}); err == nil {
+		t.Fatal("expected create marshal error")
+	}
+	if _, _, err := tr.CreateIfAbsent(ctx, &domain.Tenant{Id: "invalid", CreatedAt: invalidTime}); err == nil {
+		t.Fatal("expected create-if-absent marshal error")
+	}
+}
+
+func TestTenantRepo_CreateIfAbsentIsAtomic(t *testing.T) {
+	_, repo := newTenantRepoForTest(t)
+	ctx := context.Background()
+	var created atomic.Int32
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, wasCreated, err := repo.CreateIfAbsent(ctx, &domain.Tenant{
+				Id: "bereia", Name: "Bereia", Slug: "bereia",
+			})
+			if err != nil {
+				t.Errorf("create if absent: %v", err)
+				return
+			}
+			if wasCreated {
+				created.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if created.Load() != 1 {
+		t.Fatalf("expected exactly one creator, got %d", created.Load())
+	}
+}
+
+func TestTenantRepo_CreateIfAbsentReturnsReadFailure(t *testing.T) {
+	rdb, repo := newTenantRepoForTest(t)
+	ctx := context.Background()
+	if err := repo.Create(ctx, &domain.Tenant{Id: "bereia", Name: "Bereia", Slug: "bereia"}); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	rdb.AddHook(commandErrorHook{byName: map[string]error{"hget": errors.New("read failure")}})
+	if _, _, err := repo.CreateIfAbsent(ctx, &domain.Tenant{
+		Id: "bereia", Name: "Bereia", Slug: "bereia",
+	}); err == nil {
+		t.Fatal("expected existing tenant read failure")
+	}
 }
 
 func TestTenantRepo_Get_NotFoundAndInvalidJSON(t *testing.T) {
@@ -70,11 +122,23 @@ func TestTenantRepo_Get_NotFoundAndInvalidJSON(t *testing.T) {
 	if _, err := tr.Get(ctx, "bad"); err == nil {
 		t.Fatalf("expected unmarshal error")
 	}
+	if _, _, err := tr.List(ctx, 0, 1); err == nil {
+		t.Fatal("expected list unmarshal error")
+	}
+	if err := rdb.HSet(ctx, tenantsHash, "empty", "").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := tr.Get(ctx, "empty"); err != nil || got != nil {
+		t.Fatalf("empty tenant: %#v, %v", got, err)
+	}
 }
 
 func TestTenantRepo_ListIsStableAndPaginated(t *testing.T) {
 	_, repo := newTenantRepoForTest(t)
 	ctx := context.Background()
+	if tenants, _, err := repo.List(ctx, 0, 2); err != nil || len(tenants) != 0 {
+		t.Fatalf("empty list: %+v, %v", tenants, err)
+	}
 	for _, tenant := range []*domain.Tenant{
 		{Id: "tenant-c", Name: "C", Slug: "c"},
 		{Id: "tenant-a", Name: "A", Slug: "a"},

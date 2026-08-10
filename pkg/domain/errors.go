@@ -17,6 +17,8 @@ var (
 	ErrUnauthorizedScope = errors.New("unauthorized scopes")
 	// ErrInvalidArgument indicates request payload validation failed.
 	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrTenantConflict indicates a deterministic tenant ID already has different metadata.
+	ErrTenantConflict = errors.New("tenant definition conflicts with existing tenant")
 	// ErrNotFound is returned when a user cannot be located in storage.
 	ErrNotFound = errors.New("user not found")
 	// ErrInvalidOob signals that the out-of-band code is unknown or expired.
