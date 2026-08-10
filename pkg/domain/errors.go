@@ -17,6 +17,8 @@ var (
 	ErrUnauthorizedScope = errors.New("unauthorized scopes")
 	// ErrInvalidArgument indicates request payload validation failed.
 	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrTenantConflict indicates a deterministic tenant ID already has different metadata.
+	ErrTenantConflict = errors.New("tenant definition conflicts with existing tenant")
 	// ErrRoleConflict preserves an existing role whose immutable definition differs.
 	ErrRoleConflict = errors.New("role already exists with different permissions")
 	// ErrRoleNotFound indicates that an exact tenant role does not exist.

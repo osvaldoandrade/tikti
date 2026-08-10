@@ -67,6 +67,18 @@ func requireTenantIAMWrite(c *gin.Context, cfg *config.Config, tenantID string) 
 	return claims, true
 }
 
+func requirePlatformTenantAdmin(c *gin.Context, cfg *config.Config) (jwt.MapClaims, bool) {
+	claims, ok := privilegedBearerClaims(c, cfg)
+	if !ok {
+		return nil, false
+	}
+	if claimString(claims, "sub") == "" || !hasPlatformTenantAdminProvenance(claims) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient platform tenant administration scope"})
+		return nil, false
+	}
+	return claims, true
+}
+
 func requireTenantIAMRead(c *gin.Context, cfg *config.Config, tenantID string) (jwt.MapClaims, bool) {
 	claims, ok := privilegedBearerClaims(c, cfg)
 	if !ok {

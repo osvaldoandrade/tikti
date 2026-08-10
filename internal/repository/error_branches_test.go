@@ -42,6 +42,9 @@ func TestRepository_ErrorBranches_WithClosedRedisClient(t *testing.T) {
 	if _, err := mr.ListTenantIDsByUser(ctx, "u1"); err == nil {
 		t.Fatalf("expected membership list error")
 	}
+	if _, _, err := mr.ListByTenant(ctx, "t1", 0, 10); err == nil {
+		t.Fatalf("expected tenant membership list error")
+	}
 
 	// role repository
 	rr := NewRoleRepo(rdb).(*roleRepo)
@@ -60,8 +63,14 @@ func TestRepository_ErrorBranches_WithClosedRedisClient(t *testing.T) {
 	if err := tr.Create(ctx, &domain.Tenant{Id: "t1"}); err == nil {
 		t.Fatalf("expected tenant create error")
 	}
+	if _, _, err := tr.CreateIfAbsent(ctx, &domain.Tenant{Id: "t1"}); err == nil {
+		t.Fatalf("expected tenant create-if-absent error")
+	}
 	if _, err := tr.Get(ctx, "t1"); err == nil {
 		t.Fatalf("expected tenant get error")
+	}
+	if _, _, err := tr.List(ctx, 0, 10); err == nil {
+		t.Fatalf("expected tenant list error")
 	}
 	if _, err := tr.EnsureDefault(ctx); err == nil {
 		t.Fatalf("expected tenant ensure default error")

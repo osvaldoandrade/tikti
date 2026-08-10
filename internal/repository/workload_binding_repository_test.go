@@ -65,4 +65,13 @@ func TestWorkloadBindingRepositoryRejectsInvalidInput(t *testing.T) {
 	if _, err := repo.Get(context.Background(), ""); err == nil {
 		t.Fatal("empty subject was accepted")
 	}
+	if err := client.HSet(context.Background(), workloadBindingsKey, "bad", "{").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.Get(context.Background(), "bad"); err == nil {
+		t.Fatal("invalid binding JSON was accepted")
+	}
+	if _, err := repo.Revoke(context.Background(), "bad", time.Now()); err == nil {
+		t.Fatal("invalid binding was revoked")
+	}
 }
