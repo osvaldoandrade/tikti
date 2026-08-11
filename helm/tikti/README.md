@@ -26,6 +26,13 @@ Set `issuer` and `jwksUrl` together, keep `audience` equal to
 3600 seconds. Leaving both endpoint values empty keeps the route fail-closed
 without affecting existing user authentication routes.
 
+`config.exactMembershipReadRoutesV1` defaults to false. Enabling it requires a
+canonical tenant allowlist and uses a strong non-default `jwtSecret` as the
+pagination key. To use a dedicated key instead, mount a readable Secret file
+with `extraVolumes`/`extraVolumeMounts` and set
+`EXACT_MEMBERSHIP_PAGE_TOKEN_SECRET_FILE` through `extraEnv`; the runtime
+requires at least 32 bytes.
+
 Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and configuring hosts.
 
 ## SAML
