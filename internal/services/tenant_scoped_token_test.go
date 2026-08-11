@@ -33,7 +33,7 @@ func TestTenantScopedTokenClaimsIsolateBereia(t *testing.T) {
 		if tenantID != "bereia" || roleName != "bereia-read" {
 			t.Fatalf("cross-tenant role read: tenant=%q role=%q", tenantID, roleName)
 		}
-		return &domain.RoleResp{Name: roleName, Permissions: []string{"bereia:write", "bereia:read"}}, nil
+		return &domain.RoleResp{Name: roleName, Permissions: []string{"bereia:read", "bereia:write"}}, nil
 	}}
 	tenants := &fakeTenantRepo{getFn: func(context.Context, string) (*domain.Tenant, error) {
 		return &domain.Tenant{Id: "bereia", Status: domain.TenantStatusActive}, nil
@@ -130,7 +130,7 @@ func TestTenantScopedTokenAuthorizationFailsClosed(t *testing.T) {
 		{name: "tenant disabled", fault: "tenant-disabled"},
 		{name: "role service missing", fault: "role-service"}, {name: "role error", fault: "role-error"},
 		{name: "role missing", fault: "role-missing"}, {name: "role mismatch", fault: "role"},
-		{name: "permission corrupt", fault: "permission"},
+		{name: "permission corrupt", fault: "permission"}, {name: "reserved permission", fault: "policy"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			user := &domain.User{Id: "user-1", Status: domain.UserStatusActive}
@@ -197,6 +197,9 @@ func TestTenantScopedTokenAuthorizationFailsClosed(t *testing.T) {
 				permissions := []string{"bereia:read"}
 				if test.fault == "permission" {
 					permissions = append(permissions, permissions[0])
+				}
+				if test.fault == "policy" {
+					permissions = []string{"code-admin:tenants:admin"}
 				}
 				return &domain.RoleResp{Name: name, Permissions: permissions}, nil
 			}}

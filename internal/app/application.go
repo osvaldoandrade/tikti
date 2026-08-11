@@ -16,6 +16,7 @@ import (
 
 	"github.com/osvaldoandrade/tikti/internal/providers"
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/internal/workloadidentity"
@@ -44,6 +45,11 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	exactMembershipTokenKey, err := validateExactMembershipReadRuntimeConfig(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if cfg.TenantScopedTokenClaimsV1 {
+		if err := scopepolicy.ValidateCompiled(); err != nil {
+			return nil, fmt.Errorf("validate tenant scope policy: %w", err)
+		}
 	}
 	redisClient, err := providers.NewRedisProvider(cfg)
 	if err != nil {

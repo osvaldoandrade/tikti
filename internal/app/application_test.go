@@ -202,6 +202,11 @@ func TestNewApplicationAndWorkloadVerifier(t *testing.T) {
 		t.Fatalf("application=%+v err=%v", application, err)
 	}
 	t.Cleanup(func() { _ = application.Redis.Close() })
+	strict, err := NewApplication(&config.Config{RedisAddr: server.Addr(), TenantScopedTokenClaimsV1: true, TenantScopedTokenClaimsV1Tenants: []string{"bereia"}})
+	if err != nil || strict == nil {
+		t.Fatalf("strict policy startup=%+v err=%v", strict, err)
+	}
+	t.Cleanup(func() { _ = strict.Redis.Close() })
 	tests := []struct {
 		name                 string
 		cfg                  config.WorkloadIdentityConfig

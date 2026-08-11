@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-redis/redis/v8"
 
+	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -26,6 +27,8 @@ type ExactRoleRepository interface {
 }
 
 var errStoredRoleContract = errors.New("stored role contract mismatch")
+
+var exactRoleFields = fields("name", "scope", "tenantId", "resourceId", "permissions")
 
 type roleRepo struct {
 	client *redis.Client
@@ -53,7 +56,7 @@ func (r *roleRepo) Create(ctx context.Context, tenantID string, role *domain.Rol
 }
 
 func (r *roleRepo) CreateIfAbsent(ctx context.Context, tenantID string, role *domain.Role) (*domain.Role, bool, error) {
-	if tenantID == "" || role == nil || role.Name == "" {
+	if role == nil || !exactRoleDefinition(tenantID, role.Name, role) {
 		return nil, false, domain.ErrInvalidArgument
 	}
 	data, err := json.Marshal(role)
@@ -67,7 +70,7 @@ func (r *roleRepo) CreateIfAbsent(ctx context.Context, tenantID string, role *do
 	if created {
 		return role, true, nil
 	}
-	stored, err := r.Get(ctx, tenantID, role.Name)
+	stored, err := r.GetExact(ctx, tenantID, role.Name)
 	return stored, false, err
 }
 
@@ -90,6 +93,12 @@ func (r *roleRepo) Get(ctx context.Context, tenantID string, name string) (*doma
 }
 
 func (r *roleRepo) GetExact(ctx context.Context, tenantID string, name string) (*domain.Role, error) {
+	if !canonicalTenantIdentity(tenantID) {
+		return nil, domain.ErrInvalidTenant
+	}
+	if !canonicalMembershipRoleName(name) {
+		return nil, domain.ErrInvalidArgument
+	}
 	value, err := r.client.HGet(ctx, rolesKey(tenantID), name).Result()
 	if err == redis.Nil {
 		return nil, nil
@@ -97,7 +106,7 @@ func (r *roleRepo) GetExact(ctx context.Context, tenantID string, name string) (
 	if err != nil {
 		return nil, err
 	}
-	return decodeExactRole(name, value)
+	return decodeExactRole(tenantID, name, value)
 }
 
 func (r *roleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, error) {
@@ -117,13 +126,16 @@ func (r *roleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, e
 }
 
 func (r *roleRepo) ListExact(ctx context.Context, tenantID string) ([]*domain.Role, error) {
+	if !canonicalTenantIdentity(tenantID) {
+		return nil, domain.ErrInvalidTenant
+	}
 	values, err := r.client.HGetAll(ctx, rolesKey(tenantID)).Result()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]*domain.Role, 0, len(values))
 	for name, value := range values {
-		role, err := decodeExactRole(name, value)
+		role, err := decodeExactRole(tenantID, name, value)
 		if err != nil {
 			return nil, err
 		}
@@ -132,15 +144,18 @@ func (r *roleRepo) ListExact(ctx context.Context, tenantID string) ([]*domain.Ro
 	return out, nil
 }
 
-func decodeExactRole(name, value string) (*domain.Role, error) {
-	if value == "" {
-		return nil, errStoredRoleContract
-	}
+func decodeExactRole(tenantID, name, value string) (*domain.Role, error) {
 	var role domain.Role
-	if json.Unmarshal([]byte(value), &role) != nil || role.Name != name {
+	if value == "" || !decodeExactObject(value, exactRoleFields, &role) || !exactRoleDefinition(tenantID, name, &role) {
 		return nil, errStoredRoleContract
 	}
 	return &role, nil
+}
+
+func exactRoleDefinition(tenantID, name string, role *domain.Role) bool {
+	return role != nil && canonicalTenantIdentity(tenantID) && canonicalMembershipRoleName(name) &&
+		role.Name == name && role.Scope == domain.RoleScopeTenant && role.TenantId == tenantID &&
+		role.ResourceId == "" && scopepolicy.ValidCanonicalPermissions(role.Permissions)
 }
 
 func rolesKey(tenantID string) string {

@@ -213,14 +213,25 @@ func TestRoleService_CreateWithNameValidationBoundaries(t *testing.T) {
 		{name: "permission whitespace", tenant: "t", role: "r", permissions: []string{" scope "}, wantErr: domain.ErrInvalidArgument},
 		{name: "permission control", tenant: "t", role: "r", permissions: []string{"scope:\nread"}, wantErr: domain.ErrInvalidArgument},
 		{name: "permission Unicode", tenant: "t", role: "r", permissions: []string{"escopo:leitura" + "ç"}, wantErr: domain.ErrInvalidArgument},
+		{name: "tenant scope", tenant: "t", role: "r", permissions: []string{"code-admin:services:read"}},
+		{name: "identity write", tenant: "t", role: "r", permissions: []string{"code-admin:identity:write"}},
+		{name: "global reserved", tenant: "t", role: "r", permissions: []string{"code-admin:tenants:admin"}, wantErr: domain.ErrInvalidArgument},
+		{name: "mixed reserved", tenant: "t", role: "r", permissions: []string{"code-admin:repositories:read"}, wantErr: domain.ErrInvalidArgument},
+		{name: "nonassignable reserved", tenant: "t", role: "r", permissions: []string{"code-admin:owners:delegate"}, wantErr: domain.ErrInvalidArgument},
+		{name: "unknown reserved", tenant: "t", role: "r", permissions: []string{"code-admin:unknown:read"}, wantErr: domain.ErrInvalidArgument},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, _, err := NewRoleService(&fakeRoleRepo{}).CreateWithName(
+			called := false
+			repo := &fakeRoleRepo{createAbsentFn: func(_ context.Context, _ string, role *domain.Role) (*domain.Role, bool, error) {
+				called = true
+				return role, true, nil
+			}}
+			_, _, err := NewRoleService(repo).CreateWithName(
 				context.Background(), test.tenant, test.role, domain.RolePutReq{Permissions: test.permissions},
 			)
-			if !errors.Is(err, test.wantErr) || test.wantErr == nil && err != nil {
-				t.Fatalf("CreateWithName() error = %v, want %v", err, test.wantErr)
+			if !errors.Is(err, test.wantErr) || test.wantErr == nil && err != nil || called != (test.wantErr == nil) {
+				t.Fatalf("CreateWithName() error = %v, want %v, repository called=%v", err, test.wantErr, called)
 			}
 		})
 	}
@@ -242,10 +253,13 @@ func TestRoleService_CreateWithNameReplayConflictAndPreservation(t *testing.T) {
 	if err != nil || !created || first.Name != "Bereia-Read" || !reflect.DeepEqual(first.Permissions, []string{"Scope:B", "scope:a"}) {
 		t.Fatalf("first create = %+v, %v, %v", first, created, err)
 	}
-	stored.Scope, stored.ResourceId = domain.RoleScopeResource, "legacy-resource"
 	replay, created, err := svc.CreateWithName(context.Background(), "bereia", "Bereia-Read", domain.RolePutReq{Permissions: []string{"scope:a", "Scope:B"}})
 	if err != nil || created || !reflect.DeepEqual(replay.Permissions, stored.Permissions) {
-		t.Fatalf("replay = %+v, %v, %v", replay, created, err)
+		t.Fatalf("idempotent replay = %+v, %v, %v", replay, created, err)
+	}
+	stored.Scope, stored.ResourceId = domain.RoleScopeResource, "legacy-resource"
+	if replay, created, err = svc.CreateWithName(context.Background(), "bereia", "Bereia-Read", domain.RolePutReq{Permissions: []string{"scope:a", "Scope:B"}}); replay != nil || created || !errors.Is(err, domain.ErrRoleConflict) {
+		t.Fatalf("corrupt replay = %+v, %v, %v", replay, created, err)
 	}
 	snapshot := *stored
 	if _, _, err = svc.CreateWithName(context.Background(), "bereia", stored.Name, domain.RolePutReq{Permissions: []string{"scope:write"}}); !errors.Is(err, domain.ErrRoleConflict) {
@@ -281,7 +295,7 @@ func TestRoleService_CreateWithNameStorageFailures(t *testing.T) {
 }
 
 func TestRoleService_GetByNameCanonicalContract(t *testing.T) {
-	stored := &domain.Role{Name: "bereia-read", TenantId: "bereia", Permissions: []string{"scope:read"}}
+	stored := &domain.Role{Name: "bereia-read", Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"scope:read"}}
 	svc := NewRoleService(&fakeRoleRepo{getFn: func(_ context.Context, tenantID, name string) (*domain.Role, error) {
 		if tenantID != "bereia" || name != stored.Name {
 			t.Fatalf("repository target = %q %q", tenantID, name)
@@ -343,8 +357,8 @@ func TestRoleService_GetByNameMissingAndStorageFailures(t *testing.T) {
 
 func TestRoleService_ListCanonicalDeterministicAndIsolated(t *testing.T) {
 	stored := []*domain.Role{
-		{Name: "z-admin", TenantId: "bereia", Permissions: []string{"z:admin"}},
-		{Name: "a-read", TenantId: "bereia", Permissions: []string{"a:read"}},
+		{Name: "z-admin", Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"z:admin"}},
+		{Name: "a-read", Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"a:read"}},
 	}
 	svc := NewRoleService(&fakeRoleRepo{listFn: func(context.Context, string) ([]*domain.Role, error) { return stored, nil }})
 	got, err := svc.ListCanonical(context.Background(), "bereia")
@@ -406,7 +420,7 @@ func TestRoleService_ListCanonicalRejectsInvalidOrCorruptState(t *testing.T) {
 func canonicalRoles(count int) []*domain.Role {
 	roles := make([]*domain.Role, count)
 	for index := range roles {
-		roles[index] = &domain.Role{Name: fmt.Sprintf("role-%03d", index), TenantId: "bereia", Permissions: []string{"read"}}
+		roles[index] = &domain.Role{Name: fmt.Sprintf("role-%03d", index), Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"read"}}
 	}
 	return roles
 }

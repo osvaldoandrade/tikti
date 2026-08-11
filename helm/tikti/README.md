@@ -33,6 +33,12 @@ with `extraVolumes`/`extraVolumeMounts` and set
 `EXACT_MEMBERSHIP_PAGE_TOKEN_SECRET_FILE` through `extraEnv`; the runtime
 requires at least 32 bytes.
 
+`config.tenantScopedTokenClaimsV1` uses the compiled Code Admin scope policy
+described in `docs/05_multi_tenant_authorization.md`. Keep it false until roles
+for every tenant in `config.tenantScopedTokenClaimsV1Tenants` pass the strict
+census; enabling it validates the embedded version and digest before Redis is
+opened. Disabling the flag is the non-destructive rollback.
+
 Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and configuring hosts.
 
 ## SAML
