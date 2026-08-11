@@ -26,6 +26,11 @@ type ExactRoleRepository interface {
 	ListExact(ctx context.Context, tenantID string) ([]*domain.Role, error)
 }
 
+// ExactRoleBatchRepository reads exact tenant roles in order without changing legacy behavior.
+type ExactRoleBatchRepository interface {
+	GetManyExact(ctx context.Context, tenantID string, names []string) ([]*domain.Role, error)
+}
+
 var errStoredRoleContract = errors.New("stored role contract mismatch")
 
 var exactRoleFields = fields("name", "scope", "tenantId", "resourceId", "permissions")
@@ -107,6 +112,47 @@ func (r *roleRepo) GetExact(ctx context.Context, tenantID string, name string) (
 		return nil, err
 	}
 	return decodeExactRole(tenantID, name, value)
+}
+
+func (r *roleRepo) GetManyExact(ctx context.Context, tenantID string, names []string) ([]*domain.Role, error) {
+	if !canonicalTenantIdentity(tenantID) {
+		return nil, domain.ErrInvalidTenant
+	}
+	if len(names) < 1 || len(names) > membershipV2RoleMax {
+		return nil, domain.ErrInvalidArgument
+	}
+	for index, name := range names {
+		if !canonicalMembershipRoleName(name) || index > 0 && names[index-1] >= name {
+			return nil, domain.ErrInvalidArgument
+		}
+	}
+	values, err := r.client.HMGet(ctx, rolesKey(tenantID), names...).Result()
+	if err != nil {
+		return nil, err
+	}
+	return decodeExactRoleBatch(tenantID, names, values)
+}
+
+func decodeExactRoleBatch(tenantID string, names []string, values []interface{}) ([]*domain.Role, error) {
+	if len(values) != len(names) {
+		return nil, errStoredRoleContract
+	}
+	roles := make([]*domain.Role, len(names))
+	for index, value := range values {
+		if value == nil {
+			continue
+		}
+		encoded, ok := value.(string)
+		if !ok {
+			return nil, errStoredRoleContract
+		}
+		role, err := decodeExactRole(tenantID, names[index], encoded)
+		if err != nil {
+			return nil, err
+		}
+		roles[index] = role
+	}
+	return roles, nil
 }
 
 func (r *roleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, error) {

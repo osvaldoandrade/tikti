@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -30,6 +31,65 @@ func TestNewRoleRepo(t *testing.T) {
 	_, repo := newRoleRepoForTest(t)
 	if repo == nil {
 		t.Fatalf("expected repo")
+	}
+}
+
+func TestRoleRepoGetManyExact(t *testing.T) {
+	rdb, legacy := newRoleRepoForTest(t)
+	repo := legacy.(*roleRepo)
+	ctx := context.Background()
+	for _, role := range []*domain.Role{
+		{Name: "reader", Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"content:read"}},
+		{Name: "writer", Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"content:write"}},
+	} {
+		if err := repo.Create(ctx, "bereia", role); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := repo.GetManyExact(ctx, "bereia", []string{"reader", "writer"})
+	if err != nil || len(got) != 2 || got[0].Name != "reader" || got[1].Name != "writer" {
+		t.Fatalf("GetManyExact() = %#v, %v", got, err)
+	}
+	got, err = repo.GetManyExact(ctx, "bereia", []string{"missing", "writer"})
+	if err != nil || got[0] != nil || got[1] == nil {
+		t.Fatalf("missing batch = %#v, %v", got, err)
+	}
+	if err := rdb.HSet(ctx, rolesKey("bereia"), "reader", `{"name":"other","scope":"TENANT","tenantId":"bereia","permissions":["content:read"]}`).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.GetManyExact(ctx, "bereia", []string{"reader"}); !errors.Is(err, errStoredRoleContract) {
+		t.Fatalf("corrupt batch error = %v", err)
+	}
+	for _, names := range [][]string{nil, {"writer", "reader"}, {"reader", "reader"}, {"bad/role"}} {
+		if _, err := repo.GetManyExact(ctx, "bereia", names); !errors.Is(err, domain.ErrInvalidArgument) {
+			t.Fatalf("invalid names %#v = %v", names, err)
+		}
+	}
+	if _, err := repo.GetManyExact(ctx, "Bereia", []string{"reader"}); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("invalid tenant = %v", err)
+	}
+	if _, err := repo.GetManyExact(ctx, "bereia", make([]string, membershipV2RoleMax+1)); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("over limit = %v", err)
+	}
+	names := make([]string, membershipV2RoleMax)
+	for index := range names {
+		names[index] = fmt.Sprintf("role%03d", index)
+		if err := repo.Create(ctx, "bereia", &domain.Role{Name: names[index], Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"content:read"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if roles, err := repo.GetManyExact(ctx, "bereia", names); err != nil || len(roles) != membershipV2RoleMax {
+		t.Fatalf("max batch = %d, %v", len(roles), err)
+	}
+	if _, err := decodeExactRoleBatch("bereia", []string{"reader"}, nil); !errors.Is(err, errStoredRoleContract) {
+		t.Fatalf("short result = %v", err)
+	}
+	if _, err := decodeExactRoleBatch("bereia", []string{"reader"}, []interface{}{42}); !errors.Is(err, errStoredRoleContract) {
+		t.Fatalf("non-string result = %v", err)
+	}
+	_ = rdb.Close()
+	if _, err := repo.GetManyExact(ctx, "bereia", []string{"reader"}); err == nil {
+		t.Fatal("storage error accepted")
 	}
 }
 
