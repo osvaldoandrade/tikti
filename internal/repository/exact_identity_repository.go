@@ -67,23 +67,31 @@ func (r *redisRepo) GetExact(ctx context.Context, userID string) (*domain.UserId
 	if err != nil {
 		return nil, err
 	}
-	var user domain.User
-	if value == "" || !decodeExactObject(value, userFields, &user) ||
-		user.Id != userID || !canonicalUserIdentity(user.Id) ||
-		!canonicalEmail(user.Email) || !validUserStatus(user.Status) ||
-		user.CreatedAt.IsZero() || user.TokenVersion < 0 {
-		return nil, errStoredUserContract
-	}
-	authSource, ok := exactAuthSource(user)
+	identity, email, ok := decodeExactUserIdentity(value, userID)
 	if !ok {
 		return nil, errStoredUserContract
 	}
-	indexedID, err := r.client.Get(ctx, userByEmailKeyNS+user.Email).Result()
+	indexedID, err := r.client.Get(ctx, userByEmailKeyNS+email).Result()
 	if err == redis.Nil || err == nil && indexedID != userID {
 		return nil, errStoredUserContract
 	}
 	if err != nil {
 		return nil, err
+	}
+	return identity, nil
+}
+
+func decodeExactUserIdentity(value, userID string) (*domain.UserIdentity, string, bool) {
+	var user domain.User
+	if value == "" || !decodeExactObject(value, userFields, &user) ||
+		user.Id != userID || !canonicalUserIdentity(user.Id) ||
+		!canonicalEmail(user.Email) || !validUserStatus(user.Status) ||
+		user.CreatedAt.IsZero() || user.TokenVersion < 0 {
+		return nil, "", false
+	}
+	authSource, ok := exactAuthSource(user)
+	if !ok {
+		return nil, "", false
 	}
 	return &domain.UserIdentity{
 		Id:         user.Id,
@@ -91,7 +99,7 @@ func (r *redisRepo) GetExact(ctx context.Context, userID string) (*domain.UserId
 		Status:     user.Status,
 		AuthSource: authSource,
 		CreatedAt:  user.CreatedAt,
-	}, nil
+	}, user.Email, true
 }
 
 func exactAuthSource(user domain.User) (domain.AuthSource, bool) {
