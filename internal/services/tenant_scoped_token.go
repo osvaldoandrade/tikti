@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -71,7 +72,7 @@ func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context,
 	permissions := make(map[string]struct{})
 	for _, roleName := range selectedRoles {
 		role, roleErr := s.roleSvc.GetByName(ctx, target, roleName)
-		if roleErr != nil || role == nil || role.Name != roleName || !validRolePermissions(role.Permissions) {
+		if roleErr != nil || role == nil || role.Name != roleName || !scopepolicy.ValidCanonicalPermissions(role.Permissions) {
 			return tenantScopedTokenAuthorization{}, domain.ErrUnauthorizedScope
 		}
 		for _, permission := range role.Permissions {

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -57,12 +58,13 @@ func (s *roleService) CreateWithName(
 	if !validRoleTenantID(tenantID) {
 		return nil, false, domain.ErrInvalidTenant
 	}
-	if !validRoleName(roleName) || !validRolePermissions(req.Permissions) {
+	permissions, valid := scopepolicy.CanonicalPermissions(req.Permissions)
+	if !validRoleName(roleName) || !valid {
 		return nil, false, domain.ErrInvalidArgument
 	}
 	desired := &domain.Role{
 		Name: roleName, Scope: domain.RoleScopeTenant, TenantId: tenantID,
-		Permissions: append([]string(nil), req.Permissions...),
+		Permissions: permissions,
 	}
 	stored, created, err := s.repo.CreateIfAbsent(ctx, tenantID, desired)
 	if err != nil {
@@ -71,7 +73,7 @@ func (s *roleService) CreateWithName(
 	if stored == nil {
 		return nil, false, fmt.Errorf("create role: stored role is missing")
 	}
-	if !sameRoleDefinition(stored, desired) {
+	if !exactRoleDefinition(tenantID, roleName, stored) || !sameRoleDefinition(stored, desired) {
 		return nil, false, domain.ErrRoleConflict
 	}
 	return &domain.RoleResp{
@@ -96,7 +98,7 @@ func (s *roleService) GetByName(ctx context.Context, tenantID, roleName string) 
 	if role == nil {
 		return nil, domain.ErrRoleNotFound
 	}
-	if role.Name != roleName || role.TenantId != tenantID || !validRolePermissions(role.Permissions) {
+	if !exactRoleDefinition(tenantID, roleName, role) {
 		return nil, fmt.Errorf("get role: stored role contract mismatch")
 	}
 	return roleResponse(role), nil
@@ -118,7 +120,7 @@ func (s *roleService) ListCanonical(ctx context.Context, tenantID string) ([]*do
 	}
 	out := make([]*domain.RoleResp, 0, len(roles))
 	for _, role := range roles {
-		if role == nil || role.TenantId != tenantID || !validRoleName(role.Name) || !validRolePermissions(role.Permissions) {
+		if role == nil || !exactRoleDefinition(tenantID, role.Name, role) {
 			return nil, fmt.Errorf("list roles: stored role contract mismatch")
 		}
 		out = append(out, roleResponse(role))
@@ -228,25 +230,7 @@ func validRoleName(value string) bool {
 }
 
 func validRolePermissions(values []string) bool {
-	if len(values) < 1 || len(values) > 500 {
-		return false
-	}
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if len(value) < 1 || len(value) > 128 {
-			return false
-		}
-		for _, char := range []byte(value) {
-			if !asciiAlphaNumeric(char) && !strings.ContainsRune("._:/*-", rune(char)) {
-				return false
-			}
-		}
-		if _, exists := seen[value]; exists {
-			return false
-		}
-		seen[value] = struct{}{}
-	}
-	return true
+	return scopepolicy.ValidCanonicalPermissions(values)
 }
 
 func asciiAlphaNumeric(value byte) bool {
@@ -254,7 +238,8 @@ func asciiAlphaNumeric(value byte) bool {
 }
 
 func sameRoleDefinition(left, right *domain.Role) bool {
-	if left.Name != right.Name || left.TenantId != right.TenantId || len(left.Permissions) != len(right.Permissions) {
+	if left.Name != right.Name || left.Scope != right.Scope || left.TenantId != right.TenantId ||
+		left.ResourceId != right.ResourceId || len(left.Permissions) != len(right.Permissions) {
 		return false
 	}
 	leftPermissions := append([]string(nil), left.Permissions...)
@@ -262,4 +247,9 @@ func sameRoleDefinition(left, right *domain.Role) bool {
 	sort.Strings(leftPermissions)
 	sort.Strings(rightPermissions)
 	return slices.Equal(leftPermissions, rightPermissions)
+}
+
+func exactRoleDefinition(tenantID, name string, role *domain.Role) bool {
+	return role != nil && role.Name == name && role.Scope == domain.RoleScopeTenant &&
+		role.TenantId == tenantID && role.ResourceId == "" && validRoleName(name) && validRolePermissions(role.Permissions)
 }

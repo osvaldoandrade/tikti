@@ -1,0 +1,256 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "2026-08-10.1",
+  "scopes": [
+    {
+      "scope": "code-admin:audit:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:audit:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:bindings:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:bindings:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:clusters:admin",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:clusters:read",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:deployments:approve",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:deployments:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:deployments:rollback",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:deployments:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:environments:admin",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:environments:read",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:explorer:read",
+      "boundary": "mixed",
+      "tenantAssignable": false,
+      "reason": "Queries both tenant and global catalog resources."
+    },
+    {
+      "scope": "code-admin:features:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:features:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:identity:read",
+      "boundary": "mixed",
+      "tenantAssignable": false,
+      "reason": "Used by tenant resources and legacy tenant-directory/explicit-tenant routes; nonassignable until those routes have a uniform tenant boundary or separate scope."
+    },
+    {
+      "scope": "code-admin:identity:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:logs:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:metrics:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:observability:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:observability:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:operations:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:operations:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:owners:delegate",
+      "boundary": "tenant",
+      "tenantAssignable": false,
+      "reason": "Internal owner-delegation capability; tenant-bound but not assignable through membership roles."
+    },
+    {
+      "scope": "code-admin:platform:admin",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:platform:read",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:policies:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:policies:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:queues:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:queues:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:quotas:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:quotas:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:repositories:admin",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:repositories:read",
+      "boundary": "mixed",
+      "tenantAssignable": false,
+      "reason": "Shared by tenant repository resources and the global repository-template catalog."
+    },
+    {
+      "scope": "code-admin:repositories:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:secrets:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:secrets:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:services:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:services:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:storage:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:storage:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:subscriptions:admin",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:subscriptions:read",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:tenants:admin",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:tenants:read",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:workloads:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:workloads:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:yaml:read",
+      "boundary": "mixed",
+      "tenantAssignable": false,
+      "reason": "Exports both tenant and global catalog resources."
+    },
+    {
+      "scope": "code-admin:yaml:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    }
+  ]
+}

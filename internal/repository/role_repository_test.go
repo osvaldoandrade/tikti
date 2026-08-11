@@ -100,7 +100,7 @@ func TestRoleRepo_ExactReadsPreserveHashIdentityAndRedactCorruption(t *testing.T
 	rdb, repository := newRoleRepoForTest(t)
 	repo := repository.(*roleRepo)
 	ctx := context.Background()
-	valid := &domain.Role{Name: "read", TenantId: "bereia", Permissions: []string{"scope:read"}}
+	valid := &domain.Role{Name: "read", Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"scope:read"}}
 	if err := repo.Create(ctx, "bereia", valid); err != nil {
 		t.Fatalf("create exact role: %v", err)
 	}
@@ -120,11 +120,30 @@ func TestRoleRepo_ExactReadsPreserveHashIdentityAndRedactCorruption(t *testing.T
 	if err != nil || empty == nil || len(empty) != 0 {
 		t.Fatalf("empty exact list = %#v, %v", empty, err)
 	}
+	if _, err := repo.GetExact(ctx, "Bereia", "read"); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("invalid exact tenant = %v", err)
+	}
+	if _, err := repo.GetExact(ctx, "bereia", "read/secret"); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("invalid exact role = %v", err)
+	}
+	if _, err := repo.ListExact(ctx, "Bereia"); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("invalid exact list tenant = %v", err)
+	}
 
 	for _, corrupt := range []struct{ field, value string }{
 		{field: "empty", value: ""},
 		{field: "alias", value: `{"name":"admin","tenantId":"bereia","permissions":["credential-canary"]}`},
 		{field: "json", value: "redis-password-canary"},
+		{field: "unknown", value: `{"name":"unknown","scope":"TENANT","tenantId":"corrupt","permissions":["read"],"extra":true}`},
+		{field: "duplicate", value: `{"name":"duplicate","name":"duplicate","scope":"TENANT","tenantId":"corrupt","permissions":["read"]}`},
+		{field: "null", value: `{"name":"null","scope":null,"tenantId":"corrupt","permissions":["read"]}`},
+		{field: "trailing", value: `{"name":"trailing","scope":"TENANT","tenantId":"corrupt","permissions":["read"]} {}`},
+		{field: "scope", value: `{"name":"scope","scope":"RESOURCE","tenantId":"corrupt","resourceId":"other","permissions":["read"]}`},
+		{field: "resource", value: `{"name":"resource","scope":"TENANT","tenantId":"corrupt","resourceId":"other","permissions":["read"]}`},
+		{field: "tenant", value: `{"name":"tenant","scope":"TENANT","tenantId":"other","permissions":["read"]}`},
+		{field: "order", value: `{"name":"order","scope":"TENANT","tenantId":"corrupt","permissions":["write","read"]}`},
+		{field: "permission", value: `{"name":"permission","scope":"TENANT","tenantId":"corrupt","permissions":["read","read"]}`},
+		{field: "policy", value: `{"name":"policy","scope":"TENANT","tenantId":"corrupt","permissions":["code-admin:tenants:admin"]}`},
 	} {
 		if err := rdb.HSet(ctx, rolesKey("corrupt"), corrupt.field, corrupt.value).Err(); err != nil {
 			t.Fatalf("seed corrupt role: %v", err)
@@ -150,7 +169,7 @@ func TestRoleRepo_ExactReadsPreserveHashIdentityAndRedactCorruption(t *testing.T
 
 func FuzzDecodeExactRole(f *testing.F) {
 	for _, seed := range [][2]string{
-		{"read", `{"name":"read","tenantId":"bereia","permissions":["scope:read"]}`},
+		{"read", `{"name":"read","scope":"TENANT","tenantId":"bereia","permissions":["scope:read"]}`},
 		{"alias", `{"name":"admin"}`},
 		{"empty", ""},
 		{"json", "{"},
@@ -161,7 +180,7 @@ func FuzzDecodeExactRole(f *testing.F) {
 		if len(name) > 256 || len(value) > 4096 {
 			return
 		}
-		role, err := decodeExactRole(name, value)
+		role, err := decodeExactRole("bereia", name, value)
 		if err == nil && (value == "" || role == nil || role.Name != name) {
 			t.Fatalf("invalid exact role accepted: name=%q role=%+v", name, role)
 		}
@@ -217,11 +236,11 @@ func TestRoleRepo_CreateIfAbsentAtomicAndTenantScoped(t *testing.T) {
 	if err != nil || winners != 1 || !reflect.DeepEqual(stored.Permissions, definitions[0]) && !reflect.DeepEqual(stored.Permissions, definitions[1]) {
 		t.Fatalf("winners=%d stored=%+v err=%v", winners, stored, err)
 	}
-	other, otherCreated, err := repo.CreateIfAbsent(ctx, "storifly", &domain.Role{Name: stored.Name, TenantId: "storifly", Permissions: []string{"storifly:admin"}})
+	other, otherCreated, err := repo.CreateIfAbsent(ctx, "storifly", &domain.Role{Name: stored.Name, Scope: domain.RoleScopeTenant, TenantId: "storifly", Permissions: []string{"storifly:admin"}})
 	if err != nil || !otherCreated || other.TenantId != "storifly" {
 		t.Fatalf("other tenant = %+v, %v, %v", other, otherCreated, err)
 	}
-	replay, replayCreated, err := repo.CreateIfAbsent(ctx, "bereia", &domain.Role{Name: stored.Name, Permissions: []string{"scope:other"}})
+	replay, replayCreated, err := repo.CreateIfAbsent(ctx, "bereia", &domain.Role{Name: stored.Name, Scope: domain.RoleScopeTenant, TenantId: "bereia", Permissions: []string{"scope:other"}})
 	if err != nil || replayCreated || !reflect.DeepEqual(replay, stored) {
 		t.Fatalf("replay overwrote canonical role: %+v, %v, %v", replay, replayCreated, err)
 	}
@@ -239,7 +258,7 @@ func TestRoleRepo_CreateIfAbsentRejectsInvalidAndStorageFailure(t *testing.T) {
 		}
 	}
 	closed := NewRoleRepo(closedRedisClient()).(*roleRepo)
-	if _, _, err := closed.CreateIfAbsent(context.Background(), "t", &domain.Role{Name: "r"}); err == nil {
+	if _, _, err := closed.CreateIfAbsent(context.Background(), "t", &domain.Role{Name: "r", Scope: domain.RoleScopeTenant, TenantId: "t", Permissions: []string{"read"}}); err == nil {
 		t.Fatal("closed Redis create succeeded")
 	}
 }
