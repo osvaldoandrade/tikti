@@ -194,6 +194,11 @@ func membershipV2ID(tenantID, userID string) string {
 	return membershipV2IDPrefix + base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
+// ExpectedMembershipV2ID returns the immutable identifier for a validated pair.
+func ExpectedMembershipV2ID(tenantID, userID string) string {
+	return membershipV2ID(tenantID, userID)
+}
+
 func membershipV2Key(tenantID string) string {
 	return membershipV2ForwardPrefix + tenantID
 }

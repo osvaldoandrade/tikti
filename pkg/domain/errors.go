@@ -25,6 +25,10 @@ var (
 	ErrMembershipNotFound = errors.New("membership not found")
 	// ErrMembershipConflict preserves an immutable membership definition or legacy shadow.
 	ErrMembershipConflict = errors.New("membership already exists with a different definition")
+	// ErrMembershipDependencyNotFound means an exact tenant, user, or role is absent.
+	ErrMembershipDependencyNotFound = errors.New("membership dependency not found")
+	// ErrMembershipDependencyInactive means the exact tenant or user cannot receive assignments.
+	ErrMembershipDependencyInactive = errors.New("membership dependency is not active")
 	// ErrMembershipPageStale requires the caller to restart exact pagination.
 	ErrMembershipPageStale = errors.New("membership page changed; restart pagination")
 	// ErrNotFound is returned when a user cannot be located in storage.

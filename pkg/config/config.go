@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -38,6 +39,8 @@ type Config struct {
 	ExactMembershipReadRoutesV1        bool                   `yaml:"exactMembershipReadRoutesV1"`
 	ExactMembershipReadRoutesV1Tenants []string               `yaml:"exactMembershipReadRoutesV1Tenants"`
 	ExactMembershipPageTokenSecret     string                 `yaml:"-"`
+	MembershipV2WriteRoutesV1          bool                   `yaml:"membershipV2WriteRoutesV1"`
+	MembershipV2WriteRoutesV1Tenants   []string               `yaml:"membershipV2WriteRoutesV1Tenants"`
 }
 
 // HTTPConfig defines the public server boundary.
@@ -312,6 +315,31 @@ func LoadConfig(filePath string) (*Config, error) {
 		if err = loadSecretFile("EXACT_MEMBERSHIP_PAGE_TOKEN_SECRET_FILE", &c.ExactMembershipPageTokenSecret); err != nil {
 			return nil, err
 		}
+	}
+	if raw, exists := os.LookupEnv("MEMBERSHIP_V2_WRITE_ROUTES_V1"); exists {
+		switch strings.TrimSpace(raw) {
+		case "true":
+			c.MembershipV2WriteRoutesV1 = true
+		case "false":
+			c.MembershipV2WriteRoutesV1 = false
+		default:
+			return nil, fmt.Errorf("MEMBERSHIP_V2_WRITE_ROUTES_V1 must be true or false")
+		}
+	}
+	if raw, exists := os.LookupEnv("MEMBERSHIP_V2_WRITE_ROUTES_V1_TENANTS"); exists {
+		c.MembershipV2WriteRoutesV1Tenants = nil
+		if strings.TrimSpace(raw) != "" {
+			c.MembershipV2WriteRoutesV1Tenants = strings.Split(raw, ",")
+		}
+	}
+	c.MembershipV2WriteRoutesV1Tenants, err = canonicalNamedTenantAllowlist("membershipV2WriteRoutesV1Tenants", c.MembershipV2WriteRoutesV1Tenants)
+	if err != nil {
+		return nil, err
+	}
+	if c.MembershipV2WriteRoutesV1 && (!c.ExactMembershipReadRoutesV1 || len(c.MembershipV2WriteRoutesV1Tenants) == 0 ||
+		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.ExactMembershipReadRoutesV1Tenants) ||
+		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.TenantScopedTokenClaimsV1Tenants)) {
+		return nil, fmt.Errorf("membershipV2WriteRoutesV1 requires matching exact-read and tenant-scope canary allowlists")
 	}
 	if c.IssuerBaseURL == "" {
 		log.Println("WARNING: IssuerBaseURL not set. Using http://localhost:8080")

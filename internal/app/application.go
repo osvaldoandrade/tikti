@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -44,6 +45,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}
 	exactMembershipTokenKey, err := validateExactMembershipReadRuntimeConfig(cfg)
 	if err != nil {
+		return nil, err
+	}
+	if err := validateMembershipV2WriteRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
 	if cfg.TenantScopedTokenClaimsV1 {
@@ -111,9 +115,22 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		}
 		exactMembershipService = services.NewExactMembershipReadService(exactTenants, exactReader, listReader)
 	}
+	var membershipV2WriteService services.MembershipV2WriteService
+	if cfg.MembershipV2WriteRoutesV1 {
+		exactTenants, tenantsOK := tenantRepo.(repository.ExactTenantRepository)
+		exactUsers, usersOK := userRepo.(repository.ExactUserRepository)
+		exactRoles, rolesOK := roleRepo.(repository.ExactRoleBatchRepository)
+		if !tenantsOK || !usersOK || !rolesOK {
+			return nil, fmt.Errorf("membership v2 write repositories are unavailable")
+		}
+		membershipV2WriteService = services.NewMembershipV2WriteService(
+			exactTenants, exactUsers, exactRoles, repository.NewMembershipV2Repo(redisClient),
+		)
+	}
 
 	engine := newSafeEngine()
 	setupExactMembershipReadMappings(engine, cfg, exactMembershipService)
+	setupMembershipV2WriteMappings(engine, cfg, membershipV2WriteService)
 
 	_, _ = tenantService.EnsureDefault(context.Background())
 
@@ -128,6 +145,21 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		ClientSvc:   clientService,
 		WorkloadSvc: workloadService,
 	}, nil
+}
+
+func validateMembershipV2WriteRuntimeConfig(cfg *config.Config) error {
+	if cfg == nil || !cfg.MembershipV2WriteRoutesV1 {
+		return nil
+	}
+	if !cfg.ExactMembershipReadRoutesV1 || len(cfg.MembershipV2WriteRoutesV1Tenants) == 0 ||
+		!slices.Equal(cfg.MembershipV2WriteRoutesV1Tenants, cfg.ExactMembershipReadRoutesV1Tenants) ||
+		!slices.Equal(cfg.MembershipV2WriteRoutesV1Tenants, cfg.TenantScopedTokenClaimsV1Tenants) {
+		return fmt.Errorf("membership v2 write requires matching canary allowlists and exact reads")
+	}
+	if err := scopepolicy.ValidateCompiled(); err != nil {
+		return fmt.Errorf("validate membership v2 scope policy: %w", err)
+	}
+	return nil
 }
 
 func validateExactMembershipReadRuntimeConfig(cfg *config.Config) ([]byte, error) {
