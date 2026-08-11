@@ -564,6 +564,8 @@ Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 
 ## Membership management (admin)
 
+`GET /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts a single 1–128 character ASCII user ID segment (`[A-Za-z0-9._:-]`), except for the complete dot-segments `.` and `..`. Those aliases return 400 before any storage read; dots embedded in an otherwise valid ID remain supported.
+
 ### POST /v1/tenants/{tenantId}/users
 
 Creates a membership for a user within a tenant. If the user does not exist, the endpoint creates the user with a generated password or returns 400, depending on policy.

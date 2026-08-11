@@ -38,7 +38,7 @@ func (r *exactMembershipReader) GetExact(ctx context.Context, tenantID, userID s
 	if !canonicalTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
-	if !canonicalUserIdentity(userID) {
+	if userID == "." || userID == ".." || !canonicalUserIdentity(userID) {
 		return nil, domain.ErrInvalidArgument
 	}
 	if r == nil || r.client == nil || r.tenants == nil || r.users == nil {
