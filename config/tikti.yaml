@@ -10,6 +10,8 @@ jwksPrivateKey: ${JWKS_PRIVATE_KEY}
 jwksKeyId: ${JWKS_KEY_ID}
 tenantScopedTokenClaimsV1: false
 tenantScopedTokenClaimsV1Tenants: []
+exactMembershipReadRoutesV1: false
+exactMembershipReadRoutesV1Tenants: []
 workloadIdentity:
   issuer: ${WORKLOAD_IDENTITY_ISSUER}
   audience: tikti-workload-exchange

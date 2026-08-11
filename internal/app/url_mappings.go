@@ -81,3 +81,18 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		samlAdmin.DELETE("", samlAdminController.Delete)
 	}
 }
+
+func setupExactMembershipReadMappings(engine *gin.Engine, cfg *config.Config, service services.ExactMembershipReadService) {
+	if engine == nil || cfg == nil || !cfg.ExactMembershipReadRoutesV1 || service == nil {
+		return
+	}
+	controller := controllers.NewExactMembershipReadController(service, cfg)
+	routes := engine.Group("/v1/admin/tenants/:tenantId/memberships", exactMembershipContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
+	routes.GET("", controller.List)
+	routes.GET("/:userId", controller.Get)
+}
+
+func exactMembershipContractMarker(c *gin.Context) {
+	c.Header("X-Tikti-Contract", "exact-memberships-v1")
+	c.Next()
+}
