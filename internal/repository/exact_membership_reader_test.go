@@ -228,6 +228,11 @@ func TestExactMembershipReader_InputAndRedisErrors(t *testing.T) {
 	}
 	want := errors.New("redis unavailable")
 	client.AddHook(commandErrorHook{byName: map[string]error{"hget": want}})
+	for _, userID := range []string{".", ".."} {
+		if got, err := reader.GetExact(context.Background(), "bereia", userID); got != nil || !errors.Is(err, domain.ErrInvalidArgument) {
+			t.Fatalf("dot-segment %q touched storage or was accepted: %+v, %v", userID, got, err)
+		}
+	}
 	if got, err := reader.GetExact(context.Background(), "bereia", "user-1"); got != nil || !errors.Is(err, errStoredMembershipReadContract) || strings.Contains(err.Error(), want.Error()) {
 		t.Fatalf("HGET error = %+v, %v", got, err)
 	}

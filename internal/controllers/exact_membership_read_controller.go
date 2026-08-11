@@ -161,7 +161,7 @@ func canonicalMembershipTenantPath(value string) bool {
 }
 
 func canonicalMembershipUserPath(value string) bool {
-	if len(value) < 1 || len(value) > 128 {
+	if value == "." || value == ".." || len(value) < 1 || len(value) > 128 {
 		return false
 	}
 	for _, character := range []byte(value) {

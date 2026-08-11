@@ -634,6 +634,8 @@ Response 200:
 
 ## Membership management (admin)
 
+`GET /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts a single 1–128 character ASCII user ID segment (`[A-Za-z0-9._:-]`), except for the complete dot-segments `.` and `..`. Those aliases return 400 before any storage read; dots embedded in an otherwise valid ID remain supported.
+
 ### GET /v1/tenants/{tenantId}/users
 
 Lists the users that are members of the tenant. Requires ADMIN or TENANT_ADMIN
