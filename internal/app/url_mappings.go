@@ -96,3 +96,19 @@ func exactMembershipContractMarker(c *gin.Context) {
 	c.Header("X-Tikti-Contract", "exact-memberships-v1")
 	c.Next()
 }
+
+func setupMembershipV2WriteMappings(engine *gin.Engine, cfg *config.Config, service services.MembershipV2WriteService) {
+	if engine == nil || cfg == nil || !cfg.MembershipV2WriteRoutesV1 || service == nil {
+		return
+	}
+	controller := controllers.NewMembershipV2WriteController(service, cfg)
+	routes := engine.Group("/v1/admin/tenants/:tenantId/memberships", membershipV2WriteContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
+	routes.PUT("/:userId", controller.Put)
+	// Register the slash alias so Gin cannot redirect a privileged write.
+	routes.PUT("/:userId/", controller.Put)
+}
+
+func membershipV2WriteContractMarker(c *gin.Context) {
+	c.Header("X-Tikti-Contract", "membership-v2-write-v1")
+	c.Next()
+}

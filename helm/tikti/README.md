@@ -39,6 +39,10 @@ for every tenant in `config.tenantScopedTokenClaimsV1Tenants` pass the strict
 census; enabling it validates the embedded version and digest before Redis is
 opened. Disabling the flag is the non-destructive rollback.
 
+`config.membershipV2WriteRoutesV1` defaults to false and requires exact reads
+plus matching read, write, and tenant-scope canary allowlists. Keep it off until
+the membership census and reconciliation gates pass; the route is platform-only.
+
 Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and configuring hosts.
 
 ## SAML

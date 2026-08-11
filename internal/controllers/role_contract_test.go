@@ -247,3 +247,10 @@ func signRoleAccessToken(t *testing.T, key any, claims jwt.MapClaims) string {
 	}
 	return signed
 }
+
+func FuzzDecodeMembershipV2Write(f *testing.F) {
+	f.Add(`{"roles":["reader"]}`)
+	f.Fuzz(func(t *testing.T, value string) {
+		_, _ = decodeMembershipV2Write(strings.NewReader(value))
+	})
+}

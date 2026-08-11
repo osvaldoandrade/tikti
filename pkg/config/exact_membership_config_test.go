@@ -52,3 +52,43 @@ func TestLoadConfigRejectsUnsafeExactMembershipRoutes(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadConfigMembershipV2WriteRollout(t *testing.T) {
+	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1", "true")
+	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1_TENANTS", "bereia")
+	valid := `tenantScopedTokenClaimsV1Tenants: [bereia]
+exactMembershipReadRoutesV1: true
+exactMembershipReadRoutesV1Tenants: [bereia]`
+	if cfg, err := LoadConfig(writeTempConfig(t, valid)); err != nil || !cfg.MembershipV2WriteRoutesV1 {
+		t.Fatalf("valid write rollout = %#v, %v", cfg, err)
+	}
+	for _, yaml := range []string{
+		`membershipV2WriteRoutesV1: true`,
+		`exactMembershipReadRoutesV1: true
+exactMembershipReadRoutesV1Tenants: [bereia]
+membershipV2WriteRoutesV1: true
+membershipV2WriteRoutesV1Tenants: [bereia]`,
+		`tenantScopedTokenClaimsV1Tenants: [storifly]
+exactMembershipReadRoutesV1: true
+exactMembershipReadRoutesV1Tenants: [bereia]
+membershipV2WriteRoutesV1: true
+membershipV2WriteRoutesV1Tenants: [bereia]`,
+	} {
+		if _, err := LoadConfig(writeTempConfig(t, yaml)); err == nil {
+			t.Fatal("drifted canary allowlists accepted")
+		}
+	}
+	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1", "invalid")
+	if _, err := LoadConfig(writeTempConfig(t, `{}`)); err == nil {
+		t.Fatal("invalid write flag accepted")
+	}
+	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1", "false")
+	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1_TENANTS", "Bad")
+	if _, err := LoadConfig(writeTempConfig(t, `{}`)); err == nil {
+		t.Fatal("invalid write allowlist accepted")
+	}
+	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1_TENANTS", "")
+	if cfg, err := LoadConfig(writeTempConfig(t, `membershipV2WriteRoutesV1Tenants: [bereia]`)); err != nil || cfg.MembershipV2WriteRoutesV1 || len(cfg.MembershipV2WriteRoutesV1Tenants) != 0 {
+		t.Fatalf("off override = %#v, %v", cfg, err)
+	}
+}

@@ -67,6 +67,8 @@ config:
   tenantScopedTokenClaimsV1Tenants: []
   exactMembershipReadRoutesV1: false
   exactMembershipReadRoutesV1Tenants: []
+  membershipV2WriteRoutesV1: false
+  membershipV2WriteRoutesV1Tenants: []
   workloadIdentity:
     issuer: ""
     audience: "tikti-workload-exchange"
