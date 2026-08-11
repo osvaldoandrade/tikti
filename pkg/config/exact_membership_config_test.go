@@ -56,7 +56,8 @@ func TestLoadConfigRejectsUnsafeExactMembershipRoutes(t *testing.T) {
 func TestLoadConfigMembershipV2WriteRollout(t *testing.T) {
 	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1", "true")
 	t.Setenv("MEMBERSHIP_V2_WRITE_ROUTES_V1_TENANTS", "bereia")
-	valid := `tenantScopedTokenClaimsV1Tenants: [bereia]
+	valid := `tenantScopedTokenClaimsV1: true
+tenantScopedTokenClaimsV1Tenants: [bereia]
 exactMembershipReadRoutesV1: true
 exactMembershipReadRoutesV1Tenants: [bereia]`
 	if cfg, err := LoadConfig(writeTempConfig(t, valid)); err != nil || !cfg.MembershipV2WriteRoutesV1 {
@@ -64,6 +65,12 @@ exactMembershipReadRoutesV1Tenants: [bereia]`
 	}
 	for _, yaml := range []string{
 		`membershipV2WriteRoutesV1: true`,
+		`tenantScopedTokenClaimsV1: false
+tenantScopedTokenClaimsV1Tenants: [bereia]
+exactMembershipReadRoutesV1: true
+exactMembershipReadRoutesV1Tenants: [bereia]
+membershipV2WriteRoutesV1: true
+membershipV2WriteRoutesV1Tenants: [bereia]`,
 		`exactMembershipReadRoutesV1: true
 exactMembershipReadRoutesV1Tenants: [bereia]
 membershipV2WriteRoutesV1: true

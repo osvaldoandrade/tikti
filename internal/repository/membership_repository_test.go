@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 
 	miniredis "github.com/alicebob/miniredis/v2"
@@ -196,5 +198,65 @@ func TestMembershipRepoExactReadsPropagateRedisErrors(t *testing.T) {
 	}
 	if _, err := repo.GetExact(context.Background(), "bereia", "user-1"); err == nil {
 		t.Fatal("exact membership storage error was swallowed")
+	}
+}
+
+func TestMembershipRepoV2GuardPreventsCrossAPISplitBrain(t *testing.T) {
+	rdb, _ := newMembershipRepoForTest(t)
+	ctx := context.Background()
+	v2 := NewMembershipV2Repo(rdb)
+	guarded := NewMembershipRepoWithV2Guard(rdb)
+	roles := []string{"reader"}
+	created, wasCreated, err := v2.Ensure(ctx, "bereia", "user-1", roles)
+	if err != nil || !wasCreated || created == nil {
+		t.Fatalf("v2 create = %+v, %t, %v", created, wasCreated, err)
+	}
+	for _, mutation := range []struct {
+		name string
+		run  func() error
+	}{
+		{name: "legacy replay", run: func() error {
+			return guarded.Create(ctx, &domain.Membership{Id: "legacy-replay", TenantId: "bereia", UserId: "user-1", Roles: roles})
+		}},
+		{name: "legacy update", run: func() error {
+			return guarded.Create(ctx, &domain.Membership{Id: "legacy-update", TenantId: "bereia", UserId: "user-1", Roles: []string{"writer"}})
+		}},
+		{name: "legacy delete", run: func() error { return guarded.Delete(ctx, "bereia", "user-1") }},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			if err := mutation.run(); !errors.Is(err, domain.ErrMembershipConflict) {
+				t.Fatalf("mutation error = %v", err)
+			}
+			v2Value, readErr := v2.GetExact(ctx, "bereia", "user-1")
+			legacyValue, legacyErr := NewMembershipRepo(rdb).Get(ctx, "bereia", "user-1")
+			if readErr != nil || legacyErr != nil || !reflect.DeepEqual(v2Value, created) || !reflect.DeepEqual(legacyValue, created) {
+				t.Fatalf("projections diverged: v2=%+v legacy=%+v errors=%v/%v", v2Value, legacyValue, readErr, legacyErr)
+			}
+		})
+	}
+}
+
+func TestMembershipRepoV2GuardPreservesLegacyOnlyLifecycle(t *testing.T) {
+	_, repo := newMembershipRepoForTest(t)
+	guarded := NewMembershipRepoWithV2Guard(repo.(*membershipRepo).client)
+	ctx := context.Background()
+	create := func(id, role string) error {
+		return guarded.Create(ctx, &domain.Membership{Id: id, TenantId: "legacy", UserId: "user-1", Roles: []string{role}})
+	}
+	if err := create("legacy-1", "reader"); err != nil {
+		t.Fatal(err)
+	}
+	if err := create("legacy-2", "writer"); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := guarded.Get(ctx, "legacy", "user-1")
+	if err != nil || stored == nil || stored.Id != "legacy-2" || !reflect.DeepEqual(stored.Roles, []string{"writer"}) {
+		t.Fatalf("legacy update = %+v, %v", stored, err)
+	}
+	if err := guarded.Delete(ctx, "legacy", "user-1"); err != nil {
+		t.Fatal(err)
+	}
+	if stored, err = guarded.Get(ctx, "legacy", "user-1"); err != nil || stored != nil {
+		t.Fatalf("legacy delete = %+v, %v", stored, err)
 	}
 }

@@ -39,9 +39,15 @@ for every tenant in `config.tenantScopedTokenClaimsV1Tenants` pass the strict
 census; enabling it validates the embedded version and digest before Redis is
 opened. Disabling the flag is the non-destructive rollback.
 
-`config.membershipV2WriteRoutesV1` defaults to false and requires exact reads
-plus matching read, write, and tenant-scope canary allowlists. Keep it off until
-the membership census and reconciliation gates pass; the route is platform-only.
+`config.membershipV2WriteRoutesV1` defaults to false and requires both exact
+reads and `config.tenantScopedTokenClaimsV1` to be enabled with identical read,
+write, and tenant-scope canary allowlists. Keep it off until the membership
+census and reconciliation gates pass; the route is platform-only. When enabled,
+legacy writes are atomically locked for v2-owned tenant/user pairs so the v2 and
+compatibility projections cannot diverge. This guard and the v2 dual projection
+require the supported single-node Redis/Kvrocks topology; Redis Cluster
+cross-slot atomicity is not claimed. Roll back by disabling the v2 write flag,
+not by deleting either projection.
 
 Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and configuring hosts.
 

@@ -398,6 +398,9 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		delete(claimsOut, "role")
 		claimsOut["roles"] = tenantRoles
 	}
+	if strictTarget == "" && u.Role == domain.RoleAdmin && containsString(scopes, domain.PlatformTenantAdminScope) {
+		claimsOut[domain.PlatformPrivilegeClaim] = domain.PlatformPrivilegeAdmin
+	}
 	if scopeString != "" {
 		claimsOut["scope"] = scopeString
 	}
@@ -664,8 +667,11 @@ func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *dom
 	if u == nil {
 		return false
 	}
-	if u.Role == domain.RoleAdmin || u.Role == domain.RoleCompanyAdmin {
+	if u.Role == domain.RoleAdmin {
 		return true
+	}
+	if u.Role == domain.RoleCompanyAdmin {
+		return !containsString(scopes, domain.PlatformTenantAdminScope)
 	}
 	roles := []string{string(u.Role)}
 	if s.membershipRepo != nil {

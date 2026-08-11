@@ -63,6 +63,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	userRepo := repository.NewRedisRepo(redisClient)
 	tenantRepo := repository.NewTenantRepo(redisClient)
 	membershipRepo := repository.NewMembershipRepo(redisClient)
+	if cfg.MembershipV2WriteRoutesV1 {
+		membershipRepo = repository.NewMembershipRepoWithV2Guard(redisClient)
+	}
 	roleRepo := repository.NewRoleRepo(redisClient)
 	clientRepo := repository.NewClientRepo(redisClient)
 	workloadRepo := repository.NewWorkloadBindingRepo(redisClient)
@@ -151,7 +154,7 @@ func validateMembershipV2WriteRuntimeConfig(cfg *config.Config) error {
 	if cfg == nil || !cfg.MembershipV2WriteRoutesV1 {
 		return nil
 	}
-	if !cfg.ExactMembershipReadRoutesV1 || len(cfg.MembershipV2WriteRoutesV1Tenants) == 0 ||
+	if !cfg.TenantScopedTokenClaimsV1 || !cfg.ExactMembershipReadRoutesV1 || len(cfg.MembershipV2WriteRoutesV1Tenants) == 0 ||
 		!slices.Equal(cfg.MembershipV2WriteRoutesV1Tenants, cfg.ExactMembershipReadRoutesV1Tenants) ||
 		!slices.Equal(cfg.MembershipV2WriteRoutesV1Tenants, cfg.TenantScopedTokenClaimsV1Tenants) {
 		return fmt.Errorf("membership v2 write requires matching canary allowlists and exact reads")

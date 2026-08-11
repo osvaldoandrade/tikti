@@ -115,7 +115,7 @@ func (r *membershipV2WriteController) authorize(c *gin.Context, tenantID, userID
 		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
 		return nil, false
 	}
-	if claimString(claims, "sub") == "" || !hasClaimScope(claims, platformTenantAdminScope) {
+	if claimString(claims, "sub") == "" || !hasPlatformTenantAdminProvenance(claims) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient tenant administration scope"})
 		return nil, false
 	}

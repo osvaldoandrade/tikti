@@ -636,6 +636,10 @@ Response 200:
 
 `GET /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts a single 1–128 character ASCII user ID segment (`[A-Za-z0-9._:-]`), except for the complete dot-segments `.` and `..`. Those aliases return 400 before any storage read; dots embedded in an otherwise valid ID remain supported.
 
+`PUT /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts the exact body `{"roles":[...]}` only while membership v2 writes, exact reads, and tenant-scoped token claims are enabled for the same tenant allowlist. The RS256 bearer must carry `code-admin:tenants:admin`, the persisted `ADMIN` role, and Tikti's `tikti_platform_privilege=platform-admin` issuance claim. A `COMPANY_ADMIN` token or an older scope-only token cannot write a membership, including across tenant boundaries.
+
+The v2 write atomically stores identical v2 and compatibility projections on a single Redis/Kvrocks node. While the v2 write flag is enabled, legacy membership create, update, and delete operations fail with a membership conflict whenever the target pair has any v2 marker; they never mutate only the compatibility projection. Legacy-only pairs remain writable for compatibility. Disable the v2 write flag to restore the unguarded legacy path during rollback; do not manually delete one projection.
+
 ### GET /v1/tenants/{tenantId}/users
 
 Lists the users that are members of the tenant. Requires ADMIN or TENANT_ADMIN

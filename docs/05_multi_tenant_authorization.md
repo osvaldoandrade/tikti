@@ -32,6 +32,8 @@ The `code-admin:` namespace is reserved. Tikti embeds Code Admin scope policy `2
 
 `tenantScopedTokenClaimsV1` validates the compiled policy before opening Redis and derives authorization only from exact memberships and exact roles. It does not expand the global user role, `companyId`, or roles carried by an authentication assertion. With the flag off, legacy role and token routes keep their existing behavior.
 
+Global membership administration is provenance-bound. The legacy exchange issues `code-admin:tenants:admin` only for a user whose persisted role is `ADMIN` and marks that access token with `tikti_platform_privilege=platform-admin`. The membership v2 route requires the scope, role, and issuance marker together. `COMPANY_ADMIN` remains compatible with unrelated legacy scopes but cannot obtain or replay a global tenant-administration capability.
+
 Before the Admin consumes exact role reads for a tenant, operators must census and backfill its stored roles to this contract; this read barrier applies even while the token flag is off. Repeat the check before adding the tenant to the strict canary allowlist. Roll back token issuance by removing the tenant from the allowlist or disabling the flag; do not delete role records or fall back to permissive reads in a privileged UI.
 
 ## Authorization decision algorithm

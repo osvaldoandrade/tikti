@@ -26,6 +26,17 @@ const (
 	RoleCompanyEmployee UserRole = "COMPANY_EMPLOYEE"
 )
 
+const (
+	// PlatformTenantAdminScope is the global tenant-administration capability.
+	PlatformTenantAdminScope = "code-admin:tenants:admin"
+	// PlatformPrivilegeClaim records that Tikti issued a global privilege from
+	// the persisted platform-admin role rather than from a tenant-scoped role.
+	PlatformPrivilegeClaim = "tikti_platform_privilege"
+	// PlatformPrivilegeAdmin is the only provenance accepted for global tenant
+	// membership administration.
+	PlatformPrivilegeAdmin = "platform-admin"
+)
+
 // AuthSource distinguishes how a user was provisioned.
 type AuthSource string
 

@@ -29,15 +29,44 @@ type ExactMembershipRepository interface {
 }
 
 type membershipRepo struct {
-	client *redis.Client
+	client  *redis.Client
+	v2Guard bool
 }
 
 const membershipsByUserPrefix = "membershipsByUser:"
 
 var errStoredMembershipContract = errors.New("stored membership contract mismatch")
 
+const membershipLegacyCreateV2GuardScript = `
+local v2 = redis.call("HGET", KEYS[1], ARGV[1])
+local v2Reverse = redis.call("SISMEMBER", KEYS[2], ARGV[2])
+redis.call("HGET", KEYS[3], ARGV[1])
+redis.call("SISMEMBER", KEYS[4], ARGV[2])
+if v2 or v2Reverse == 1 then return "locked" end
+redis.call("HSET", KEYS[3], ARGV[1], ARGV[3])
+redis.call("SADD", KEYS[4], ARGV[2])
+return "created"
+`
+
+const membershipLegacyDeleteV2GuardScript = `
+local v2 = redis.call("HGET", KEYS[1], ARGV[1])
+local v2Reverse = redis.call("SISMEMBER", KEYS[2], ARGV[2])
+redis.call("HGET", KEYS[3], ARGV[1])
+redis.call("SISMEMBER", KEYS[4], ARGV[2])
+if v2 or v2Reverse == 1 then return "locked" end
+redis.call("HDEL", KEYS[3], ARGV[1])
+redis.call("SREM", KEYS[4], ARGV[2])
+return "deleted"
+`
+
 func NewMembershipRepo(rdb *redis.Client) MembershipRepository {
 	return &membershipRepo{client: rdb}
+}
+
+// NewMembershipRepoWithV2Guard preserves legacy writes for non-v2 records but
+// atomically rejects create, update, and delete when a v2 projection exists.
+func NewMembershipRepoWithV2Guard(rdb *redis.Client) MembershipRepository {
+	return &membershipRepo{client: rdb, v2Guard: true}
 }
 
 func (r *membershipRepo) Create(ctx context.Context, membership *domain.Membership) error {
@@ -47,6 +76,22 @@ func (r *membershipRepo) Create(ctx context.Context, membership *domain.Membersh
 	data, err := json.Marshal(membership)
 	if err != nil {
 		return err
+	}
+	if r.v2Guard {
+		status, evalErr := r.client.Eval(ctx, membershipLegacyCreateV2GuardScript, []string{
+			membershipV2Key(membership.TenantId), membershipV2ByUserKey(membership.UserId),
+			membershipsKey(membership.TenantId), membershipsByUserPrefix + membership.UserId,
+		}, membership.UserId, membership.TenantId, string(data)).Text()
+		if evalErr != nil {
+			return evalErr
+		}
+		if status == "locked" {
+			return domain.ErrMembershipConflict
+		}
+		if status != "created" {
+			return errStoredMembershipContract
+		}
+		return nil
 	}
 	key := membershipsKey(membership.TenantId)
 	if err := r.client.HSet(ctx, key, membership.UserId, data).Err(); err != nil {
@@ -142,6 +187,21 @@ func (r *membershipRepo) ListTenantIDsByUserExact(ctx context.Context, userID st
 }
 
 func (r *membershipRepo) Delete(ctx context.Context, tenantID string, userID string) error {
+	if r.v2Guard {
+		status, err := r.client.Eval(ctx, membershipLegacyDeleteV2GuardScript, []string{
+			membershipV2Key(tenantID), membershipV2ByUserKey(userID), membershipsKey(tenantID), membershipsByUserPrefix + userID,
+		}, userID, tenantID).Text()
+		if err != nil {
+			return err
+		}
+		if status == "locked" {
+			return domain.ErrMembershipConflict
+		}
+		if status != "deleted" {
+			return errStoredMembershipContract
+		}
+		return nil
+	}
 	_ = r.client.HDel(ctx, membershipsKey(tenantID), userID).Err()
 	_ = r.client.SRem(ctx, membershipsByUserPrefix+userID, tenantID).Err()
 	return nil

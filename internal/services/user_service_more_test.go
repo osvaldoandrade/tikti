@@ -606,6 +606,13 @@ func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 	if ok := svc.scopesAllowed(context.Background(), "t1", adminUser, []string{"x"}); !ok {
 		t.Fatalf("admin should be allowed")
 	}
+	companyAdmin := &domain.User{Role: domain.RoleCompanyAdmin}
+	if ok := svc.scopesAllowed(context.Background(), "t1", companyAdmin, []string{domain.PlatformTenantAdminScope}); ok {
+		t.Fatalf("company admin received a global tenant administration scope")
+	}
+	if ok := svc.scopesAllowed(context.Background(), "t1", companyAdmin, []string{"legacy:company-admin"}); !ok {
+		t.Fatalf("unrelated legacy company-admin scope should remain compatible")
+	}
 	emp := &domain.User{Id: "u1", Role: domain.RoleCompanyEmployee}
 	if ok := svc.scopesAllowed(context.Background(), "t1", emp, []string{"codeq:claim"}); !ok {
 		t.Fatalf("employee should have codeq defaults")

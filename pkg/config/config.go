@@ -336,7 +336,7 @@ func LoadConfig(filePath string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if c.MembershipV2WriteRoutesV1 && (!c.ExactMembershipReadRoutesV1 || len(c.MembershipV2WriteRoutesV1Tenants) == 0 ||
+	if c.MembershipV2WriteRoutesV1 && (!c.TenantScopedTokenClaimsV1 || !c.ExactMembershipReadRoutesV1 || len(c.MembershipV2WriteRoutesV1Tenants) == 0 ||
 		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.ExactMembershipReadRoutesV1Tenants) ||
 		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.TenantScopedTokenClaimsV1Tenants)) {
 		return nil, fmt.Errorf("membershipV2WriteRoutesV1 requires matching exact-read and tenant-scope canary allowlists")

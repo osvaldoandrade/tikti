@@ -10,10 +10,11 @@ import (
 
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/config"
+	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 const (
-	platformTenantAdminScope = "code-admin:tenants:admin"
+	platformTenantAdminScope = domain.PlatformTenantAdminScope
 	tenantIdentityReadScope  = "code-admin:identity:read"
 	tenantIdentityWriteScope = "code-admin:identity:write"
 )
@@ -105,4 +106,10 @@ func strictAdminClaims(token string, cfg *config.Config) (jwt.MapClaims, error) 
 
 func hasClaimScope(claims jwt.MapClaims, required string) bool {
 	return slices.Contains(strings.Fields(claimString(claims, "scope")), required)
+}
+
+func hasPlatformTenantAdminProvenance(claims jwt.MapClaims) bool {
+	return hasClaimScope(claims, platformTenantAdminScope) &&
+		claimString(claims, "role") == string(domain.RoleAdmin) &&
+		claimString(claims, domain.PlatformPrivilegeClaim) == domain.PlatformPrivilegeAdmin
 }

@@ -54,8 +54,11 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 	router := gin.New()
 	setupMembershipV2WriteMappings(router, cfg, service)
 	token := func(claims jwt.MapClaims) string { return "Bearer " + applicationRoleToken(t, key, claims) }
-	platform := token(jwt.MapClaims{"sub": "platform-operator", "scope": "code-admin:tenants:admin", "tid": "home"})
-	noSubject := token(jwt.MapClaims{"scope": "code-admin:tenants:admin", "tid": "home"})
+	platform := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "home"})
+	noSubject := token(jwt.MapClaims{"scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "home"})
+	adminWithoutProvenance := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), "tid": "home"})
+	companyAdmin := token(jwt.MapClaims{"sub": "company-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleCompanyAdmin), "tid": "bereia"})
+	companyAdminForgedProvenance := token(jwt.MapClaims{"sub": "company-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleCompanyAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "bereia"})
 	local := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:write", "tid": "bereia"})
 	roleOnly := token(jwt.MapClaims{"sub": "role-operator", "role": "ADMIN", "tid": "bereia"})
 	hs, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "operator", "scope": "code-admin:tenants:admin", "exp": time.Now().Add(time.Hour).Unix()}).SignedString([]byte("legacy"))
@@ -72,6 +75,9 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 		{"HS denied", "/v1/admin/tenants/bereia/memberships/user-1", "Bearer " + hs, "api-key", validBody, "application/json", 401, 0},
 		{"local denied", "/v1/admin/tenants/bereia/memberships/user-1", local, "api-key", validBody, "application/json", 403, 0},
 		{"role advisory", "/v1/admin/tenants/bereia/memberships/user-1", roleOnly, "api-key", validBody, "application/json", 403, 0},
+		{"admin without provenance", "/v1/admin/tenants/storifly/memberships/user-1", adminWithoutProvenance, "api-key", validBody, "application/json", 403, 0},
+		{"company admin foreign target", "/v1/admin/tenants/storifly/memberships/user-1", companyAdmin, "api-key", validBody, "application/json", 403, 0},
+		{"company admin forged provenance", "/v1/admin/tenants/storifly/memberships/user-1", companyAdminForgedProvenance, "api-key", validBody, "application/json", 403, 0},
 		{"unallowlisted", "/v1/admin/tenants/outside/memberships/user-1", platform, "api-key", validBody, "application/json", 404, 0},
 		{"bad tenant", "/v1/admin/tenants/Bereia/memberships/user-1", platform, "api-key", validBody, "application/json", 400, 0},
 		{"dot", "/v1/admin/tenants/bereia/memberships/.", platform, "api-key", validBody, "application/json", 400, 0},
@@ -152,7 +158,7 @@ func TestMembershipV2WriteAuditFailsClosed(t *testing.T) {
 		setupMembershipV2WriteMappings(router, cfg, service)
 		log.SetOutput(previous)
 		req := httptest.NewRequest(http.MethodPut, "/v1/admin/tenants/bereia/memberships/user-1", strings.NewReader(`{"roles":["reader"]}`))
-		req.Header.Set("Authorization", "Bearer "+applicationRoleToken(t, key, jwt.MapClaims{"sub": "operator", "scope": "code-admin:tenants:admin"}))
+		req.Header.Set("Authorization", "Bearer "+applicationRoleToken(t, key, jwt.MapClaims{"sub": "operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin}))
 		req.Header.Set("X-API-Key", "api-key")
 		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
@@ -166,7 +172,7 @@ func TestMembershipV2WriteAuditFailsClosed(t *testing.T) {
 func TestMembershipV2WriteRuntimeAndDefaultOff(t *testing.T) {
 	server, key := miniredis.RunT(t), applicationTestPrivateKey(t, 2048)
 	valid := &config.Config{RedisAddr: server.Addr(), ApiKey: "api-key", IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin", JwksKeyID: "kid", JwksPrivateKey: key, ExactMembershipPageTokenSecret: strings.Repeat("k", 32),
-		MembershipV2WriteRoutesV1: true, MembershipV2WriteRoutesV1Tenants: []string{"bereia"}, ExactMembershipReadRoutesV1: true, ExactMembershipReadRoutesV1Tenants: []string{"bereia"}, TenantScopedTokenClaimsV1Tenants: []string{"bereia"}}
+		MembershipV2WriteRoutesV1: true, MembershipV2WriteRoutesV1Tenants: []string{"bereia"}, ExactMembershipReadRoutesV1: true, ExactMembershipReadRoutesV1Tenants: []string{"bereia"}, TenantScopedTokenClaimsV1: true, TenantScopedTokenClaimsV1Tenants: []string{"bereia"}}
 	if err := validateMembershipV2WriteRuntimeConfig(valid); err != nil {
 		t.Fatal(err)
 	}
@@ -182,6 +188,14 @@ func TestMembershipV2WriteRuntimeAndDefaultOff(t *testing.T) {
 	}
 	if _, err := NewApplication(&invalid); err == nil {
 		t.Fatal("unsafe application startup accepted")
+	}
+	invalid = *valid
+	invalid.TenantScopedTokenClaimsV1 = false
+	if validateMembershipV2WriteRuntimeConfig(&invalid) == nil {
+		t.Fatal("write routes accepted disabled tenant-scoped token claims")
+	}
+	if _, err := NewApplication(&invalid); err == nil {
+		t.Fatal("application accepted disabled tenant-scoped token claims")
 	}
 	router := gin.New()
 	setupMembershipV2WriteMappings(router, &config.Config{}, &membershipV2HTTPService{})
