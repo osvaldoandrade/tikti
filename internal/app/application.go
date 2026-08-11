@@ -87,7 +87,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		time.Duration(cfg.WorkloadIdentity.AccessTokenTTLSeconds)*time.Second,
 	)
 
-	engine := gin.Default()
+	engine := newSafeEngine()
 
 	_, _ = tenantService.EnsureDefault(context.Background())
 
