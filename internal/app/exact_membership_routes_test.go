@@ -24,9 +24,12 @@ import (
 
 var errExactHTTPStorageCanary = errors.New("redis-password=storage-canary")
 
-type exactHTTPTenants struct{}
+type exactHTTPTenants struct{ storageCalls *int }
 
-func (exactHTTPTenants) GetExact(_ context.Context, tenantID string) (*domain.Tenant, error) {
+func (f exactHTTPTenants) GetExact(_ context.Context, tenantID string) (*domain.Tenant, error) {
+	if f.storageCalls != nil {
+		(*f.storageCalls)++
+	}
 	switch tenantID {
 	case "invalid-tenant":
 		return nil, domain.ErrInvalidTenant
@@ -41,9 +44,12 @@ func (exactHTTPTenants) GetExact(_ context.Context, tenantID string) (*domain.Te
 	}
 }
 
-type exactHTTPMemberships struct{}
+type exactHTTPMemberships struct{ storageCalls *int }
 
-func (exactHTTPMemberships) GetExact(_ context.Context, tenantID, userID string) (*domain.MembershipIdentity, error) {
+func (f exactHTTPMemberships) GetExact(_ context.Context, tenantID, userID string) (*domain.MembershipIdentity, error) {
+	if f.storageCalls != nil {
+		(*f.storageCalls)++
+	}
 	if userID == "missing" {
 		return nil, nil
 	}
@@ -79,7 +85,8 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 	cfg := &config.Config{ApiKey: "api-key-canary", IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin", JwksPrivateKey: privateKey,
 		ExactMembershipReadRoutesV1: true, ExactMembershipReadRoutesV1Tenants: []string{"bereia", "disabled", "invalid-tenant", "missing-tenant", "storage-tenant", "storifly"}}
 	list := &exactHTTPList{}
-	svc := services.NewExactMembershipReadService(exactHTTPTenants{}, exactHTTPMemberships{}, list)
+	storageCalls := 0
+	svc := services.NewExactMembershipReadService(exactHTTPTenants{storageCalls: &storageCalls}, exactHTTPMemberships{storageCalls: &storageCalls}, list)
 	router := gin.New()
 	setupExactMembershipReadMappings(router, cfg, svc)
 	token := func(claims jwt.MapClaims) string { return "Bearer " + applicationRoleToken(t, privateKey, claims) }
@@ -111,6 +118,7 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 		{"invalid tenant", "/v1/admin/tenants/Bad/memberships", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"long tenant", "/v1/admin/tenants/" + strings.Repeat("a", 64) + "/memberships", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"invalid user", "/v1/admin/tenants/bereia/memberships/user~bad", platform, "api-key-canary", "", 400, "invalid argument"},
+		{"embedded dots remain valid", "/v1/admin/tenants/bereia/memberships/a..b", platform, "api-key-canary", "", 200, `"userId":"a..b"`},
 		{"platform exact", "/v1/admin/tenants/bereia/memberships/same-user", platform, "api-key-canary", "", 200, `"tenantId":"bereia"`},
 		{"local exact", "/v1/admin/tenants/bereia/memberships/same-user", localRead, "api-key-canary", "", 200, `"userId":"same-user"`},
 		{"local write list", "/v1/admin/tenants/bereia/memberships", localWrite, "api-key-canary", "", 200, `"memberships":[`},
@@ -154,6 +162,20 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 				t.Fatalf("response = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
 			}
 		})
+	}
+	for _, target := range []string{
+		"/v1/admin/tenants/bereia/memberships/.",
+		"/v1/admin/tenants/bereia/memberships/..",
+	} {
+		before := storageCalls
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Authorization", platform)
+		req.Header.Set("X-API-Key", "api-key-canary")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || storageCalls != before || rec.Header().Get("X-Tikti-Contract") != "exact-memberships-v1" {
+			t.Fatalf("dot segment %q = %d, storage calls %d -> %d", target, rec.Code, before, storageCalls)
+		}
 	}
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/tenants/bereia/memberships", nil)
 	req.Header.Set("X-API-Key", "api-key-canary")
