@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,23 +17,30 @@ import (
 
 // Config captures runtime parameters loaded from YAML or the environment.
 type Config struct {
-	Port             int                    `yaml:"port"`
-	RedisAddr        string                 `yaml:"redisAddr"`
-	RedisHost        string                 `yaml:"redisHost"`
-	RedisPort        int                    `yaml:"redisPort"`
-	RedisDB          int                    `yaml:"redisDb"`
-	RedisPassword    string                 `yaml:"redisPassword"`
-	RedisURL         string                 `yaml:"redisUrl"`
-	JwtSecret        string                 `yaml:"jwtSecret"`
-	ApiKey           string                 `yaml:"apiKey"`
-	IssuerBaseURL    string                 `yaml:"issuerBaseUrl"`
-	DefaultAudience  string                 `yaml:"defaultAudience"`
-	JwksPrivateKey   string                 `yaml:"jwksPrivateKey"`
-	JwksKeyID        string                 `yaml:"jwksKeyId"`
-	WorkloadIdentity WorkloadIdentityConfig `yaml:"workloadIdentity"`
-	SAML             SAMLConfig             `yaml:"saml"`
-	HTTP             HTTPConfig             `yaml:"http"`
-	ForwardAuth      ForwardAuthConfig      `yaml:"forwardAuth"`
+	Port                               int                    `yaml:"port"`
+	RedisAddr                          string                 `yaml:"redisAddr"`
+	RedisHost                          string                 `yaml:"redisHost"`
+	RedisPort                          int                    `yaml:"redisPort"`
+	RedisDB                            int                    `yaml:"redisDb"`
+	RedisPassword                      string                 `yaml:"redisPassword"`
+	RedisURL                           string                 `yaml:"redisUrl"`
+	JwtSecret                          string                 `yaml:"jwtSecret"`
+	ApiKey                             string                 `yaml:"apiKey"`
+	IssuerBaseURL                      string                 `yaml:"issuerBaseUrl"`
+	DefaultAudience                    string                 `yaml:"defaultAudience"`
+	JwksPrivateKey                     string                 `yaml:"jwksPrivateKey"`
+	JwksKeyID                          string                 `yaml:"jwksKeyId"`
+	WorkloadIdentity                   WorkloadIdentityConfig `yaml:"workloadIdentity"`
+	SAML                               SAMLConfig             `yaml:"saml"`
+	HTTP                               HTTPConfig             `yaml:"http"`
+	ForwardAuth                        ForwardAuthConfig      `yaml:"forwardAuth"`
+	TenantScopedTokenClaimsV1          bool                   `yaml:"tenantScopedTokenClaimsV1"`
+	TenantScopedTokenClaimsV1Tenants   []string               `yaml:"tenantScopedTokenClaimsV1Tenants"`
+	ExactMembershipReadRoutesV1        bool                   `yaml:"exactMembershipReadRoutesV1"`
+	ExactMembershipReadRoutesV1Tenants []string               `yaml:"exactMembershipReadRoutesV1Tenants"`
+	ExactMembershipPageTokenSecret     string                 `yaml:"-"`
+	MembershipV2WriteRoutesV1          bool                   `yaml:"membershipV2WriteRoutesV1"`
+	MembershipV2WriteRoutesV1Tenants   []string               `yaml:"membershipV2WriteRoutesV1Tenants"`
 }
 
 // HTTPConfig defines the public server boundary.
@@ -256,6 +265,82 @@ func LoadConfig(filePath string) (*Config, error) {
 	if v := os.Getenv("JWKS_KEY_ID"); v != "" {
 		c.JwksKeyID = v
 	}
+	if raw, exists := os.LookupEnv("TENANT_SCOPED_TOKEN_CLAIMS_V1"); exists {
+		switch strings.TrimSpace(raw) {
+		case "true":
+			c.TenantScopedTokenClaimsV1 = true
+		case "false":
+			c.TenantScopedTokenClaimsV1 = false
+		default:
+			return nil, fmt.Errorf("TENANT_SCOPED_TOKEN_CLAIMS_V1 must be true or false")
+		}
+	}
+	if raw, exists := os.LookupEnv("TENANT_SCOPED_TOKEN_CLAIMS_V1_TENANTS"); exists {
+		c.TenantScopedTokenClaimsV1Tenants = nil
+		if strings.TrimSpace(raw) != "" {
+			c.TenantScopedTokenClaimsV1Tenants = strings.Split(raw, ",")
+		}
+	}
+	c.TenantScopedTokenClaimsV1Tenants, err = canonicalTenantAllowlist(c.TenantScopedTokenClaimsV1Tenants)
+	if err != nil {
+		return nil, err
+	}
+	if c.TenantScopedTokenClaimsV1 && len(c.TenantScopedTokenClaimsV1Tenants) == 0 {
+		return nil, fmt.Errorf("tenantScopedTokenClaimsV1 requires a non-empty tenant allowlist")
+	}
+	if raw, exists := os.LookupEnv("EXACT_MEMBERSHIP_READ_ROUTES_V1"); exists {
+		switch strings.TrimSpace(raw) {
+		case "true":
+			c.ExactMembershipReadRoutesV1 = true
+		case "false":
+			c.ExactMembershipReadRoutesV1 = false
+		default:
+			return nil, fmt.Errorf("EXACT_MEMBERSHIP_READ_ROUTES_V1 must be true or false")
+		}
+	}
+	if raw, exists := os.LookupEnv("EXACT_MEMBERSHIP_READ_ROUTES_V1_TENANTS"); exists {
+		c.ExactMembershipReadRoutesV1Tenants = nil
+		if strings.TrimSpace(raw) != "" {
+			c.ExactMembershipReadRoutesV1Tenants = strings.Split(raw, ",")
+		}
+	}
+	c.ExactMembershipReadRoutesV1Tenants, err = canonicalNamedTenantAllowlist("exactMembershipReadRoutesV1Tenants", c.ExactMembershipReadRoutesV1Tenants)
+	if err != nil {
+		return nil, err
+	}
+	if c.ExactMembershipReadRoutesV1 && len(c.ExactMembershipReadRoutesV1Tenants) == 0 {
+		return nil, fmt.Errorf("exactMembershipReadRoutesV1 requires a non-empty tenant allowlist")
+	}
+	if c.ExactMembershipReadRoutesV1 {
+		if err = loadSecretFile("EXACT_MEMBERSHIP_PAGE_TOKEN_SECRET_FILE", &c.ExactMembershipPageTokenSecret); err != nil {
+			return nil, err
+		}
+	}
+	if raw, exists := os.LookupEnv("MEMBERSHIP_V2_WRITE_ROUTES_V1"); exists {
+		switch strings.TrimSpace(raw) {
+		case "true":
+			c.MembershipV2WriteRoutesV1 = true
+		case "false":
+			c.MembershipV2WriteRoutesV1 = false
+		default:
+			return nil, fmt.Errorf("MEMBERSHIP_V2_WRITE_ROUTES_V1 must be true or false")
+		}
+	}
+	if raw, exists := os.LookupEnv("MEMBERSHIP_V2_WRITE_ROUTES_V1_TENANTS"); exists {
+		c.MembershipV2WriteRoutesV1Tenants = nil
+		if strings.TrimSpace(raw) != "" {
+			c.MembershipV2WriteRoutesV1Tenants = strings.Split(raw, ",")
+		}
+	}
+	c.MembershipV2WriteRoutesV1Tenants, err = canonicalNamedTenantAllowlist("membershipV2WriteRoutesV1Tenants", c.MembershipV2WriteRoutesV1Tenants)
+	if err != nil {
+		return nil, err
+	}
+	if c.MembershipV2WriteRoutesV1 && (!c.TenantScopedTokenClaimsV1 || !c.ExactMembershipReadRoutesV1 || len(c.MembershipV2WriteRoutesV1Tenants) == 0 ||
+		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.ExactMembershipReadRoutesV1Tenants) ||
+		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.TenantScopedTokenClaimsV1Tenants)) {
+		return nil, fmt.Errorf("membershipV2WriteRoutesV1 requires matching exact-read and tenant-scope canary allowlists")
+	}
 	if c.IssuerBaseURL == "" {
 		log.Println("WARNING: IssuerBaseURL not set. Using http://localhost:8080")
 		c.IssuerBaseURL = "http://localhost:8080"
@@ -459,6 +544,43 @@ func optionalExpandedValue(value string) string {
 		return ""
 	}
 	return value
+}
+
+func canonicalTenantAllowlist(values []string) ([]string, error) {
+	return canonicalNamedTenantAllowlist("tenantScopedTokenClaimsV1Tenants", values)
+}
+
+func canonicalNamedTenantAllowlist(name string, values []string) ([]string, error) {
+	if len(values) > 128 {
+		return nil, fmt.Errorf("%s supports at most 128 tenants", name)
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if !canonicalTenantID(value) {
+			return nil, fmt.Errorf("%s contains an invalid tenant", name)
+		}
+		if _, exists := seen[value]; exists {
+			return nil, fmt.Errorf("%s contains a duplicate tenant", name)
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+func canonicalTenantID(value string) bool {
+	if len(value) < 1 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, character := range []byte(value) {
+		if strings.IndexByte("abcdefghijklmnopqrstuvwxyz0123456789-", character) < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeOrigins(origins []string) ([]string, error) {

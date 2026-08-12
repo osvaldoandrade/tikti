@@ -24,6 +24,20 @@ Tikti defines three categories of roles. Global roles apply across all tenants; 
 
 Each role expands into a fixed set of scopes. `CODEQ_ADMIN` expands to `codeq:admin`, `codeq:claim`, and `codeq:result`. Role definitions are static mappings stored in the roles repository. Role expansion is deterministic. The system does not permit dynamic or implicit scope generation without explicit role definitions because that would make authorization non-deterministic.
 
+### Strict tenant role integrity
+
+The immutable role API and strict tenant token canary accept only canonical tenant roles: the Redis hash field and role name must match, `scope` must be `TENANT`, `tenantId` must match the requested tenant, `resourceId` must be empty, and permissions must be sorted and unique. Exact reads reject malformed JSON, duplicate or unknown fields, nulls, trailing content, and any contract mismatch. A conflicting or corrupt existing role is never overwritten by an idempotent PUT.
+
+The `code-admin:` namespace is reserved. Tikti embeds Code Admin scope policy `2026-08-10.1` with SHA-256 `93cdb76942b6aa7ce445ac5b4ab3f58980216afde0c6f31fb63a286835d99cd7`; only entries explicitly marked tenant-assignable may appear in tenant roles. Unknown, global, mixed, and tenant-bound but non-assignable Code Admin scopes fail closed during role writes, exact reads, and strict token expansion. Permissions outside `code-admin:` retain the existing syntax contract because Tikti does not yet have a complete offline registry for those namespaces.
+
+`tenantScopedTokenClaimsV1` validates the compiled policy before opening Redis and derives authorization only from exact memberships and exact roles. It does not expand the global user role, `companyId`, or roles carried by an authentication assertion. With the flag off, legacy role and token routes keep their existing behavior.
+
+Global membership administration is provenance-bound. The legacy exchange issues `code-admin:tenants:admin` only for a user whose persisted role is `ADMIN` and marks that access token with `tikti_platform_privilege=platform-admin`. The membership v2 route requires the scope, role, and issuance marker together. `COMPANY_ADMIN` remains compatible with unrelated legacy scopes but cannot obtain or replay a global tenant-administration capability.
+
+Membership projection ownership is a storage invariant, not a route flag. All legacy server writers and `tikti-bootstrap` atomically check both v2 markers before mutating a pair, even when the v2 write route is disabled. Once v2 owns a pair, legacy create, update, and delete fail closed until an audited reconciliation removes that ownership; rolling deployments and route rollback therefore cannot reopen a legacy-only write path.
+
+Before the Admin consumes exact role reads for a tenant, operators must census and backfill its stored roles to this contract; this read barrier applies even while the token flag is off. Repeat the check before adding the tenant to the strict canary allowlist. Roll back token issuance by removing the tenant from the allowlist or disabling the flag; do not delete role records or fall back to permissive reads in a privileged UI.
+
 ## Authorization decision algorithm
 
 Authorization is a function of token claims, tenant membership, role definitions, and requested scopes. The inputs are: `token` claims (`sub`, `iss`, `aud`, `scope`, `tid`), `tenantId` resolved from token or request context, `requiredScopes` for the endpoint, and `resourceAudience` expected by the endpoint.

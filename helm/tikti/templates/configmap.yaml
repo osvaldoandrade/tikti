@@ -16,6 +16,12 @@ data:
     defaultAudience: {{ .Values.config.defaultAudience | quote }}
     jwksPrivateKey: {{- if .Values.secrets.enabled }} "${JWKS_PRIVATE_KEY}"{{- else }} {{ .Values.config.jwksPrivateKey | quote }}{{- end }}
     jwksKeyId: {{ .Values.config.jwksKeyId | quote }}
+    tenantScopedTokenClaimsV1: {{ .Values.config.tenantScopedTokenClaimsV1 }}
+    tenantScopedTokenClaimsV1Tenants: {{ .Values.config.tenantScopedTokenClaimsV1Tenants | toJson }}
+    exactMembershipReadRoutesV1: {{ .Values.config.exactMembershipReadRoutesV1 }}
+    exactMembershipReadRoutesV1Tenants: {{ .Values.config.exactMembershipReadRoutesV1Tenants | toJson }}
+    membershipV2WriteRoutesV1: {{ .Values.config.membershipV2WriteRoutesV1 }}
+    membershipV2WriteRoutesV1Tenants: {{ .Values.config.membershipV2WriteRoutesV1Tenants | toJson }}
     workloadIdentity:
       issuer: {{ .Values.config.workloadIdentity.issuer | quote }}
       audience: {{ .Values.config.workloadIdentity.audience | quote }}

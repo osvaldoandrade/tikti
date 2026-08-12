@@ -211,6 +211,9 @@ func (f *fakeMembershipService) ListTenantIDsByUser(ctx context.Context, userID 
 
 type fakeRoleService struct {
 	createFn             func(context.Context, string, domain.RoleCreateReq) (*domain.RoleResp, error)
+	createWithNameFn     func(context.Context, string, string, domain.RolePutReq) (*domain.RoleResp, bool, error)
+	getByNameFn          func(context.Context, string, string) (*domain.RoleResp, error)
+	listCanonicalFn      func(context.Context, string) ([]*domain.RoleResp, error)
 	listFn               func(context.Context, string) ([]*domain.RoleResp, error)
 	resolvePermissionsFn func(context.Context, string, []string) ([]string, error)
 }
@@ -220,6 +223,24 @@ func (f *fakeRoleService) Create(ctx context.Context, tenantID string, req domai
 		return f.createFn(ctx, tenantID, req)
 	}
 	return nil, nil
+}
+func (f *fakeRoleService) CreateWithName(ctx context.Context, tenantID, name string, req domain.RolePutReq) (*domain.RoleResp, bool, error) {
+	if f.createWithNameFn == nil {
+		return nil, false, nil
+	}
+	return f.createWithNameFn(ctx, tenantID, name, req)
+}
+func (f *fakeRoleService) GetByName(ctx context.Context, tenantID, name string) (*domain.RoleResp, error) {
+	if f.getByNameFn != nil {
+		return f.getByNameFn(ctx, tenantID, name)
+	}
+	return nil, nil
+}
+func (f *fakeRoleService) ListCanonical(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
+	if f.listCanonicalFn != nil {
+		return f.listCanonicalFn(ctx, tenantID)
+	}
+	return []*domain.RoleResp{}, nil
 }
 func (f *fakeRoleService) List(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
 	if f.listFn != nil {

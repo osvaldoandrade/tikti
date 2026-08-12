@@ -26,6 +26,33 @@ Set `issuer` and `jwksUrl` together, keep `audience` equal to
 3600 seconds. Leaving both endpoint values empty keeps the route fail-closed
 without affecting existing user authentication routes.
 
+`config.exactMembershipReadRoutesV1` defaults to false. Enabling it requires a
+canonical tenant allowlist and uses a strong non-default `jwtSecret` as the
+pagination key. To use a dedicated key instead, mount a readable Secret file
+with `extraVolumes`/`extraVolumeMounts` and set
+`EXACT_MEMBERSHIP_PAGE_TOKEN_SECRET_FILE` through `extraEnv`; the runtime
+requires at least 32 bytes.
+
+`config.tenantScopedTokenClaimsV1` uses the compiled Code Admin scope policy
+described in `docs/05_multi_tenant_authorization.md`. Keep it false until roles
+for every tenant in `config.tenantScopedTokenClaimsV1Tenants` pass the strict
+census; enabling it validates the embedded version and digest before Redis is
+opened. Disabling the flag is the non-destructive rollback.
+
+`config.membershipV2WriteRoutesV1` defaults to false and requires both exact
+reads and `config.tenantScopedTokenClaimsV1` to be enabled with identical read,
+write, and tenant-scope canary allowlists. Keep it off until the membership
+census and reconciliation gates pass; the route is platform-only. The legacy
+server and `tikti-bootstrap` writers always atomically lock v2-owned tenant/user
+pairs, even while this route flag is false, so rolling deployments and route
+rollback cannot diverge the compatibility projection. Dark-roll the guarded
+image to every server replica and complete one successful post-upgrade bootstrap
+Job before enabling the route. The guard and the v2 dual projection require the
+supported single-node Redis/Kvrocks topology; Redis Cluster cross-slot atomicity
+is not claimed. Roll back route exposure by disabling the flag while retaining
+the guarded image. Do not restore an older unguarded image or delete either
+projection until an audited reconciliation proves no v2-owned pair remains.
+
 Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and configuring hosts.
 
 ## SAML

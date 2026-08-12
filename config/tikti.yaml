@@ -8,6 +8,12 @@ issuerBaseUrl: ${ISSUER_BASE_URL}
 defaultAudience: ${DEFAULT_AUDIENCE}
 jwksPrivateKey: ${JWKS_PRIVATE_KEY}
 jwksKeyId: ${JWKS_KEY_ID}
+tenantScopedTokenClaimsV1: false
+tenantScopedTokenClaimsV1Tenants: []
+exactMembershipReadRoutesV1: false
+exactMembershipReadRoutesV1Tenants: []
+membershipV2WriteRoutesV1: false
+membershipV2WriteRoutesV1Tenants: []
 workloadIdentity:
   issuer: ${WORKLOAD_IDENTITY_ISSUER}
   audience: tikti-workload-exchange

@@ -96,8 +96,10 @@ func (m *mockUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject,
 type mockMembershipRepo struct {
 	createFn            func(context.Context, *domain.Membership) error
 	getFn               func(context.Context, string, string) (*domain.Membership, error)
+	getExactFn          func(context.Context, string, string) (*domain.Membership, error)
 	listByTenantFn      func(context.Context, string, uint64, int64) ([]*domain.Membership, uint64, error)
 	listTenantIDsByUser func(context.Context, string) ([]string, error)
+	listExactFn         func(context.Context, string) ([]string, error)
 	deleteFn            func(context.Context, string, string) error
 }
 
@@ -113,6 +115,12 @@ func (m *mockMembershipRepo) Get(ctx context.Context, tenantID string, userID st
 	}
 	return nil, nil
 }
+func (m *mockMembershipRepo) GetExact(ctx context.Context, tenantID string, userID string) (*domain.Membership, error) {
+	if m.getExactFn != nil {
+		return m.getExactFn(ctx, tenantID, userID)
+	}
+	return nil, nil
+}
 func (m *mockMembershipRepo) ListByTenant(ctx context.Context, tenantID string, cursor uint64, count int64) ([]*domain.Membership, uint64, error) {
 	if m.listByTenantFn != nil {
 		return m.listByTenantFn(ctx, tenantID, cursor, count)
@@ -125,6 +133,12 @@ func (m *mockMembershipRepo) ListTenantIDsByUser(ctx context.Context, userID str
 	}
 	return nil, nil
 }
+func (m *mockMembershipRepo) ListTenantIDsByUserExact(ctx context.Context, userID string) ([]string, error) {
+	if m.listExactFn != nil {
+		return m.listExactFn(ctx, userID)
+	}
+	return nil, nil
+}
 func (m *mockMembershipRepo) Delete(ctx context.Context, tenantID string, userID string) error {
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, tenantID, userID)
@@ -134,9 +148,23 @@ func (m *mockMembershipRepo) Delete(ctx context.Context, tenantID string, userID
 
 type mockRoleService struct {
 	resolvePermissionsFn func(context.Context, string, []string) ([]string, error)
+	getByNameFn          func(context.Context, string, string) (*domain.RoleResp, error)
 }
 
 func (m *mockRoleService) Create(context.Context, string, domain.RoleCreateReq) (*domain.RoleResp, error) {
+	return nil, nil
+}
+func (m *mockRoleService) CreateWithName(context.Context, string, string, domain.RolePutReq) (*domain.RoleResp, bool, error) {
+	return nil, false, nil
+}
+
+func (m *mockRoleService) GetByName(ctx context.Context, tenantID, roleName string) (*domain.RoleResp, error) {
+	if m.getByNameFn != nil {
+		return m.getByNameFn(ctx, tenantID, roleName)
+	}
+	return nil, nil
+}
+func (m *mockRoleService) ListCanonical(context.Context, string) ([]*domain.RoleResp, error) {
 	return nil, nil
 }
 func (m *mockRoleService) List(context.Context, string) ([]*domain.RoleResp, error) { return nil, nil }
@@ -577,6 +605,13 @@ func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 	adminUser := &domain.User{Role: domain.RoleAdmin}
 	if ok := svc.scopesAllowed(context.Background(), "t1", adminUser, []string{"x"}); !ok {
 		t.Fatalf("admin should be allowed")
+	}
+	companyAdmin := &domain.User{Role: domain.RoleCompanyAdmin}
+	if ok := svc.scopesAllowed(context.Background(), "t1", companyAdmin, []string{domain.PlatformTenantAdminScope}); ok {
+		t.Fatalf("company admin received a global tenant administration scope")
+	}
+	if ok := svc.scopesAllowed(context.Background(), "t1", companyAdmin, []string{"legacy:company-admin"}); !ok {
+		t.Fatalf("unrelated legacy company-admin scope should remain compatible")
 	}
 	emp := &domain.User{Id: "u1", Role: domain.RoleCompanyEmployee}
 	if ok := svc.scopesAllowed(context.Background(), "t1", emp, []string{"codeq:claim"}); !ok {

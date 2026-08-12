@@ -28,13 +28,17 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		workloadAdmin.POST("/bindings", workloadCtrl.UpsertBinding)
 		workloadAdmin.POST("/bindings/revoke", workloadCtrl.RevokeBinding)
 	}
+	roleCtrl := controllers.NewRoleController(roleService, cfg)
+	roleAdmin := v1.Group("/admin/tenants/:tenantId/roles", utils.RequiredApiKeyHeader(cfg.ApiKey))
+	roleAdmin.GET("", roleCtrl.ListAdmin)
+	roleAdmin.GET("/:roleName", roleCtrl.Get)
+	roleAdmin.PUT("/:roleName", roleCtrl.Put)
 
 	protected := v1.Group("/")
 	protected.Use(utils.ApiKey(cfg.ApiKey))
 	{
 		tenantCtrl := controllers.NewTenantController(tenantService, cfg)
 		memberCtrl := controllers.NewMembershipController(membershipService, cfg)
-		roleCtrl := controllers.NewRoleController(roleService, cfg)
 		clientCtrl := controllers.NewClientController(clientService, cfg)
 
 		protected.POST("/accounts/signInWithPassword", signInCtrl.Handle)
@@ -76,4 +80,35 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		samlAdmin.PUT("", samlAdminController.Put)
 		samlAdmin.DELETE("", samlAdminController.Delete)
 	}
+}
+
+func setupExactMembershipReadMappings(engine *gin.Engine, cfg *config.Config, service services.ExactMembershipReadService) {
+	if engine == nil || cfg == nil || !cfg.ExactMembershipReadRoutesV1 || service == nil {
+		return
+	}
+	controller := controllers.NewExactMembershipReadController(service, cfg)
+	routes := engine.Group("/v1/admin/tenants/:tenantId/memberships", exactMembershipContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
+	routes.GET("", controller.List)
+	routes.GET("/:userId", controller.Get)
+}
+
+func exactMembershipContractMarker(c *gin.Context) {
+	c.Header("X-Tikti-Contract", "exact-memberships-v1")
+	c.Next()
+}
+
+func setupMembershipV2WriteMappings(engine *gin.Engine, cfg *config.Config, service services.MembershipV2WriteService) {
+	if engine == nil || cfg == nil || !cfg.MembershipV2WriteRoutesV1 || service == nil {
+		return
+	}
+	controller := controllers.NewMembershipV2WriteController(service, cfg)
+	routes := engine.Group("/v1/admin/tenants/:tenantId/memberships", membershipV2WriteContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
+	routes.PUT("/:userId", controller.Put)
+	// Register the slash alias so Gin cannot redirect a privileged write.
+	routes.PUT("/:userId/", controller.Put)
+}
+
+func membershipV2WriteContractMarker(c *gin.Context) {
+	c.Header("X-Tikti-Contract", "membership-v2-write-v1")
+	c.Next()
 }

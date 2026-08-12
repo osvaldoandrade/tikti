@@ -17,6 +17,20 @@ var (
 	ErrUnauthorizedScope = errors.New("unauthorized scopes")
 	// ErrInvalidArgument indicates request payload validation failed.
 	ErrInvalidArgument = errors.New("invalid argument")
+	// ErrRoleConflict preserves an existing role whose immutable definition differs.
+	ErrRoleConflict = errors.New("role already exists with different permissions")
+	// ErrRoleNotFound indicates that an exact tenant role does not exist.
+	ErrRoleNotFound = errors.New("role not found")
+	// ErrMembershipNotFound indicates that an exact tenant assignment does not exist.
+	ErrMembershipNotFound = errors.New("membership not found")
+	// ErrMembershipConflict preserves an immutable membership definition or legacy shadow.
+	ErrMembershipConflict = errors.New("membership already exists with a different definition")
+	// ErrMembershipDependencyNotFound means an exact tenant, user, or role is absent.
+	ErrMembershipDependencyNotFound = errors.New("membership dependency not found")
+	// ErrMembershipDependencyInactive means the exact tenant or user cannot receive assignments.
+	ErrMembershipDependencyInactive = errors.New("membership dependency is not active")
+	// ErrMembershipPageStale requires the caller to restart exact pagination.
+	ErrMembershipPageStale = errors.New("membership page changed; restart pagination")
 	// ErrNotFound is returned when a user cannot be located in storage.
 	ErrNotFound = errors.New("user not found")
 	// ErrInvalidOob signals that the out-of-band code is unknown or expired.
