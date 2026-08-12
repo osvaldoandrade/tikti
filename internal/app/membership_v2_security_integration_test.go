@@ -83,13 +83,20 @@ func TestMembershipV2CompanyAdminCannotEscalateToForeignTarget(t *testing.T) {
 	}
 }
 
-func TestMembershipV2ApplicationGuardKeepsCrossAPIProjectionsAtomic(t *testing.T) {
+func TestMembershipV2ApplicationGuardKeepsMixedRouteModesAtomic(t *testing.T) {
 	server := miniredis.RunT(t)
 	application, err := NewApplication(membershipV2IntegratedConfig(t, server.Addr()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = application.Redis.Close() })
+	legacyConfig := membershipV2IntegratedConfig(t, server.Addr())
+	legacyConfig.MembershipV2WriteRoutesV1 = false
+	legacyApplication, err := NewApplication(legacyConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = legacyApplication.Redis.Close() })
 	ctx := context.Background()
 	user := &domain.User{
 		Id: "user-1", Email: "user@example.com", Role: domain.RoleCompanyEmployee,
@@ -108,15 +115,15 @@ func TestMembershipV2ApplicationGuardKeepsCrossAPIProjectionsAtomic(t *testing.T
 		run  func() error
 	}{
 		{name: "legacy create", run: func() error {
-			_, err := application.MemberSvc.Create(ctx, "bereia", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"reader"}})
+			_, err := legacyApplication.MemberSvc.Create(ctx, "bereia", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"reader"}})
 			return err
 		}},
 		{name: "legacy update", run: func() error {
-			_, err := application.MemberSvc.Create(ctx, "bereia", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"writer"}})
+			_, err := legacyApplication.MemberSvc.Create(ctx, "bereia", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"writer"}})
 			return err
 		}},
 		{name: "legacy delete", run: func() error {
-			_, err := application.MemberSvc.Remove(ctx, "bereia", domain.MembershipRemoveReq{Email: user.Email})
+			_, err := legacyApplication.MemberSvc.Remove(ctx, "bereia", domain.MembershipRemoveReq{Email: user.Email})
 			return err
 		}},
 	} {
@@ -132,17 +139,17 @@ func TestMembershipV2ApplicationGuardKeepsCrossAPIProjectionsAtomic(t *testing.T
 		})
 	}
 
-	if _, err := application.MemberSvc.Create(ctx, "legacy", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"reader"}}); err != nil {
+	if _, err := legacyApplication.MemberSvc.Create(ctx, "legacy", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"reader"}}); err != nil {
 		t.Fatalf("legacy-only create: %v", err)
 	}
-	if _, err := application.MemberSvc.Create(ctx, "legacy", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"writer"}}); err != nil {
+	if _, err := legacyApplication.MemberSvc.Create(ctx, "legacy", domain.MembershipCreateReq{Email: user.Email, Roles: []string{"writer"}}); err != nil {
 		t.Fatalf("legacy-only update: %v", err)
 	}
 	legacyOnly, err := repository.NewMembershipRepo(application.Redis).Get(ctx, "legacy", user.Id)
 	if err != nil || legacyOnly == nil || !reflect.DeepEqual(legacyOnly.Roles, []string{"writer"}) {
 		t.Fatalf("legacy-only projection = %+v, %v", legacyOnly, err)
 	}
-	if _, err := application.MemberSvc.Remove(ctx, "legacy", domain.MembershipRemoveReq{Email: user.Email}); err != nil {
+	if _, err := legacyApplication.MemberSvc.Remove(ctx, "legacy", domain.MembershipRemoveReq{Email: user.Email}); err != nil {
 		t.Fatalf("legacy-only delete: %v", err)
 	}
 	if legacyOnly, err = repository.NewMembershipRepo(application.Redis).Get(ctx, "legacy", user.Id); err != nil || legacyOnly != nil {

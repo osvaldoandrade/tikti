@@ -63,9 +63,6 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	userRepo := repository.NewRedisRepo(redisClient)
 	tenantRepo := repository.NewTenantRepo(redisClient)
 	membershipRepo := repository.NewMembershipRepo(redisClient)
-	if cfg.MembershipV2WriteRoutesV1 {
-		membershipRepo = repository.NewMembershipRepoWithV2Guard(redisClient)
-	}
 	roleRepo := repository.NewRoleRepo(redisClient)
 	clientRepo := repository.NewClientRepo(redisClient)
 	workloadRepo := repository.NewWorkloadBindingRepo(redisClient)

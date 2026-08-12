@@ -34,6 +34,8 @@ The `code-admin:` namespace is reserved. Tikti embeds Code Admin scope policy `2
 
 Global membership administration is provenance-bound. The legacy exchange issues `code-admin:tenants:admin` only for a user whose persisted role is `ADMIN` and marks that access token with `tikti_platform_privilege=platform-admin`. The membership v2 route requires the scope, role, and issuance marker together. `COMPANY_ADMIN` remains compatible with unrelated legacy scopes but cannot obtain or replay a global tenant-administration capability.
 
+Membership projection ownership is a storage invariant, not a route flag. All legacy server writers and `tikti-bootstrap` atomically check both v2 markers before mutating a pair, even when the v2 write route is disabled. Once v2 owns a pair, legacy create, update, and delete fail closed until an audited reconciliation removes that ownership; rolling deployments and route rollback therefore cannot reopen a legacy-only write path.
+
 Before the Admin consumes exact role reads for a tenant, operators must census and backfill its stored roles to this contract; this read barrier applies even while the token flag is off. Repeat the check before adding the tenant to the strict canary allowlist. Roll back token issuance by removing the tenant from the allowlist or disabling the flag; do not delete role records or fall back to permissive reads in a privileged UI.
 
 ## Authorization decision algorithm

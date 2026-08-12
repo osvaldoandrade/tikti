@@ -204,8 +204,10 @@ func TestMembershipRepoExactReadsPropagateRedisErrors(t *testing.T) {
 func TestMembershipRepoV2GuardPreventsCrossAPISplitBrain(t *testing.T) {
 	rdb, _ := newMembershipRepoForTest(t)
 	ctx := context.Background()
+	// Construct the legacy writer before v2 data exists to model a process
+	// started while the write route is still dark during a rolling rollout.
+	legacyWriter := NewMembershipRepo(rdb)
 	v2 := NewMembershipV2Repo(rdb)
-	guarded := NewMembershipRepoWithV2Guard(rdb)
 	roles := []string{"reader"}
 	created, wasCreated, err := v2.Ensure(ctx, "bereia", "user-1", roles)
 	if err != nil || !wasCreated || created == nil {
@@ -216,12 +218,12 @@ func TestMembershipRepoV2GuardPreventsCrossAPISplitBrain(t *testing.T) {
 		run  func() error
 	}{
 		{name: "legacy replay", run: func() error {
-			return guarded.Create(ctx, &domain.Membership{Id: "legacy-replay", TenantId: "bereia", UserId: "user-1", Roles: roles})
+			return legacyWriter.Create(ctx, &domain.Membership{Id: "legacy-replay", TenantId: "bereia", UserId: "user-1", Roles: roles})
 		}},
 		{name: "legacy update", run: func() error {
-			return guarded.Create(ctx, &domain.Membership{Id: "legacy-update", TenantId: "bereia", UserId: "user-1", Roles: []string{"writer"}})
+			return legacyWriter.Create(ctx, &domain.Membership{Id: "legacy-update", TenantId: "bereia", UserId: "user-1", Roles: []string{"writer"}})
 		}},
-		{name: "legacy delete", run: func() error { return guarded.Delete(ctx, "bereia", "user-1") }},
+		{name: "legacy delete", run: func() error { return legacyWriter.Delete(ctx, "bereia", "user-1") }},
 	} {
 		t.Run(mutation.name, func(t *testing.T) {
 			if err := mutation.run(); !errors.Is(err, domain.ErrMembershipConflict) {
@@ -238,10 +240,9 @@ func TestMembershipRepoV2GuardPreventsCrossAPISplitBrain(t *testing.T) {
 
 func TestMembershipRepoV2GuardPreservesLegacyOnlyLifecycle(t *testing.T) {
 	_, repo := newMembershipRepoForTest(t)
-	guarded := NewMembershipRepoWithV2Guard(repo.(*membershipRepo).client)
 	ctx := context.Background()
 	create := func(id, role string) error {
-		return guarded.Create(ctx, &domain.Membership{Id: id, TenantId: "legacy", UserId: "user-1", Roles: []string{role}})
+		return repo.Create(ctx, &domain.Membership{Id: id, TenantId: "legacy", UserId: "user-1", Roles: []string{role}})
 	}
 	if err := create("legacy-1", "reader"); err != nil {
 		t.Fatal(err)
@@ -249,14 +250,14 @@ func TestMembershipRepoV2GuardPreservesLegacyOnlyLifecycle(t *testing.T) {
 	if err := create("legacy-2", "writer"); err != nil {
 		t.Fatal(err)
 	}
-	stored, err := guarded.Get(ctx, "legacy", "user-1")
+	stored, err := repo.Get(ctx, "legacy", "user-1")
 	if err != nil || stored == nil || stored.Id != "legacy-2" || !reflect.DeepEqual(stored.Roles, []string{"writer"}) {
 		t.Fatalf("legacy update = %+v, %v", stored, err)
 	}
-	if err := guarded.Delete(ctx, "legacy", "user-1"); err != nil {
+	if err := repo.Delete(ctx, "legacy", "user-1"); err != nil {
 		t.Fatal(err)
 	}
-	if stored, err = guarded.Get(ctx, "legacy", "user-1"); err != nil || stored != nil {
+	if stored, err = repo.Get(ctx, "legacy", "user-1"); err != nil || stored != nil {
 		t.Fatalf("legacy delete = %+v, %v", stored, err)
 	}
 }

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -84,6 +86,43 @@ func TestBootstrapImportsBoundedArgon2idPasswordHash(t *testing.T) {
 	user, err := data.users.FindByEmail(context.Background(), cfg.email)
 	if err != nil || user == nil || user.Password != encoded {
 		t.Fatalf("unexpected imported password hash: user=%#v err=%v", user, err)
+	}
+}
+
+func TestBootstrapFailsClosedForV2OwnedMembership(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+	}
+	cfg := settings{
+		tenantID: "local-tenant", tenantName: "Local Tenant", email: "admin@local.test",
+		password: "initial-password-123", audience: "code-admin-api", scopes: []string{"code-admin:services:read"},
+	}
+	user := &domain.User{
+		Id: "bootstrap-user", Email: cfg.email, Password: "stored-hash", Role: domain.RoleAdmin,
+		Status: domain.UserStatusActive, CompanyId: &cfg.tenantID, AuthSource: domain.AuthSourcePassword,
+	}
+	if err := data.users.CreateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	v2 := repository.NewMembershipV2Repo(client)
+	created, wasCreated, err := v2.Ensure(context.Background(), cfg.tenantID, user.Id, []string{"ADMIN"})
+	if err != nil || !wasCreated || created == nil {
+		t.Fatalf("v2 create = %+v, %t, %v", created, wasCreated, err)
+	}
+
+	err = bootstrap(context.Background(), data, cfg)
+	if !errors.Is(err, domain.ErrMembershipConflict) {
+		t.Fatalf("bootstrap v2-owned pair error = %v", err)
+	}
+	v2Value, v2Err := v2.GetExact(context.Background(), cfg.tenantID, user.Id)
+	legacyValue, legacyErr := data.memberships.Get(context.Background(), cfg.tenantID, user.Id)
+	if v2Err != nil || legacyErr != nil || !reflect.DeepEqual(v2Value, created) || !reflect.DeepEqual(legacyValue, created) {
+		t.Fatalf("bootstrap diverged projections: v2=%+v legacy=%+v errors=%v/%v", v2Value, legacyValue, v2Err, legacyErr)
 	}
 }
 
