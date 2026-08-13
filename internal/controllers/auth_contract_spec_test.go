@@ -141,6 +141,31 @@ func TestAuthContractSpec_TokenExchange_ResponseShape(t *testing.T) {
 	}
 }
 
+func TestAuthContractSpec_TenantTargetDiscoveryShape(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &fakeUserService{tokenExchangeFn: func(_ context.Context, req domain.TokenExchangeReq) (*domain.TokenExchangeResp, error) {
+		if !req.DiscoverTenantTargetsV1 || req.TenantID != "bereia" || len(req.ScopeCeilingV1) != 1 {
+			t.Fatalf("unexpected discovery input: %+v", req)
+		}
+		return &domain.TokenExchangeResp{
+			AccessToken: "access", TokenType: "Bearer", ExpiresIn: 300, PrincipalTenantID: "local-tenant",
+			AuthorizedTenants: []string{"bereia", "local-tenant"}, Scopes: []string{"code-admin:workloads:read"},
+		}, nil
+	}}
+	router := gin.New()
+	router.POST("/exchange", NewTokenExchangeController(svc).Handle)
+	recorder := performJSON(t, router, http.MethodPost, "/exchange", domain.TokenExchangeReq{
+		IdToken: "id", Audience: domain.CodeAdminAudienceClientID, TenantID: "bereia",
+		DiscoverTenantTargetsV1: true, ScopeCeilingV1: []string{"code-admin:workloads:read"},
+	}, "")
+	response := decodeJSONBody[domain.TokenExchangeResp](t, recorder)
+	if recorder.Code != http.StatusOK || response.PrincipalTenantID != "local-tenant" ||
+		len(response.AuthorizedTenants) != 2 || response.AuthorizedTenants[0] != "bereia" ||
+		len(response.Scopes) != 1 || response.Scopes[0] != "code-admin:workloads:read" {
+		t.Fatalf("unexpected discovery response: %d %+v", recorder.Code, response)
+	}
+}
+
 func TestAuthContractSpec_Lookup_ResponseFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &fakeUserService{}

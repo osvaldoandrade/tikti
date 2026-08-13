@@ -285,7 +285,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 	u, userErr := s.repo.FindByEmail(ctx, email)
 	strictTarget, protectedTarget := s.tenantScopedTokenTarget(req.TenantID)
-	if protectedTarget && userErr != nil {
+	if (protectedTarget || req.DiscoverTenantTargetsV1) && userErr != nil {
 		return nil, domain.ErrInvalidToken
 	}
 	if u == nil {
@@ -300,62 +300,91 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if protectedTarget && strictTarget == "" {
 		return nil, domain.ErrInvalidTenant
 	}
+	if req.ScopeCeilingV1 != nil && !req.DiscoverTenantTargetsV1 {
+		return nil, domain.ErrInvalidArgument
+	}
+	discoveryExchange := req.DiscoverTenantTargetsV1 && s.tenantScopedTokenClaimsV1 &&
+		req.Audience == domain.CodeAdminAudienceClientID
+	if req.DiscoverTenantTargetsV1 && !discoveryExchange {
+		return nil, domain.ErrInvalidArgument
+	}
+	if discoveryExchange {
+		version, valid := tokenVersion(claims)
+		if !valid || version != u.TokenVersion {
+			return nil, domain.ErrInvalidToken
+		}
+	}
 
 	tenantID := strictTarget
 	var tenantRoles, tenantPermissions []string
-	if strictTarget != "" {
-		authorization, authErr := s.resolveTenantScopedTokenAuthorization(ctx, u, strictTarget)
-		if authErr != nil {
-			return nil, authErr
-		}
-		tenantRoles, tenantPermissions = authorization.roles, authorization.permissions
-	} else {
-		tenantID = strings.TrimSpace(req.TenantID)
-		memberTenants := s.listTenantIDs(ctx, u.Id)
-		if tenantID == "" {
-			if len(memberTenants) > 0 {
-				tenantID = memberTenants[0]
-			} else {
-				tenantID = derefString(u.CompanyId)
-			}
-		}
-		if tenantID == "" {
-			return nil, domain.ErrInvalidTenant
-		}
-		if len(memberTenants) > 0 && !containsString(memberTenants, tenantID) {
-			return nil, domain.ErrInvalidTenant
-		}
-		if len(memberTenants) == 0 && u.CompanyId != nil && *u.CompanyId != tenantID {
-			return nil, domain.ErrInvalidTenant
-		}
-	}
-
-	scopes := normalizeList(req.Scopes)
-	if s.clientSvc != nil {
-		client, err := s.clientSvc.GetClient(ctx, tenantID, req.Audience)
+	var discovery tenantDiscoveryAuthorization
+	var scopes []string
+	if discoveryExchange {
+		discovery, err = s.resolveTenantDiscoveryAuthorization(
+			ctx, u, req.TenantID, claimStringValue(claims, "tid"),
+			claimStringValue(claims, "role"), req.ScopeCeilingV1, req.Scopes,
+		)
 		if err != nil {
 			return nil, err
 		}
-		if client == nil {
-			return nil, domain.ErrInvalidAudience
+		tenantID, tenantRoles, scopes = discovery.tenantID, discovery.roles, discovery.scopes
+		if tenantID == discovery.principalTenantID {
+			strictTarget = ""
+		} else {
+			strictTarget = tenantID
 		}
-		if client.Status != "ACTIVE" {
-			return nil, domain.ErrInvalidAudience
+	} else {
+		if strictTarget != "" {
+			authorization, authErr := s.resolveTenantScopedTokenAuthorization(ctx, u, strictTarget)
+			if authErr != nil {
+				return nil, authErr
+			}
+			tenantRoles, tenantPermissions = authorization.roles, authorization.permissions
+		} else {
+			tenantID = strings.TrimSpace(req.TenantID)
+			memberTenants := s.listTenantIDs(ctx, u.Id)
+			if tenantID == "" {
+				if len(memberTenants) > 0 {
+					tenantID = memberTenants[0]
+				} else {
+					tenantID = derefString(u.CompanyId)
+				}
+			}
+			if tenantID == "" {
+				return nil, domain.ErrInvalidTenant
+			}
+			if len(memberTenants) > 0 && !containsString(memberTenants, tenantID) {
+				return nil, domain.ErrInvalidTenant
+			}
+			if len(memberTenants) == 0 && u.CompanyId != nil && *u.CompanyId != tenantID {
+				return nil, domain.ErrInvalidTenant
+			}
 		}
-		if len(scopes) == 0 {
-			scopes = append(scopes, client.DefaultScopes...)
+
+		scopes = normalizeList(req.Scopes)
+		if s.clientSvc != nil {
+			client, clientErr := s.clientSvc.GetClient(ctx, tenantID, req.Audience)
+			if clientErr != nil {
+				return nil, clientErr
+			}
+			if client == nil || client.Status != "ACTIVE" {
+				return nil, domain.ErrInvalidAudience
+			}
+			if len(scopes) == 0 {
+				scopes = append(scopes, client.DefaultScopes...)
+			}
+			if !subset(scopes, client.DefaultScopes) && len(client.DefaultScopes) > 0 {
+				return nil, domain.ErrUnauthorizedScope
+			}
 		}
-		if !subset(scopes, client.DefaultScopes) && len(client.DefaultScopes) > 0 {
+		if strictTarget != "" {
+			scopes = normalizePermissions(scopes)
+			if !subset(scopes, tenantPermissions) {
+				return nil, domain.ErrUnauthorizedScope
+			}
+		} else if len(scopes) > 0 && !s.scopesAllowed(ctx, tenantID, u, scopes) {
 			return nil, domain.ErrUnauthorizedScope
 		}
-	}
-	if strictTarget != "" {
-		scopes = normalizePermissions(scopes)
-		if !subset(scopes, tenantPermissions) {
-			return nil, domain.ErrUnauthorizedScope
-		}
-	} else if len(scopes) > 0 && !s.scopesAllowed(ctx, tenantID, u, scopes) {
-		return nil, domain.ErrUnauthorizedScope
 	}
 
 	eventTypes := normalizeList(req.EventTypes)
@@ -416,11 +445,17 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if err != nil {
 		return nil, err
 	}
-	return &domain.TokenExchangeResp{
+	response := &domain.TokenExchangeResp{
 		AccessToken: signed,
 		TokenType:   "Bearer",
 		ExpiresIn:   ttl,
-	}, nil
+	}
+	if discoveryExchange {
+		response.PrincipalTenantID = discovery.principalTenantID
+		response.AuthorizedTenants = append([]string(nil), discovery.authorizedTenants...)
+		response.Scopes = append([]string(nil), discovery.scopes...)
+	}
+	return response, nil
 }
 
 // ValidateIDToken validates an HS256 browser session and enforces the current
