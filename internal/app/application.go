@@ -70,7 +70,10 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	tenantService := services.NewTenantService(tenantRepo)
 	membershipService := services.NewMembershipService(userRepo, membershipRepo)
 	roleService := services.NewRoleService(roleRepo)
-	clientService := services.NewClientService(clientRepo)
+	clientService := services.NewClientService(clientRepo, services.WithManagedAudienceClients(
+		cfg.TenantScopedTokenClaimsV1,
+		cfg.TenantScopedTokenClaimsV1Tenants,
+	))
 
 	userService := services.NewUserService(
 		userRepo,

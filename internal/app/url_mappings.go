@@ -33,6 +33,12 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	roleAdmin.GET("", roleCtrl.ListAdmin)
 	roleAdmin.GET("/:roleName", roleCtrl.Get)
 	roleAdmin.PUT("/:roleName", roleCtrl.Put)
+	if cfg.TenantScopedTokenClaimsV1 && clientService != nil {
+		managedClient := controllers.NewManagedAudienceClientController(clientService, cfg)
+		managedAdmin := v1.Group("/admin/tenants/:tenantId/clients", utils.RequiredApiKeyHeader(cfg.ApiKey))
+		managedAdmin.PUT("/code-admin-api:ensure", managedClient.Ensure)
+		managedAdmin.PUT("/code-admin-api:ensure/", managedClient.Ensure)
+	}
 	tenantCtrl := controllers.NewTenantController(tenantService, cfg)
 	tenantProvisioning := v1.Group("/tenants")
 	tenantProvisioning.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))

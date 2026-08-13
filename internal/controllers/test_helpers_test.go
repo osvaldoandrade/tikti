@@ -276,6 +276,7 @@ func (f *fakeRoleService) ResolvePermissions(ctx context.Context, tenantID strin
 
 type fakeClientService struct {
 	createFn    func(context.Context, string, domain.ClientCreateReq) (*domain.ClientResp, error)
+	ensureFn    func(context.Context, string, domain.ManagedAudienceClientEnsureReq) (*domain.ManagedAudienceClientResp, bool, error)
 	getFn       func(context.Context, string, string) (*domain.ClientResp, error)
 	listFn      func(context.Context, string) ([]*domain.ClientResp, error)
 	getClientFn func(context.Context, string, string) (*domain.Client, error)
@@ -286,6 +287,13 @@ func (f *fakeClientService) Create(ctx context.Context, tenantID string, req dom
 		return f.createFn(ctx, tenantID, req)
 	}
 	return nil, nil
+}
+
+func (f *fakeClientService) EnsureCodeAdminAudience(ctx context.Context, tenantID string, req domain.ManagedAudienceClientEnsureReq) (*domain.ManagedAudienceClientResp, bool, error) {
+	if f.ensureFn != nil {
+		return f.ensureFn(ctx, tenantID, req)
+	}
+	return nil, false, nil
 }
 
 func (f *fakeClientService) Get(ctx context.Context, tenantID string, clientID string) (*domain.ClientResp, error) {

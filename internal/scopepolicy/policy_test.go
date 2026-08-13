@@ -62,6 +62,19 @@ func TestCanonicalPermissionsAreSortedUniqueAndDefensive(t *testing.T) {
 	}
 }
 
+func TestAudienceScopesUseOnlyExistingReservedNames(t *testing.T) {
+	got, ok := CanonicalAudienceScopes([]string{
+		" console:clusters:read ", "code-admin:workloads:read", "code-admin:clusters:read", "console:clusters:read",
+	})
+	want := []string{"code-admin:clusters:read", "code-admin:workloads:read", "console:clusters:read"}
+	if !ok || !reflect.DeepEqual(got, want) || !ValidCanonicalAudienceScopes(got) {
+		t.Fatalf("unexpected audience scopes: %v ok=%v", got, ok)
+	}
+	if _, ok := CanonicalAudienceScopes([]string{"code-admin:invented:read"}); ok {
+		t.Fatal("accepted an unknown reserved scope")
+	}
+}
+
 func TestParseManifestFailsClosed(t *testing.T) {
 	valid := []byte(`{"schemaVersion":1,"policyVersion":"v","scopes":[{"scope":"code-admin:test:read","boundary":"tenant","tenantAssignable":true}]}`)
 	digest := func(data []byte) string { value := sha256.Sum256(data); return hex.EncodeToString(value[:]) }

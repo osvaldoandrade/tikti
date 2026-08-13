@@ -85,6 +85,40 @@ func ValidCanonicalPermissions(values []string) bool {
 	return ok && slices.Equal(canonical, values)
 }
 
+// CanonicalAudienceScopes accepts the existing scope language while requiring
+// every reserved Code Admin scope to exist in the compiled manifest.
+func CanonicalAudienceScopes(values []string) ([]string, bool) {
+	if len(values) < 1 || len(values) > 500 || ValidateCompiled() != nil {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if !validPermission(value) {
+			return nil, false
+		}
+		if strings.HasPrefix(value, reservedPrefix) {
+			if _, known := policyScopes[value]; !known {
+				return nil, false
+			}
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result, len(result) > 0
+}
+
+// ValidCanonicalAudienceScopes requires exact sorted and unique storage.
+func ValidCanonicalAudienceScopes(values []string) bool {
+	canonical, ok := CanonicalAudienceScopes(values)
+	return ok && slices.Equal(canonical, values)
+}
+
 func loadPolicy() {
 	policyScopes, policyErr = parseManifest(manifestJSON, ManifestSHA256, PolicyVersion)
 }
