@@ -73,6 +73,11 @@ func TestAudienceScopesUseOnlyExistingReservedNames(t *testing.T) {
 	if _, ok := CanonicalAudienceScopes([]string{"code-admin:invented:read"}); ok {
 		t.Fatal("accepted an unknown reserved scope")
 	}
+	if !RequiresHomeAuthority("code-admin:clusters:read") || RequiresHomeAuthority("code-admin:workloads:read") ||
+		!RequiresHomeAuthority("console:clusters:read") || !TenantRoleAssignable("code-admin:workloads:read") ||
+		TenantRoleAssignable("code-admin:clusters:read") || TenantRoleAssignable("console:clusters:read") {
+		t.Fatal("scope boundary classification mismatch")
+	}
 }
 
 func TestParseManifestFailsClosed(t *testing.T) {

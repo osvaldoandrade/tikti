@@ -133,20 +133,25 @@ type LookupResp struct {
 
 // TokenExchangeReq holds request fields to exchange an idToken for a scoped access token.
 type TokenExchangeReq struct {
-	IdToken    string   `json:"idToken"`
-	Audience   string   `json:"audience"`
-	Scopes     []string `json:"scopes,omitempty"`
-	EventTypes []string `json:"eventTypes,omitempty"`
-	TTLSeconds int      `json:"ttlSeconds,omitempty"`
-	Subject    string   `json:"subject,omitempty"`
-	TenantID   string   `json:"tenantId,omitempty"`
+	IdToken                 string   `json:"idToken"`
+	Audience                string   `json:"audience"`
+	Scopes                  []string `json:"scopes,omitempty"`
+	EventTypes              []string `json:"eventTypes,omitempty"`
+	TTLSeconds              int      `json:"ttlSeconds,omitempty"`
+	Subject                 string   `json:"subject,omitempty"`
+	TenantID                string   `json:"tenantId,omitempty"`
+	DiscoverTenantTargetsV1 bool     `json:"discoverTenantTargetsV1,omitempty"`
+	ScopeCeilingV1          []string `json:"scopeCeilingV1,omitempty"`
 }
 
 // TokenExchangeResp returns the issued access token and metadata.
 type TokenExchangeResp struct {
-	AccessToken string `json:"accessToken"`
-	TokenType   string `json:"tokenType"`
-	ExpiresIn   int    `json:"expiresIn"`
+	AccessToken       string   `json:"accessToken"`
+	TokenType         string   `json:"tokenType"`
+	ExpiresIn         int      `json:"expiresIn"`
+	PrincipalTenantID string   `json:"principalTenantId,omitempty"`
+	AuthorizedTenants []string `json:"authorizedTenants,omitempty"`
+	Scopes            []string `json:"scopes,omitempty"`
 }
 
 // UpdateReq contains optional fields that can be changed for the authenticated user.

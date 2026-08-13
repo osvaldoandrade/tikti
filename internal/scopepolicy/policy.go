@@ -119,6 +119,33 @@ func ValidCanonicalAudienceScopes(values []string) bool {
 	return ok && slices.Equal(canonical, values)
 }
 
+// TenantRoleAssignable reports whether a reserved scope can be granted by an
+// exact tenant role. External scopes such as console navigation gates are
+// deliberately home-authority-only in tenant-target token exchange.
+func TenantRoleAssignable(value string) bool {
+	if ValidateCompiled() != nil || !strings.HasPrefix(value, reservedPrefix) {
+		return false
+	}
+	entry, known := policyScopes[value]
+	return known && entry.TenantAssignable && entry.Boundary == "tenant"
+}
+
+// RequiresHomeAuthority reports whether a canonical audience scope cannot be
+// granted by a tenant role and therefore must come from signed home authority.
+func RequiresHomeAuthority(value string) bool {
+	if !validPermission(value) {
+		return false
+	}
+	if !strings.HasPrefix(value, reservedPrefix) {
+		return true
+	}
+	if ValidateCompiled() != nil {
+		return false
+	}
+	entry, known := policyScopes[value]
+	return known && (!entry.TenantAssignable || entry.Boundary != "tenant")
+}
+
 func loadPolicy() {
 	policyScopes, policyErr = parseManifest(manifestJSON, ManifestSHA256, PolicyVersion)
 }
