@@ -50,6 +50,40 @@ func TestValidateWorkloadIdentityRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	SetupMappings(engine, &config.Config{}, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
+	routes := make(map[string]bool)
+	for _, route := range engine.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{"POST /v1/tenants", "PUT /v1/tenants/:tenantId"} {
+		if !routes[route] {
+			t.Fatalf("missing route %s", route)
+		}
+	}
+	for _, test := range []struct{ name, method, key, header, target, want string }{
+		{name: "query rejected", method: http.MethodPut, key: "secret", target: "/v1/tenants/bereia?key=secret", want: "Invalid or missing API key"},
+		{name: "empty key rejected", method: http.MethodPut, header: "secret", target: "/v1/tenants/bereia", want: "Invalid or missing API key"},
+		{name: "header passes middleware", method: http.MethodPut, key: "secret", header: "secret", target: "/v1/tenants/bereia", want: "missing or invalid bearer token"},
+		{name: "legacy POST query", method: http.MethodPost, key: "secret", target: "/v1/tenants?key=secret", want: "missing authentication"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			router := gin.New()
+			SetupMappings(router, &config.Config{ApiKey: test.key}, nil, nil, nil, nil, nil, nil, nil, nil)
+			req := httptest.NewRequest(test.method, test.target, strings.NewReader(`{}`))
+			req.Header.Set("X-API-Key", test.header)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), test.want) {
+				t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+	SetupMappings(gin.New(), &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+}
+
 func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
@@ -198,7 +232,7 @@ func TestNewApplicationAndWorkloadVerifier(t *testing.T) {
 		t.Fatal("expected verifier error")
 	}
 	application, err := NewApplication(&config.Config{RedisAddr: server.Addr()})
-	if err != nil || application.Engine == nil || application.RoleSvc == nil {
+	if err != nil || application.Engine == nil || application.RoleSvc == nil || application.TenantSvc == nil || application.WorkloadSvc == nil {
 		t.Fatalf("application=%+v err=%v", application, err)
 	}
 	t.Cleanup(func() { _ = application.Redis.Close() })

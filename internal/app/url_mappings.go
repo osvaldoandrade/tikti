@@ -33,11 +33,14 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	roleAdmin.GET("", roleCtrl.ListAdmin)
 	roleAdmin.GET("/:roleName", roleCtrl.Get)
 	roleAdmin.PUT("/:roleName", roleCtrl.Put)
+	tenantCtrl := controllers.NewTenantController(tenantService, cfg)
+	tenantProvisioning := v1.Group("/tenants")
+	tenantProvisioning.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
+	tenantProvisioning.PUT("/:tenantId", tenantCtrl.CreateWithID)
 
 	protected := v1.Group("/")
 	protected.Use(utils.ApiKey(cfg.ApiKey))
 	{
-		tenantCtrl := controllers.NewTenantController(tenantService, cfg)
 		memberCtrl := controllers.NewMembershipController(membershipService, cfg)
 		clientCtrl := controllers.NewClientController(clientService, cfg)
 

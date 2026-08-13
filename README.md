@@ -200,6 +200,7 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 | Endpoint | Method | Description |
 |---|---|---|
 | `/tenants?key=...` | POST | Create a tenant |
+| `/tenants/:tenantId` | PUT | Create a deterministic tenant without overwrite (service API key and platform-admin access token required) |
 | `/tenants/:id?key=...` | GET | Retrieve a tenant |
 | `/tenants/:tenantId/users?key=...` | POST | Add a user to a tenant |
 | `/tenants/:tenantId/roles?key=...` | POST | Create a role within a tenant |

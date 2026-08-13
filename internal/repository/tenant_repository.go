@@ -15,6 +15,7 @@ import (
 
 type TenantRepository interface {
 	Create(ctx context.Context, tenant *domain.Tenant) error
+	CreateIfAbsent(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error)
 	Get(ctx context.Context, tenantID string) (*domain.Tenant, error)
 	List(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error)
 	EnsureDefault(ctx context.Context) (*domain.Tenant, error)
@@ -31,6 +32,32 @@ func NewTenantRepo(rdb *redis.Client) TenantRepository {
 }
 
 func (r *tenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
+	prepareTenant(tenant)
+	data, err := json.Marshal(tenant)
+	if err != nil {
+		return err
+	}
+	return r.client.HSet(ctx, tenantsHash, tenant.Id, data).Err()
+}
+
+func (r *tenantRepo) CreateIfAbsent(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error) {
+	prepareTenant(tenant)
+	data, err := json.Marshal(tenant)
+	if err != nil {
+		return nil, false, err
+	}
+	created, err := r.client.HSetNX(ctx, tenantsHash, tenant.Id, data).Result()
+	if err != nil {
+		return nil, false, err
+	}
+	if created {
+		return tenant, true, nil
+	}
+	existing, err := r.Get(ctx, tenant.Id)
+	return existing, false, err
+}
+
+func prepareTenant(tenant *domain.Tenant) {
 	if tenant.Id == "" {
 		tenant.Id = uuid.NewString()
 	}
@@ -40,11 +67,6 @@ func (r *tenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
 	if tenant.CreatedAt.IsZero() {
 		tenant.CreatedAt = time.Now()
 	}
-	data, err := json.Marshal(tenant)
-	if err != nil {
-		return err
-	}
-	return r.client.HSet(ctx, tenantsHash, tenant.Id, data).Err()
 }
 
 func (r *tenantRepo) Get(ctx context.Context, tenantID string) (*domain.Tenant, error) {
