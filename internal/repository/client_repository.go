@@ -75,7 +75,7 @@ func (r *clientRepo) Create(ctx context.Context, tenantID string, client *domain
 	if err != nil {
 		return err
 	}
-	result, err := legacyClientCreateScript.Run(ctx, r.client, []string{
+	result, err := legacyClientCreateScript.Eval(ctx, r.client, []string{
 		clientsKey(tenantID), managedClientsKey(tenantID),
 	}, clientID, data, `"managedBy":"`+domain.CodeAdminAudienceClientManager+`"`).Text()
 	if err != nil {
@@ -104,7 +104,7 @@ func (r *clientRepo) EnsureManagedAudience(
 	if err != nil {
 		return nil, false, err
 	}
-	values, err := managedClientEnsureScript.Run(ctx, r.client, []string{
+	values, err := managedClientEnsureScript.Eval(ctx, r.client, []string{
 		clientsKey(tenantID), managedClientsKey(tenantID),
 	}, client.Id, payload).StringSlice()
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -133,7 +133,7 @@ func (r *clientRepo) EnsureManagedAudience(
 }
 
 func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
-	values, err := managedClientGetScript.Run(ctx, r.client, []string{
+	values, err := managedClientGetScript.Eval(ctx, r.client, []string{
 		clientsKey(tenantID), managedClientsKey(tenantID),
 	}, clientID).StringSlice()
 	if err != nil {
@@ -167,7 +167,7 @@ func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) 
 }
 
 func (r *clientRepo) List(ctx context.Context, tenantID string) ([]*domain.Client, error) {
-	raw, err := managedClientListScript.Run(ctx, r.client, []string{
+	raw, err := managedClientListScript.Eval(ctx, r.client, []string{
 		clientsKey(tenantID), managedClientsKey(tenantID),
 	}).Text()
 	if err != nil {

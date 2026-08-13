@@ -60,6 +60,33 @@ func TestClientRepo_CreateGetList(t *testing.T) {
 	}
 }
 
+func TestClientRepoUsesDirectEvalForKvrocksCompatibility(t *testing.T) {
+	rdb, repo := newClientRepoForTest(t)
+	rdb.AddHook(commandErrorHook{byName: map[string]error{
+		"evalsha": errors.New("EVALSHA forbidden"),
+	}})
+	ctx := context.Background()
+
+	if err := repo.Create(ctx, "local-tenant", &domain.Client{
+		Id: "legacy-client", Type: domain.ClientTypeService,
+	}); err != nil {
+		t.Fatalf("create with direct EVAL: %v", err)
+	}
+	if _, _, err := repo.EnsureManagedAudience(
+		ctx,
+		"bereia",
+		managedAudienceFixture("bereia", "code-admin:workloads:read"),
+	); err != nil {
+		t.Fatalf("ensure managed audience with direct EVAL: %v", err)
+	}
+	if _, err := repo.Get(ctx, "bereia", domain.CodeAdminAudienceClientID); err != nil {
+		t.Fatalf("get with direct EVAL: %v", err)
+	}
+	if _, err := repo.List(ctx, "bereia"); err != nil {
+		t.Fatalf("list with direct EVAL: %v", err)
+	}
+}
+
 func TestClientRepo_CreateInvalidArgument(t *testing.T) {
 	_, repo := newClientRepoForTest(t)
 	ctx := context.Background()
