@@ -33,6 +33,8 @@ var (
 	ErrMembershipDependencyInactive = errors.New("membership dependency is not active")
 	// ErrMembershipPageStale requires the caller to restart exact pagination.
 	ErrMembershipPageStale = errors.New("membership page changed; restart pagination")
+	// ErrManagedClientConflict preserves an existing reserved client definition.
+	ErrManagedClientConflict = errors.New("managed client already exists with a different definition")
 	// ErrNotFound is returned when a user cannot be located in storage.
 	ErrNotFound = errors.New("user not found")
 	// ErrInvalidOob signals that the out-of-band code is unknown or expired.

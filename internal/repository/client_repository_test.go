@@ -2,6 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	miniredis "github.com/alicebob/miniredis/v2"
@@ -109,5 +113,108 @@ func TestClientRepo_ListInvalidJSON(t *testing.T) {
 func TestClientsKey(t *testing.T) {
 	if got := clientsKey("x"); got != "clients:x" {
 		t.Fatalf("unexpected key: %s", got)
+	}
+}
+
+func managedAudienceFixture(tenantID string, scopes ...string) *domain.Client {
+	return &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: tenantID,
+		Type: domain.ClientTypeService, Status: domain.ClientStatusActive,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     scopes, ManagedBy: domain.CodeAdminAudienceClientManager,
+	}
+}
+
+func TestClientRepo_EnsureManagedAudienceConcurrentReplay(t *testing.T) {
+	rdb, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	const workers = 24
+	var created atomic.Int32
+	errorsSeen := make(chan error, workers)
+	var group sync.WaitGroup
+	for range workers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			stored, wasCreated, err := repo.EnsureManagedAudience(ctx, "bereia", managedAudienceFixture(
+				"bereia", "code-admin:clusters:read", "code-admin:workloads:read", "console:clusters:read",
+			))
+			if err == nil && !domain.IsManagedCodeAdminAudience("bereia", stored) {
+				err = errors.New("invalid managed client returned")
+			}
+			if wasCreated {
+				created.Add(1)
+			}
+			errorsSeen <- err
+		}()
+	}
+	group.Wait()
+	close(errorsSeen)
+	for err := range errorsSeen {
+		if err != nil {
+			t.Fatalf("concurrent ensure: %v", err)
+		}
+	}
+	if created.Load() != 1 {
+		t.Fatalf("expected one creator, got %d", created.Load())
+	}
+	if rdb.HLen(ctx, clientsKey("bereia")).Val() != 1 || rdb.HLen(ctx, managedClientsKey("bereia")).Val() != 1 {
+		t.Fatal("managed client and marker were not stored separately")
+	}
+	raw := rdb.HGet(ctx, clientsKey("bereia"), domain.CodeAdminAudienceClientID).Val()
+	if strings.Contains(strings.ToLower(raw), "secret") {
+		t.Fatalf("managed payload contains secret material: %s", raw)
+	}
+}
+
+func TestClientRepo_EnsureManagedAudienceConflictsWithoutAdoption(t *testing.T) {
+	rdb, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	want := managedAudienceFixture("bereia", "code-admin:workloads:read")
+	if _, created, err := repo.EnsureManagedAudience(ctx, "bereia", want); err != nil || !created {
+		t.Fatalf("first ensure: created=%v err=%v", created, err)
+	}
+	if _, created, err := repo.EnsureManagedAudience(ctx, "bereia", managedAudienceFixture(
+		"bereia", "code-admin:workloads:read",
+	)); err != nil || created {
+		t.Fatalf("replay: created=%v err=%v", created, err)
+	}
+	if _, _, err := repo.EnsureManagedAudience(ctx, "bereia", managedAudienceFixture(
+		"bereia", "code-admin:workloads:write",
+	)); !errors.Is(err, domain.ErrManagedClientConflict) {
+		t.Fatalf("expected immutable definition failure, got %v", err)
+	}
+	legacy := `{"clientId":"code-admin-api","tenantId":"storifly","type":"SERVICE","allowedGrantTypes":["token_exchange"],"defaultScopes":["code-admin:workloads:read"],"status":"ACTIVE"}`
+	if err := rdb.HSet(ctx, clientsKey("storifly"), domain.CodeAdminAudienceClientID, legacy).Err(); err != nil {
+		t.Fatalf("seed legacy client: %v", err)
+	}
+	if _, _, err := repo.EnsureManagedAudience(ctx, "storifly", managedAudienceFixture(
+		"storifly", "code-admin:workloads:read",
+	)); !errors.Is(err, domain.ErrManagedClientConflict) {
+		t.Fatalf("expected legacy shadow conflict, got %v", err)
+	}
+	if rdb.HExists(ctx, managedClientsKey("storifly"), domain.CodeAdminAudienceClientID).Val() {
+		t.Fatal("legacy client was adopted")
+	}
+}
+
+func TestClientRepo_LegacyCreateCannotOverwriteManagedAudience(t *testing.T) {
+	rdb, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	if _, _, err := repo.EnsureManagedAudience(ctx, "bereia", managedAudienceFixture(
+		"bereia", "code-admin:workloads:read",
+	)); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	before := rdb.HGet(ctx, clientsKey("bereia"), domain.CodeAdminAudienceClientID).Val()
+	err := repo.Create(ctx, "bereia", &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: "bereia", SecretHash: "hash",
+		Type: domain.ClientTypePublic, DefaultScopes: []string{"code-admin:workloads:write"}, Status: "DISABLED",
+	})
+	if !errors.Is(err, domain.ErrManagedClientConflict) {
+		t.Fatalf("expected reserved client conflict, got %v", err)
+	}
+	if after := rdb.HGet(ctx, clientsKey("bereia"), domain.CodeAdminAudienceClientID).Val(); after != before {
+		t.Fatal("legacy create changed the managed client")
 	}
 }

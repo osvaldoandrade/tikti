@@ -182,6 +182,9 @@ type mockClientService struct {
 func (m *mockClientService) Create(context.Context, string, domain.ClientCreateReq) (*domain.ClientResp, error) {
 	return nil, nil
 }
+func (m *mockClientService) EnsureCodeAdminAudience(context.Context, string, domain.ManagedAudienceClientEnsureReq) (*domain.ManagedAudienceClientResp, bool, error) {
+	return nil, false, nil
+}
 func (m *mockClientService) Get(context.Context, string, string) (*domain.ClientResp, error) {
 	return nil, nil
 }

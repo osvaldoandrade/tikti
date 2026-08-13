@@ -4,27 +4,54 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
+	"slices"
 	"strings"
 
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
+var errManagedAudienceClientContract = errors.New("managed audience client contract mismatch")
+
 type ClientService interface {
 	Create(ctx context.Context, tenantID string, req domain.ClientCreateReq) (*domain.ClientResp, error)
+	EnsureCodeAdminAudience(ctx context.Context, tenantID string, req domain.ManagedAudienceClientEnsureReq) (*domain.ManagedAudienceClientResp, bool, error)
 	Get(ctx context.Context, tenantID string, clientID string) (*domain.ClientResp, error)
 	List(ctx context.Context, tenantID string) ([]*domain.ClientResp, error)
 	GetClient(ctx context.Context, tenantID string, clientID string) (*domain.Client, error)
 }
 
 type clientService struct {
-	repo repository.ClientRepository
+	repo                   repository.ClientRepository
+	managedAudienceEnabled bool
+	managedAudienceTenants map[string]struct{}
 }
 
-func NewClientService(repo repository.ClientRepository) ClientService {
-	return &clientService{repo: repo}
+type ClientServiceOption func(*clientService)
+
+func NewClientService(repo repository.ClientRepository, options ...ClientServiceOption) ClientService {
+	service := &clientService{repo: repo}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service
+}
+
+// WithManagedAudienceClients restricts managed clients to the strict tenant canary.
+func WithManagedAudienceClients(enabled bool, tenants []string) ClientServiceOption {
+	return func(service *clientService) {
+		service.managedAudienceEnabled = enabled
+		service.managedAudienceTenants = make(map[string]struct{}, len(tenants))
+		for _, tenantID := range tenants {
+			service.managedAudienceTenants[tenantID] = struct{}{}
+		}
+	}
 }
 
 func (s *clientService) Create(ctx context.Context, tenantID string, req domain.ClientCreateReq) (*domain.ClientResp, error) {
@@ -62,6 +89,52 @@ func (s *clientService) Create(ctx context.Context, tenantID string, req domain.
 		DefaultScopes:     client.DefaultScopes,
 		Secret:            secret,
 	}, nil
+}
+
+// EnsureCodeAdminAudience creates or replays the reserved credential-free client.
+func (s *clientService) EnsureCodeAdminAudience(
+	ctx context.Context,
+	tenantID string,
+	req domain.ManagedAudienceClientEnsureReq,
+) (*domain.ManagedAudienceClientResp, bool, error) {
+	if !s.managedAudienceEnabled || !validRoleTenantID(tenantID) {
+		return nil, false, domain.ErrInvalidTenant
+	}
+	if _, allowed := s.managedAudienceTenants[tenantID]; !allowed {
+		return nil, false, domain.ErrInvalidTenant
+	}
+	defaultScopes, ok := scopepolicy.CanonicalAudienceScopes(req.DefaultScopes)
+	if !ok {
+		return nil, false, domain.ErrInvalidArgument
+	}
+	desired := &domain.Client{
+		Id:                domain.CodeAdminAudienceClientID,
+		TenantId:          tenantID,
+		Type:              domain.ClientTypeService,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     defaultScopes,
+		Status:            domain.ClientStatusActive,
+		ManagedBy:         domain.CodeAdminAudienceClientManager,
+	}
+	stored, created, err := s.repo.EnsureManagedAudience(ctx, tenantID, desired)
+	if err != nil {
+		return nil, false, err
+	}
+	if !sameManagedAudienceDefinition(stored, desired) {
+		return nil, false, errManagedAudienceClientContract
+	}
+	return &domain.ManagedAudienceClientResp{
+		ClientId: stored.Id, TenantId: stored.TenantId, Type: stored.Type,
+		AllowedGrantTypes: append([]string(nil), stored.AllowedGrantTypes...),
+		DefaultScopes:     append([]string(nil), stored.DefaultScopes...),
+		Status:            stored.Status,
+	}, created, nil
+}
+
+func sameManagedAudienceDefinition(left, right *domain.Client) bool {
+	return left != nil && right != nil && domain.IsManagedCodeAdminAudience(left.TenantId, left) &&
+		domain.IsManagedCodeAdminAudience(right.TenantId, right) && left.TenantId == right.TenantId &&
+		slices.Equal(left.DefaultScopes, right.DefaultScopes)
 }
 
 func (s *clientService) Get(ctx context.Context, tenantID string, clientID string) (*domain.ClientResp, error) {
