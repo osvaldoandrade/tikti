@@ -1,4 +1,4 @@
-FROM mirror.gcr.io/library/golang@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c70636647 AS builder
+FROM mirror.gcr.io/library/golang@sha256:e6e8ff4b72b128bb673613645c5ac415e4f537b2390e77a86ffc40622ab56da8 AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
