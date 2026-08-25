@@ -17,30 +17,31 @@ import (
 
 // Config captures runtime parameters loaded from YAML or the environment.
 type Config struct {
-	Port                               int                    `yaml:"port"`
-	RedisAddr                          string                 `yaml:"redisAddr"`
-	RedisHost                          string                 `yaml:"redisHost"`
-	RedisPort                          int                    `yaml:"redisPort"`
-	RedisDB                            int                    `yaml:"redisDb"`
-	RedisPassword                      string                 `yaml:"redisPassword"`
-	RedisURL                           string                 `yaml:"redisUrl"`
-	JwtSecret                          string                 `yaml:"jwtSecret"`
-	ApiKey                             string                 `yaml:"apiKey"`
-	IssuerBaseURL                      string                 `yaml:"issuerBaseUrl"`
-	DefaultAudience                    string                 `yaml:"defaultAudience"`
-	JwksPrivateKey                     string                 `yaml:"jwksPrivateKey"`
-	JwksKeyID                          string                 `yaml:"jwksKeyId"`
-	WorkloadIdentity                   WorkloadIdentityConfig `yaml:"workloadIdentity"`
-	SAML                               SAMLConfig             `yaml:"saml"`
-	HTTP                               HTTPConfig             `yaml:"http"`
-	ForwardAuth                        ForwardAuthConfig      `yaml:"forwardAuth"`
-	TenantScopedTokenClaimsV1          bool                   `yaml:"tenantScopedTokenClaimsV1"`
-	TenantScopedTokenClaimsV1Tenants   []string               `yaml:"tenantScopedTokenClaimsV1Tenants"`
-	ExactMembershipReadRoutesV1        bool                   `yaml:"exactMembershipReadRoutesV1"`
-	ExactMembershipReadRoutesV1Tenants []string               `yaml:"exactMembershipReadRoutesV1Tenants"`
-	ExactMembershipPageTokenSecret     string                 `yaml:"-"`
-	MembershipV2WriteRoutesV1          bool                   `yaml:"membershipV2WriteRoutesV1"`
-	MembershipV2WriteRoutesV1Tenants   []string               `yaml:"membershipV2WriteRoutesV1Tenants"`
+	Port                               int                      `yaml:"port"`
+	RedisAddr                          string                   `yaml:"redisAddr"`
+	RedisHost                          string                   `yaml:"redisHost"`
+	RedisPort                          int                      `yaml:"redisPort"`
+	RedisDB                            int                      `yaml:"redisDb"`
+	RedisPassword                      string                   `yaml:"redisPassword"`
+	RedisURL                           string                   `yaml:"redisUrl"`
+	JwtSecret                          string                   `yaml:"jwtSecret"`
+	ApiKey                             string                   `yaml:"apiKey"`
+	IssuerBaseURL                      string                   `yaml:"issuerBaseUrl"`
+	DefaultAudience                    string                   `yaml:"defaultAudience"`
+	JwksPrivateKey                     string                   `yaml:"jwksPrivateKey"`
+	JwksKeyID                          string                   `yaml:"jwksKeyId"`
+	WorkloadIdentity                   WorkloadIdentityConfig   `yaml:"workloadIdentity"`
+	WorkloadAccountBFF                 WorkloadAccountBFFConfig `yaml:"workloadAccountBFF"`
+	SAML                               SAMLConfig               `yaml:"saml"`
+	HTTP                               HTTPConfig               `yaml:"http"`
+	ForwardAuth                        ForwardAuthConfig        `yaml:"forwardAuth"`
+	TenantScopedTokenClaimsV1          bool                     `yaml:"tenantScopedTokenClaimsV1"`
+	TenantScopedTokenClaimsV1Tenants   []string                 `yaml:"tenantScopedTokenClaimsV1Tenants"`
+	ExactMembershipReadRoutesV1        bool                     `yaml:"exactMembershipReadRoutesV1"`
+	ExactMembershipReadRoutesV1Tenants []string                 `yaml:"exactMembershipReadRoutesV1Tenants"`
+	ExactMembershipPageTokenSecret     string                   `yaml:"-"`
+	MembershipV2WriteRoutesV1          bool                     `yaml:"membershipV2WriteRoutesV1"`
+	MembershipV2WriteRoutesV1Tenants   []string                 `yaml:"membershipV2WriteRoutesV1Tenants"`
 }
 
 // HTTPConfig defines the public server boundary.
@@ -80,6 +81,26 @@ type WorkloadIdentityProviderConfig struct {
 	JWKSURL             string `yaml:"jwksUrl"`
 	JWKSBearerTokenFile string `yaml:"jwksBearerTokenFile"`
 	Authentication      string `yaml:"authentication"`
+}
+
+// WorkloadAccountBFFConfig enables a secretless account broker for an exact
+// set of tenant workloads. Browser credentials never authenticate this route;
+// each caller must present a verified projected ServiceAccount token.
+type WorkloadAccountBFFConfig struct {
+	Enabled bool                             `yaml:"enabled"`
+	Clients []WorkloadAccountBFFClientConfig `yaml:"clients"`
+}
+
+// WorkloadAccountBFFClientConfig fixes every authorization dimension on the
+// server. Tenant, audience, scopes and role are never accepted from a request.
+type WorkloadAccountBFFClientConfig struct {
+	TenantID       string   `json:"tenantId" yaml:"tenantId"`
+	Namespace      string   `json:"namespace" yaml:"namespace"`
+	ServiceAccount string   `json:"serviceAccount" yaml:"serviceAccount"`
+	Audience       string   `json:"audience" yaml:"audience"`
+	Role           string   `json:"role" yaml:"role"`
+	Scopes         []string `json:"scopes" yaml:"scopes"`
+	TTLSeconds     int      `json:"ttlSeconds" yaml:"ttlSeconds"`
 }
 
 // SAMLConfig holds top-level SAML integration settings.
@@ -462,6 +483,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	if (strings.TrimSpace(c.WorkloadIdentity.Issuer) == "") != (strings.TrimSpace(c.WorkloadIdentity.JWKSURL) == "") {
 		return nil, fmt.Errorf("workload identity issuer and jwksUrl must be configured together")
 	}
+	if err := validateWorkloadAccountBFF(&c); err != nil {
+		return nil, err
+	}
 	// SAML defaults
 	if c.SAML.ACS.DeliveryMode == "" {
 		c.SAML.ACS.DeliveryMode = "cookie"
@@ -479,6 +503,82 @@ func LoadConfig(filePath string) (*Config, error) {
 		c.SAML.SP.AllowedSigAlgs = []string{"rsa-sha256"}
 	}
 	return &c, nil
+}
+
+func validateWorkloadAccountBFF(c *Config) error {
+	broker := &c.WorkloadAccountBFF
+	if !broker.Enabled {
+		if len(broker.Clients) != 0 {
+			return fmt.Errorf("workloadAccountBFF clients require the feature to be enabled")
+		}
+		return nil
+	}
+	if len(broker.Clients) < 1 || len(broker.Clients) > 16 {
+		return fmt.Errorf("workloadAccountBFF requires between 1 and 16 clients")
+	}
+	if strings.TrimSpace(c.WorkloadIdentity.Issuer) == "" && len(c.WorkloadIdentity.Providers) == 0 {
+		return fmt.Errorf("workloadAccountBFF requires workload identity verification")
+	}
+	if !c.TenantScopedTokenClaimsV1 || !c.ExactMembershipReadRoutesV1 || !c.MembershipV2WriteRoutesV1 {
+		return fmt.Errorf("workloadAccountBFF requires tenant-scoped tokens and exact membership reads and writes")
+	}
+	seenSubjects := make(map[string]struct{}, len(broker.Clients))
+	for index := range broker.Clients {
+		client := &broker.Clients[index]
+		client.TenantID = strings.TrimSpace(client.TenantID)
+		client.Namespace = strings.TrimSpace(client.Namespace)
+		client.ServiceAccount = strings.TrimSpace(client.ServiceAccount)
+		client.Audience = strings.TrimSpace(client.Audience)
+		client.Role = strings.TrimSpace(client.Role)
+		if client.TTLSeconds == 0 {
+			client.TTLSeconds = 900
+		}
+		if !canonicalTenantID(client.TenantID) || client.Namespace != "workload-"+client.TenantID ||
+			!validWorkloadAccountName(client.ServiceAccount, 63) || client.Audience != client.ServiceAccount ||
+			!validWorkloadAccountName(client.Role, 128) || client.Role == "ADMIN" ||
+			client.Role == "COMPANY_ADMIN" || client.Role == "COMPANY_EMPLOYEE" ||
+			client.TTLSeconds < 60 || client.TTLSeconds > 3600 ||
+			!slices.Contains(c.TenantScopedTokenClaimsV1Tenants, client.TenantID) ||
+			!slices.Contains(c.ExactMembershipReadRoutesV1Tenants, client.TenantID) ||
+			!slices.Contains(c.MembershipV2WriteRoutesV1Tenants, client.TenantID) {
+			return fmt.Errorf("workloadAccountBFF client %d is outside the exact tenant workload boundary", index)
+		}
+		if !validWorkloadAccountScopes(client.Audience, client.Scopes) {
+			return fmt.Errorf("workloadAccountBFF client %d has invalid scopes", index)
+		}
+		subject := "system:serviceaccount:" + client.Namespace + ":" + client.ServiceAccount
+		if _, duplicate := seenSubjects[subject]; duplicate {
+			return fmt.Errorf("workloadAccountBFF contains a duplicate workload subject")
+		}
+		seenSubjects[subject] = struct{}{}
+	}
+	return nil
+}
+
+func validWorkloadAccountName(value string, maximum int) bool {
+	if len(value) < 1 || len(value) > maximum || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, character := range []byte(value) {
+		if strings.IndexByte("abcdefghijklmnopqrstuvwxyz0123456789-", character) < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func validWorkloadAccountScopes(audience string, scopes []string) bool {
+	if len(scopes) < 1 || len(scopes) > 32 {
+		return false
+	}
+	prefix := audience + ":"
+	for index, scope := range scopes {
+		if !strings.HasPrefix(scope, prefix) || len(scope) <= len(prefix) || len(scope) > 256 ||
+			index > 0 && scopes[index-1] >= scope || !validWorkloadAccountName(strings.TrimPrefix(scope, prefix), 63) {
+			return false
+		}
+	}
+	return true
 }
 
 func validAuthenticatedGKEJWKSURL(rawURL string) bool {

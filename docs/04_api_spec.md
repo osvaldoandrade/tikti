@@ -391,6 +391,69 @@ management requires `X-API-Key` and is documented in
 | 403 | Binding is absent, revoked, cross-tenant, or scope-mismatched. |
 | 503 | JWKS, binding storage, or signing is unavailable. |
 
+### POST /v1/workloads/accounts/register
+
+Creates or idempotently replays a password account and its one exact tenant
+membership for a configured BFF workload. This endpoint never accepts an API
+key or browser identity token. `Authorization` must contain exactly one Bearer
+credential holding the caller's projected Kubernetes ServiceAccount JWT.
+
+```json
+{
+  "email": "reader@example.com",
+  "password": "a-long-user-password"
+}
+```
+
+Tenant, role, audience, scopes and lifetime come exclusively from the
+server-side workload client configuration. A new account returns `201`; a
+safe replay with the same active account and matching password returns `200`.
+Both responses carry `Cache-Control: no-store` and
+`X-Tikti-Contract: workload-account-bff-v1`.
+
+```json
+{
+  "localId": "<uuid>",
+  "email": "reader@example.com",
+  "tenantId": "bereia",
+  "role": "bereia-user",
+  "createdAt": "2026-08-25T12:00:00Z"
+}
+```
+
+### POST /v1/workloads/accounts/session
+
+Authenticates a password account only after authenticating and authorizing the
+configured BFF workload. Tikti verifies the account's exact membership and
+exchanges the identity for the configured tenant-scoped audience and scopes.
+
+The request shape and workload Bearer credential are identical to registration.
+The returned access token is for the BFF, not browser JavaScript; the BFF must
+store it only in its bounded server-side/HttpOnly session contract.
+
+```json
+{
+  "accessToken": "<rs256-jwt>",
+  "tokenType": "Bearer",
+  "localId": "<uuid>",
+  "email": "reader@example.com",
+  "expiresIn": 900
+}
+```
+
+The account endpoints reject unknown JSON fields, multiple or malformed
+Authorization headers, bodies above 8 KiB and projected tokens above 16 KiB.
+Responses never expose storage or token-validation detail.
+
+| Status | Condition |
+|--------|-----------|
+| 400 | Credentials or request shape is invalid. |
+| 401 | Projected JWT or password authentication failed. |
+| 403 | Workload subject or exact tenant membership is not authorized. |
+| 409 | Registration conflicts with an existing account or membership. |
+| 413 | Request body exceeds the bounded size. |
+| 503 | Identity storage, membership write, or token issuance is unavailable. |
+
 ## JWKS
 
 ### GET /.well-known/jwks.json

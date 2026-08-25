@@ -13,9 +13,10 @@ const (
 
 	GrantTypeTokenExchange GrantType = "token_exchange"
 
-	ClientStatusActive             = "ACTIVE"
-	CodeAdminAudienceClientID      = "code-admin-api"
-	CodeAdminAudienceClientManager = "tikti:code-admin-audience:v1"
+	ClientStatusActive              = "ACTIVE"
+	CodeAdminAudienceClientID       = "code-admin-api"
+	CodeAdminAudienceClientManager  = "tikti:code-admin-audience:v1"
+	WorkloadAccountBFFClientManager = "tikti:workload-account-bff:v1"
 )
 
 type Client struct {
@@ -64,5 +65,14 @@ func IsManagedCodeAdminAudience(tenantID string, client *Client) bool {
 	return client != nil && client.Id == CodeAdminAudienceClientID && client.TenantId == tenantID &&
 		client.SecretHash == "" && client.Type == ClientTypeService && client.Status == ClientStatusActive &&
 		client.ManagedBy == CodeAdminAudienceClientManager &&
+		slices.Equal(client.AllowedGrantTypes, []string{string(GrantTypeTokenExchange)})
+}
+
+// IsManagedWorkloadAccountAudience reports whether the credential-free client
+// is owned by the workload account BFF bootstrap contract.
+func IsManagedWorkloadAccountAudience(tenantID string, client *Client) bool {
+	return client != nil && client.Id != "" && client.Id != CodeAdminAudienceClientID && client.TenantId == tenantID &&
+		client.SecretHash == "" && client.Type == ClientTypeService && client.Status == ClientStatusActive &&
+		client.ManagedBy == WorkloadAccountBFFClientManager &&
 		slices.Equal(client.AllowedGrantTypes, []string{string(GrantTypeTokenExchange)})
 }

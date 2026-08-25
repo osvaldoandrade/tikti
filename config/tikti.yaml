@@ -21,6 +21,9 @@ workloadIdentity:
   httpTimeoutSeconds: 5
   jwksCacheTtlSeconds: 300
   accessTokenTtlSeconds: 300
+workloadAccountBFF:
+  enabled: false
+  clients: []
 
 # ── SAML (HLD §16) ──────────────────────────────────────────────
 # saml:

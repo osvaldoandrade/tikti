@@ -146,3 +146,55 @@ func TestBootstrapRejectsWeakPassword(t *testing.T) {
 		t.Fatal("validateSettings() error = nil")
 	}
 }
+
+func TestBootstrapReconcilesWorkloadAccountBFFDependencies(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+	}
+	if err := data.tenants.Create(context.Background(), &domain.Tenant{
+		Id: "bereia", Slug: "bereia", Name: "Bereia", Status: domain.TenantStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	brokers := []accountBrokerSettings{{
+		tenantID: "bereia", audience: "bereia-api", role: "bereia-user",
+		scopes: []string{"bereia-api:read", "bereia-api:write"},
+	}}
+	if err := bootstrapAccountBrokers(context.Background(), data, brokers); err != nil {
+		t.Fatal(err)
+	}
+	if err := bootstrapAccountBrokers(context.Background(), data, brokers); err != nil {
+		t.Fatalf("idempotent replay: %v", err)
+	}
+	role, err := data.roles.Get(context.Background(), "bereia", "bereia-user")
+	if err != nil || role == nil || !reflect.DeepEqual(role.Permissions, brokers[0].scopes) {
+		t.Fatalf("role=%#v err=%v", role, err)
+	}
+	audience, err := data.clients.Get(context.Background(), "bereia", "bereia-api")
+	if err != nil || audience == nil || audience.SecretHash != "" ||
+		audience.ManagedBy != domain.WorkloadAccountBFFClientManager ||
+		!reflect.DeepEqual(audience.DefaultScopes, brokers[0].scopes) {
+		t.Fatalf("audience=%#v err=%v", audience, err)
+	}
+}
+
+func TestBootstrapWorkloadAccountBFFFailsClosed(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+	}
+	if err := bootstrapAccountBrokers(context.Background(), data, []accountBrokerSettings{{
+		tenantID: "missing", audience: "missing-api", role: "missing-user", scopes: []string{"missing-api:read"},
+	}}); err == nil {
+		t.Fatal("missing tenant was accepted")
+	}
+}

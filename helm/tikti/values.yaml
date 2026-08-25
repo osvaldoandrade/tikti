@@ -81,6 +81,9 @@ config:
     httpTimeoutSeconds: 5
     jwksCacheTtlSeconds: 300
     accessTokenTtlSeconds: 300
+  workloadAccountBFF:
+    enabled: false
+    clients: []
 
 secrets:
   enabled: true

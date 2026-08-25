@@ -32,6 +32,10 @@ data:
       httpTimeoutSeconds: {{ .Values.config.workloadIdentity.httpTimeoutSeconds }}
       jwksCacheTtlSeconds: {{ .Values.config.workloadIdentity.jwksCacheTtlSeconds }}
       accessTokenTtlSeconds: {{ .Values.config.workloadIdentity.accessTokenTtlSeconds }}
+    workloadAccountBFF:
+      enabled: {{ .Values.config.workloadAccountBFF.enabled }}
+      clients:
+        {{- toYaml .Values.config.workloadAccountBFF.clients | nindent 8 }}
     saml:
       enabled: {{ .Values.saml.enabled }}
       sp:

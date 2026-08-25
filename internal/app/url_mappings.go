@@ -11,7 +11,7 @@ import (
 )
 
 // SetupMappings registers every public and protected route with their respective controllers.
-func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService, samlStore saml.Store, samlMetrics *saml.Metrics) {
+func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService, workloadAccountService services.WorkloadAccountBFFService, samlStore saml.Store, samlMetrics *saml.Metrics) {
 	v1 := engine.Group("/v1")
 
 	v1.POST("/accounts/signUp", controllers.NewSignUpController(userService, cfg).Handle)
@@ -22,6 +22,11 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	v1.GET("/.well-known/jwks.json", controllers.NewJWKSController(userService).Handle)
 	workloadCtrl := controllers.NewWorkloadIdentityController(workloadService)
 	v1.POST("/workloads/token/exchange", workloadCtrl.Exchange)
+	if cfg.WorkloadAccountBFF.Enabled && workloadAccountService != nil {
+		accountCtrl := controllers.NewWorkloadAccountBFFController(workloadAccountService)
+		v1.POST("/workloads/accounts/register", accountCtrl.Register)
+		v1.POST("/workloads/accounts/session", accountCtrl.Session)
+	}
 	workloadAdmin := v1.Group("/workloads")
 	workloadAdmin.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
 	{

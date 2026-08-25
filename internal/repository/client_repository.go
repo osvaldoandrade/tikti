@@ -77,7 +77,7 @@ func (r *clientRepo) Create(ctx context.Context, tenantID string, client *domain
 	}
 	result, err := legacyClientCreateScript.Eval(ctx, r.client, []string{
 		clientsKey(tenantID), managedClientsKey(tenantID),
-	}, clientID, data, `"managedBy":"`+domain.CodeAdminAudienceClientManager+`"`).Text()
+	}, clientID, data, `"managedBy":"`).Text()
 	if err != nil {
 		return err
 	}
@@ -233,13 +233,14 @@ func decodeManagedAudienceClient(tenantID, value string) (*domain.Client, bool) 
 }
 
 func validManagedAudienceClient(tenantID string, client *domain.Client) bool {
-	return canonicalTenantIdentity(tenantID) && domain.IsManagedCodeAdminAudience(tenantID, client) &&
+	return canonicalTenantIdentity(tenantID) &&
+		(domain.IsManagedCodeAdminAudience(tenantID, client) || domain.IsManagedWorkloadAccountAudience(tenantID, client)) &&
 		scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes)
 }
 
 func sameManagedAudienceClient(left, right *domain.Client) bool {
-	return left != nil && right != nil && domain.IsManagedCodeAdminAudience(left.TenantId, left) &&
-		domain.IsManagedCodeAdminAudience(right.TenantId, right) &&
-		left.Id == right.Id && left.TenantId == right.TenantId &&
+	return left != nil && right != nil && validManagedAudienceClient(left.TenantId, left) &&
+		validManagedAudienceClient(right.TenantId, right) && left.Id == right.Id &&
+		left.TenantId == right.TenantId && left.ManagedBy == right.ManagedBy &&
 		slices.Equal(left.DefaultScopes, right.DefaultScopes)
 }

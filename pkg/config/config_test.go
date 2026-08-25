@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -339,6 +340,93 @@ func TestLoadConfig_WorkloadIdentityProvidersFailClosed(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := LoadConfig(writeTempConfig(t, test.yaml)); err == nil {
 				t.Fatal("invalid provider configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestLoadConfig_WorkloadAccountBFFExactClient(t *testing.T) {
+	path := writeTempConfig(t, `
+tenantScopedTokenClaimsV1: true
+tenantScopedTokenClaimsV1Tenants: [bereia]
+exactMembershipReadRoutesV1: true
+exactMembershipReadRoutesV1Tenants: [bereia]
+membershipV2WriteRoutesV1: true
+membershipV2WriteRoutesV1Tenants: [bereia]
+workloadIdentity:
+  issuer: https://kubernetes.example.test
+  jwksUrl: https://kubernetes.example.test/openid/v1/jwks
+workloadAccountBFF:
+  enabled: true
+  clients:
+    - tenantId: bereia
+      namespace: workload-bereia
+      serviceAccount: bereia-api
+      audience: bereia-api
+      role: bereia-user
+      scopes: [bereia-api:read, bereia-api:write]
+      ttlSeconds: 900
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.WorkloadAccountBFF.Enabled || len(cfg.WorkloadAccountBFF.Clients) != 1 {
+		t.Fatalf("workload account BFF = %#v", cfg.WorkloadAccountBFF)
+	}
+	client := cfg.WorkloadAccountBFF.Clients[0]
+	if client.TenantID != "bereia" || client.Namespace != "workload-bereia" ||
+		client.ServiceAccount != "bereia-api" || client.Audience != "bereia-api" ||
+		client.Role != "bereia-user" || client.TTLSeconds != 900 ||
+		!reflect.DeepEqual(client.Scopes, []string{"bereia-api:read", "bereia-api:write"}) {
+		t.Fatalf("workload account BFF client = %#v", client)
+	}
+}
+
+func TestLoadConfig_WorkloadAccountBFFFailsClosed(t *testing.T) {
+	base := `
+tenantScopedTokenClaimsV1: true
+tenantScopedTokenClaimsV1Tenants: [bereia]
+exactMembershipReadRoutesV1: true
+exactMembershipReadRoutesV1Tenants: [bereia]
+membershipV2WriteRoutesV1: true
+membershipV2WriteRoutesV1Tenants: [bereia]
+workloadIdentity:
+  issuer: https://kubernetes.example.test
+  jwksUrl: https://kubernetes.example.test/openid/v1/jwks
+workloadAccountBFF:
+  enabled: true
+  clients:
+    - tenantId: bereia
+      namespace: workload-bereia
+      serviceAccount: bereia-api
+      audience: bereia-api
+      role: bereia-user
+      scopes: [bereia-api:read, bereia-api:write]
+      ttlSeconds: 900
+`
+	tests := map[string]func(string) string{
+		"no clients": func(value string) string {
+			return strings.Replace(value, "  clients:\n", "  clients: []\n  ignored:\n", 1)
+		},
+		"foreign namespace": func(value string) string {
+			return strings.Replace(value, "namespace: workload-bereia", "namespace: code-admin", 1)
+		},
+		"audience mismatch": func(value string) string {
+			return strings.Replace(value, "audience: bereia-api", "audience: other-api", 1)
+		},
+		"unsorted scopes": func(value string) string {
+			return strings.Replace(value, "[bereia-api:read, bereia-api:write]", "[bereia-api:write, bereia-api:read]", 1)
+		},
+		"reserved role": func(value string) string { return strings.Replace(value, "role: bereia-user", "role: ADMIN", 1) },
+		"unprotected tenant": func(value string) string {
+			return strings.Replace(value, "tenantScopedTokenClaimsV1Tenants: [bereia]", "tenantScopedTokenClaimsV1Tenants: [other]", 1)
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			if cfg, err := LoadConfig(writeTempConfig(t, mutate(base))); err == nil {
+				t.Fatalf("unsafe workload account BFF accepted: %#v", cfg.WorkloadAccountBFF)
 			}
 		})
 	}

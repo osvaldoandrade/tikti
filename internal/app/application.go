@@ -30,12 +30,13 @@ type Application struct {
 	Engine *gin.Engine
 	Redis  *redis.Client
 
-	UserService services.UserService
-	TenantSvc   services.TenantService
-	MemberSvc   services.MembershipService
-	RoleSvc     services.RoleService
-	ClientSvc   services.ClientService
-	WorkloadSvc services.WorkloadIdentityService
+	UserService        services.UserService
+	TenantSvc          services.TenantService
+	MemberSvc          services.MembershipService
+	RoleSvc            services.RoleService
+	ClientSvc          services.ClientService
+	WorkloadSvc        services.WorkloadIdentityService
+	WorkloadAccountSvc services.WorkloadAccountBFFService
 }
 
 // NewApplication assembles dependencies (Redis, repository, services) using the provided config.
@@ -130,6 +131,17 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 			exactTenants, exactUsers, exactRoles, repository.NewMembershipV2Repo(redisClient),
 		)
 	}
+	var workloadAccountService services.WorkloadAccountBFFService
+	if cfg.WorkloadAccountBFF.Enabled {
+		workloadAccountService = services.NewWorkloadAccountBFFService(
+			workloadService,
+			userRepo,
+			membershipRepo,
+			membershipV2WriteService,
+			userService,
+			cfg.WorkloadAccountBFF.Clients,
+		)
+	}
 
 	engine := newSafeEngine()
 	setupExactMembershipReadMappings(engine, cfg, exactMembershipService)
@@ -138,15 +150,16 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	_, _ = tenantService.EnsureDefault(context.Background())
 
 	return &Application{
-		Config:      cfg,
-		Engine:      engine,
-		Redis:       redisClient,
-		UserService: userService,
-		TenantSvc:   tenantService,
-		MemberSvc:   membershipService,
-		RoleSvc:     roleService,
-		ClientSvc:   clientService,
-		WorkloadSvc: workloadService,
+		Config:             cfg,
+		Engine:             engine,
+		Redis:              redisClient,
+		UserService:        userService,
+		TenantSvc:          tenantService,
+		MemberSvc:          membershipService,
+		RoleSvc:            roleService,
+		ClientSvc:          clientService,
+		WorkloadSvc:        workloadService,
+		WorkloadAccountSvc: workloadAccountService,
 	}, nil
 }
 

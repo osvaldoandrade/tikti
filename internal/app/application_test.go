@@ -53,7 +53,7 @@ func TestValidateWorkloadIdentityRuntimeConfig(t *testing.T) {
 func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	SetupMappings(engine, &config.Config{}, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
+	SetupMappings(engine, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
 	routes := make(map[string]bool)
 	for _, route := range engine.Routes() {
 		routes[route.Method+" "+route.Path] = true
@@ -71,7 +71,7 @@ func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := gin.New()
-			SetupMappings(router, &config.Config{ApiKey: test.key}, nil, nil, nil, nil, nil, nil, nil, nil)
+			SetupMappings(router, &config.Config{ApiKey: test.key}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 			req := httptest.NewRequest(test.method, test.target, strings.NewReader(`{}`))
 			req.Header.Set("X-API-Key", test.header)
 			rec := httptest.NewRecorder()
@@ -81,7 +81,7 @@ func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
 			}
 		})
 	}
-	SetupMappings(gin.New(), &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	SetupMappings(gin.New(), &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
@@ -92,7 +92,7 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	privateKey := applicationTestPrivateKey(t, 2048)
 	cfg := &config.Config{ApiKey: "secret", JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}
 	router := gin.New()
-	SetupMappings(router, cfg, nil, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil)
+	SetupMappings(router, cfg, nil, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
 	routes := map[string]bool{}
 	for _, route := range router.Routes() {
 		routes[route.Method+" "+route.Path] = true
@@ -201,8 +201,8 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 		}
 	}
 	empty := gin.New()
-	SetupMappings(empty, &config.Config{JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}, nil, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil)
-	SetupMappings(gin.New(), cfg, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
+	SetupMappings(empty, &config.Config{JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}, nil, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
+	SetupMappings(gin.New(), cfg, nil, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/tenants/bereia/roles", nil)
 	req.Header.Set("X-API-Key", "secret")

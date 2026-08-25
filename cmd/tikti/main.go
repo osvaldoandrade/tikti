@@ -105,6 +105,7 @@ func main() {
 		application.RoleSvc,
 		application.ClientSvc,
 		application.WorkloadSvc,
+		application.WorkloadAccountSvc,
 		samlStore,
 		samlMetrics,
 	)

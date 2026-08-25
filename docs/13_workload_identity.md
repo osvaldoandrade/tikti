@@ -56,6 +56,51 @@ No workload binding is required for this flow: the route allowlist is the
 authorization boundary. User scopes still apply to user/access tokens; they do
 not replace or broaden the workload caller allowlist.
 
+## Bounded workload-account broker
+
+An application BFF that needs password signup/signin without holding a Tikti
+API key can be declared under `workloadAccountBFF.clients`. The feature is off
+by default and requires workload-identity verification plus tenant-scoped
+tokens, exact membership reads and membership-v2 writes for every declared
+tenant.
+
+```yaml
+workloadAccountBFF:
+  enabled: true
+  clients:
+    - tenantId: bereia
+      namespace: workload-bereia
+      serviceAccount: bereia-api
+      audience: bereia-api
+      role: bereia-user
+      scopes: [bereia-api:read, bereia-api:write]
+      ttlSeconds: 900
+```
+
+The namespace must be exactly `workload-<tenantId>` and the audience must be
+exactly the ServiceAccount name. Each projected subject may appear once. Roles
+cannot be a platform-admin role, scopes must be sorted unique values prefixed
+by the audience, and TTL is bounded from 60 through 3600 seconds. At startup,
+configuration validation fails closed on any mismatch.
+
+The bootstrap job idempotently ensures the exact tenant role and one
+service-type, token-exchange-only audience marked as Tikti-managed. A
+pre-existing role or audience with different ownership or grants is a hard
+conflict; bootstrap does not broaden it.
+
+`POST /v1/workloads/accounts/register` and
+`POST /v1/workloads/accounts/session` authenticate the projected token first
+and select configuration exclusively by its verified Kubernetes subject. The
+request contains only end-user email and password. It cannot choose tenant,
+role, audience, scopes or TTL. Registration creates an active password user
+and exactly one configured membership, with safe idempotent replay. Session
+requires that exact membership before issuing a tenant-scoped RS256 token.
+
+The BFF must reread its projected token file for each request so normal
+Kubernetes rotation takes effect. It must never log either credential, persist
+the returned access token in application storage, expose it to browser
+JavaScript, or fall back to an administrative API key.
+
 ## Register a binding
 
 Binding management requires the Tikti API key in `X-API-Key`. Workload identity
@@ -149,8 +194,20 @@ revocation commits, expire within the configured TTL.
 Abort on any cross-tenant success, token leakage, signature bypass, or exchange
 after binding revocation.
 
+For an account broker client, additionally prove valid registration replay and
+session, then wrong issuer, audience, namespace, ServiceAccount, subject,
+tenant membership, password, request shape and HTTP origin through the BFF.
+Keep the broker disabled until its role and managed audience bootstrap without
+conflict.
+
 ## Rollback
 
 Revoke the binding first, stop the controller, and restore the prior compatible
 Tikti image. Do not introduce a static token fallback. Preserve only metadata
 needed to investigate the failed exchange.
+
+For the account broker, disable signup/signin at the application BFF first,
+then disable the exact broker client and restore the prior compatible Tikti
+image. Do not delete users or memberships during rollback; preserving them
+avoids destructive identity rollback and makes a later corrected release
+idempotent.
