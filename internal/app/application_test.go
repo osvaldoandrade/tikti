@@ -84,6 +84,55 @@ func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
 	SetupMappings(gin.New(), &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
+type applicationWorkloadAccountService struct{}
+
+func (applicationWorkloadAccountService) Register(context.Context, string, domain.WorkloadAccountCredentials) (*domain.WorkloadAccountRegistrationResp, bool, error) {
+	return nil, false, domain.ErrWorkloadTokenInvalid
+}
+
+func (applicationWorkloadAccountService) Session(context.Context, string, domain.WorkloadAccountCredentials) (*domain.WorkloadAccountSessionResp, error) {
+	return nil, domain.ErrWorkloadTokenInvalid
+}
+
+func TestSetupMappingsRegistersExactWorkloadAccountEdgeAliases(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	cfg := &config.Config{WorkloadAccountBFF: config.WorkloadAccountBFFConfig{Enabled: true}}
+	SetupMappings(router, cfg, nil, nil, nil, nil, nil, nil, applicationWorkloadAccountService{}, nil, nil)
+
+	routes := make(map[string]bool)
+	for _, route := range router.Routes() {
+		routes[route.Method+" "+route.Path] = true
+	}
+	for _, route := range []string{
+		"POST /v1/workloads/accounts/register",
+		"POST /v1/workloads/accounts/session",
+		"POST /identity/v1/workloads/accounts/register",
+		"POST /identity/v1/workloads/accounts/session",
+	} {
+		if !routes[route] {
+			t.Fatalf("missing exact workload-account route %s", route)
+		}
+	}
+	for route := range routes {
+		if strings.HasPrefix(route, "GET /identity/v1/workloads/accounts/") {
+			t.Fatalf("workload-account edge alias must remain POST-only: %s", route)
+		}
+	}
+	for _, path := range []string{
+		"/identity/v1/workloads/accounts/register",
+		"/identity/v1/workloads/accounts/session",
+	} {
+		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized || rec.Header().Get("X-Tikti-Contract") != "workload-account-bff-v1" {
+			t.Fatalf("edge alias %s did not preserve the authenticated broker contract: %d %v %s", path, rec.Code, rec.Header(), rec.Body.String())
+		}
+	}
+}
+
 func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

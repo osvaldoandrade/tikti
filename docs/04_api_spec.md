@@ -393,6 +393,8 @@ management requires `X-API-Key` and is documented in
 
 ### POST /v1/workloads/accounts/register
 
+Production-edge alias: `POST /identity/v1/workloads/accounts/register`.
+
 Creates or idempotently replays a password account and its one exact tenant
 membership for a configured BFF workload. This endpoint never accepts an API
 key or browser identity token. `Authorization` must contain exactly one Bearer
@@ -423,6 +425,8 @@ Both responses carry `Cache-Control: no-store` and
 
 ### POST /v1/workloads/accounts/session
 
+Production-edge alias: `POST /identity/v1/workloads/accounts/session`.
+
 Authenticates a password account only after authenticating and authorizing the
 configured BFF workload. Tikti verifies the account's exact membership and
 exchanges the identity for the configured tenant-scoped audience and scopes.
@@ -441,7 +445,8 @@ store it only in its bounded server-side/HttpOnly session contract.
 }
 ```
 
-The account endpoints reject unknown JSON fields, multiple or malformed
+Both exact path forms use the same controller and authorization contract. The
+account endpoints reject unknown JSON fields, multiple or malformed
 Authorization headers, bodies above 8 KiB and projected tokens above 16 KiB.
 Responses never expose storage or token-validation detail.
 

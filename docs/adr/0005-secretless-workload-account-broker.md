@@ -30,12 +30,21 @@ marked `workload-account-bff`, with only token exchange and the configured
 scopes. Existing incompatible objects cause bootstrap failure instead of
 mutation or scope broadening.
 
-Two POST-only endpoints are enabled only when the broker is configured:
+Two canonical POST-only endpoints are enabled only when the broker is
+configured:
 
 - `/v1/workloads/accounts/register` creates or safely replays an active
   password user and ensures one exact tenant membership;
 - `/v1/workloads/accounts/session` verifies password and exact membership,
   then issues a short-lived tenant-scoped RS256 access token to the BFF.
+
+The same controllers also accept the two exact production-edge aliases
+`/identity/v1/workloads/accounts/register` and
+`/identity/v1/workloads/accounts/session`. The alias is required because the
+identity edge preserves its public namespace when proxying this contract. It
+does not create a prefix route, add methods, or change authorization; both
+forms authenticate the same projected workload token before processing user
+credentials.
 
 Every request must contain exactly one projected-token Bearer header. Tikti
 verifies issuer, JWKS signature, audience, expiry, namespace, ServiceAccount
@@ -79,6 +88,9 @@ Disable signup/signin at the application BFF first, then remove the broker
 client and restore the previous compatible Tikti image. Do not add an API-key
 fallback and do not delete users, memberships, roles or clients during rollback.
 The retained records make a corrected registration replay idempotent.
+The `/identity` aliases may be removed independently only after the public edge
+rewrite has been proven with register and session requests through the real
+application origin.
 
 ## Alternatives considered
 

@@ -95,6 +95,10 @@ request contains only end-user email and password. It cannot choose tenant,
 role, audience, scopes or TTL. Registration creates an active password user
 and exactly one configured membership, with safe idempotent replay. Session
 requires that exact membership before issuing a tenant-scoped RS256 token.
+The exact `/identity/v1/workloads/accounts/register` and
+`/identity/v1/workloads/accounts/session` production-edge aliases are handled
+by the same controllers; no wildcard identity prefix or additional HTTP method
+is registered.
 
 The BFF must reread its projected token file for each request so normal
 Kubernetes rotation takes effect. It must never log either credential, persist

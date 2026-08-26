@@ -26,6 +26,12 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		accountCtrl := controllers.NewWorkloadAccountBFFController(workloadAccountService)
 		v1.POST("/workloads/accounts/register", accountCtrl.Register)
 		v1.POST("/workloads/accounts/session", accountCtrl.Session)
+		// The production identity edge preserves its externally namespaced path
+		// when proxying these two exact operations. Keep the aliases POST-only
+		// and bound to the same workload-authenticated controllers as the
+		// canonical internal endpoints.
+		engine.POST("/identity/v1/workloads/accounts/register", accountCtrl.Register)
+		engine.POST("/identity/v1/workloads/accounts/session", accountCtrl.Session)
 	}
 	workloadAdmin := v1.Group("/workloads")
 	workloadAdmin.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
