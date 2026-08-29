@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed for CFP-080. T4 entry and independent security review are pending.
+Accepted for default-off implementation by the 2026-08-29 written platform-
+owner override. Independent security review and production gates remain
+pending.
 
 ## Context
 
@@ -284,16 +286,17 @@ an API-key/access-key fallback.
 - Give Tikti the provisioner/root credential: rejected because credential
   brokering does not own bucket lifecycle or policy administration.
 
-## Entry approvals still required
+## Owner override and production approvals
 
-- two-person RFC/ADR review;
-- domain-owner approval of ResourceBinding and ObjectBucket invariants;
-- independent security approval of parser, trust chain, fixed policies and
-  residual revocation window;
-- staff/executive service-class and risk sign-off;
-- named incident commander and backup;
-- a required initial MinIO OIDC activation window because the provider is
-  single-replica and configuration restart/reload can interrupt static traffic.
+On 2026-08-29, Osvaldo Andrade, acting as platform owner, approved this ADR
+for default-off implementation and explicitly waived the separate entry
+reviewers. The override accepts the bounded maximum 900-second residual
+credential window subject to the pinned-version test.
+
+Independent security approval of the parser, trust chain and fixed policies,
+plus a named incident commander/backup and the initial MinIO OIDC activation
+window, remain mandatory before production. The provider is single-replica and
+configuration restart/reload can interrupt static traffic.
 
 ## Primary references
 
