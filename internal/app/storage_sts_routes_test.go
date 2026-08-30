@@ -98,7 +98,7 @@ func TestStorageSTSRouteIsDefaultOffExactAndOutsideCORS(t *testing.T) {
 	form := url.Values{
 		"Action": {storagests.AWSQueryAction}, "Version": {storagests.AWSQueryVersion},
 		"RoleArn":          {"arn:aws:iam::000000000000:role/codefoundry/payments/workload-payments/payments-api-invoices"},
-		"WebIdentityToken": {"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"},
+		"WebIdentityToken": {"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"}, // gitleaks:allow -- deliberately invalid public test fixture
 	}.Encode()
 	for _, test := range []struct {
 		method     string
@@ -152,6 +152,6 @@ func appStorageValidForm() string {
 	return url.Values{
 		"Action": {storagests.AWSQueryAction}, "Version": {storagests.AWSQueryVersion},
 		"RoleArn":          {"arn:aws:iam::000000000000:role/codefoundry/payments/workload-payments/payments-api-invoices"},
-		"WebIdentityToken": {"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"},
+		"WebIdentityToken": {"eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ3b3JrbG9hZCJ9.c2lnbmF0dXJl"}, // gitleaks:allow -- deliberately invalid public test fixture
 	}.Encode()
 }

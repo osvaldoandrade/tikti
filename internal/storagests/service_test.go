@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"sync"
 	"testing"
@@ -16,9 +17,17 @@ type fakeProjectedVerifier struct {
 	identity domain.WorkloadSubject
 	err      error
 	block    <-chan struct{}
+	entered  chan<- struct{}
 }
 
 func (f fakeProjectedVerifier) Verify(ctx context.Context, _ string) (domain.WorkloadSubject, error) {
+	if f.entered != nil {
+		select {
+		case f.entered <- struct{}{}:
+		case <-ctx.Done():
+			return domain.WorkloadSubject{}, ctx.Err()
+		}
+	}
 	if f.block != nil {
 		select {
 		case <-f.block:
@@ -27,6 +36,28 @@ func (f fakeProjectedVerifier) Verify(ctx context.Context, _ string) (domain.Wor
 		}
 	}
 	return f.identity, f.err
+}
+
+type fixedAssertionSigner struct{}
+
+func (fixedAssertionSigner) SignServiceAssertion(time.Time) (string, error) {
+	return "service-assertion", nil
+}
+
+func (fixedAssertionSigner) SignMinIOAssertion(time.Time, Approval) (string, error) {
+	return "minio-assertion", nil
+}
+
+type fixedAuthorizer struct{ decision AuthorizationDecision }
+
+func (f fixedAuthorizer) Authorize(context.Context, AuthorizationRequest, string) (AuthorizationDecision, error) {
+	return f.decision, nil
+}
+
+type fixedCredentialIssuer struct{ credentials Credentials }
+
+func (f fixedCredentialIssuer) Exchange(context.Context, string, int) (Credentials, error) {
+	return f.credentials, nil
 }
 
 type fakeAssertionSigner struct {
@@ -174,6 +205,90 @@ func TestServiceBoundsConcurrencyWithoutQueueingSecrets(t *testing.T) {
 	}
 	close(blocked)
 	wait.Wait()
+}
+
+func TestServiceShedsTwoTimesConcurrencyCeilingAndRecovers(t *testing.T) {
+	t.Parallel()
+	const ceiling = 8
+	const requests = 2 * ceiling
+	now := time.Unix(1_800_000_000, 0).UTC()
+	blocked := make(chan struct{})
+	entered := make(chan struct{}, ceiling)
+	service, err := NewService(
+		fakeProjectedVerifier{
+			identity: storageTestIdentity(), block: blocked, entered: entered,
+		},
+		fixedAssertionSigner{},
+		fixedAuthorizer{decision: allowDecision(ReadOnlyAccess)},
+		fixedCredentialIssuer{credentials: Credentials{
+			AccessKeyID: "MINIOACCESSKEY123456", SecretAccessKey: "minio-secret-access-key",
+			SessionToken: "minio-session-token", Expiration: now.Add(15 * time.Minute),
+		}},
+		ceiling,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return now }
+	request := Request{
+		RoleARN: testRoleARN,
+		Role: Role{
+			AccountID: testAccountID, TenantID: "payments", Namespace: "workload-payments",
+			BindingName: "payments-api-invoices",
+		},
+		RoleSessionName: "payments-api", WebIdentityToken: testJWT, DurationSeconds: 900,
+	}
+	start := make(chan struct{})
+	results := make(chan *Error, requests)
+	var wait sync.WaitGroup
+	for index := 0; index < requests; index++ {
+		wait.Add(1)
+		go func(requestIndex int) {
+			defer wait.Done()
+			<-start
+			_, exchangeErr := service.Exchange(
+				t.Context(), request, fmt.Sprintf("request-load-%02d", requestIndex),
+			)
+			results <- exchangeErr
+		}(index)
+	}
+	close(start)
+
+	for index := 0; index < ceiling; index++ {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d requests entered the dependency brownout", index)
+		}
+	}
+	for index := 0; index < requests-ceiling; index++ {
+		select {
+		case exchangeErr := <-results:
+			if exchangeErr == nil || exchangeErr.Code != CodeThrottling {
+				t.Fatalf("overload result %d = %#v", index, exchangeErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("overload result %d did not fail fast", index)
+		}
+	}
+
+	close(blocked)
+	for index := 0; index < ceiling; index++ {
+		select {
+		case exchangeErr := <-results:
+			if exchangeErr != nil {
+				t.Fatalf("admitted result %d = %#v", index, exchangeErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("admitted result %d did not recover", index)
+		}
+	}
+	wait.Wait()
+
+	if _, exchangeErr := service.Exchange(t.Context(), request, "request-recovered"); exchangeErr != nil {
+		t.Fatalf("service did not recover after dependency release: %#v", exchangeErr)
+	}
 }
 
 func storageTestIdentity() domain.WorkloadSubject {

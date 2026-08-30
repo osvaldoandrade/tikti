@@ -11,7 +11,7 @@ import (
 const (
 	testAccountID = "000000000000"
 	testRoleARN   = "arn:aws:iam::000000000000:role/codefoundry/payments/workload-payments/payments-api-invoices"
-	testJWT       = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQ6d29ya2xvYWQtcGF5bWVudHM6cGF5bWVudHMtYXBpIn0.c2lnbmF0dXJl"
+	testJWT       = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImsxIn0.eyJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQ6d29ya2xvYWQtcGF5bWVudHM6cGF5bWVudHMtYXBpIn0.c2lnbmF0dXJl" // gitleaks:allow -- deliberately invalid public test fixture
 )
 
 func TestParseRequestAcceptsOnlyTheBoundedAWSQueryContract(t *testing.T) {
