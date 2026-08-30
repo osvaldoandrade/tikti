@@ -7,15 +7,216 @@ on:
 
 permissions:
   contents: read
+  packages: write
+  id-token: write
+  attestations: write
 
 jobs:
   supply-chain:
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    uses: codecompany/code-admin-workflow-templates/.github/workflows/cfp088-candidate-image.yml@4761f140e72052ed9a04c1044ec55fd9972f12a2
-    with:
-      service_id: tikti
-      builder_sha: 4761f140e72052ed9a04c1044ec55fd9972f12a2
+    name: build-sign-attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Validate isolated candidate boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${GITHUB_REPOSITORY}" == osvaldoandrade/tikti ]] || {
+            echo "candidate workflow ran from an unexpected repository" >&2
+            exit 1
+          }
+          [[ "${GITHUB_REF}" == refs/heads/work/object-storage-release-candidate ]] || {
+            echo "candidate workflow requires the isolated CFP-088 branch" >&2
+            exit 1
+          }
+          [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "caller source SHA is invalid" >&2
+            exit 1
+          }
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]] || {
+            echo "checkout does not match the caller source SHA" >&2
+            exit 1
+          }
+          [[ -f Dockerfile && ! -L Dockerfile ]] || {
+            echo "candidate requires a regular Dockerfile" >&2
+            exit 1
+          }
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+      - name: Authenticate to isolated candidate registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7  # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Refuse an existing candidate tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=ghcr.io/osvaldoandrade/cfp088-tikti
+          if docker buildx imagetools inspect "${image}:${GITHUB_SHA}" >/dev/null 2>&1; then
+            echo "immutable candidate tag already exists: ${image}:${GITHUB_SHA}" >&2
+            exit 1
+          fi
+
+      - name: Build and publish candidate image
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=ghcr.io/osvaldoandrade/cfp088-tikti
+          metadata="${RUNNER_TEMP}/candidate-image-metadata.json"
+          docker buildx build \
+            --platform linux/amd64 \
+            --provenance=mode=max \
+            --sbom=true \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --tag "${image}:${GITHUB_SHA}" \
+            --metadata-file "${metadata}" \
+            --push \
+            .
+          digest="$(jq -er '."containerimage.digest"' "${metadata}")"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "candidate registry returned an invalid digest" >&2
+            exit 1
+          }
+          {
+            echo "image=${image}"
+            echo "digest=${digest}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@f713795cb21599bc4e5c4b58cbad1da852d7eeb9  # v3
+
+      - name: Sign and verify exact candidate digest
+        id: sign
+        shell: bash
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          reference="${IMAGE}@${IMAGE_DIGEST}"
+          identity='https://github.com/osvaldoandrade/tikti/.github/workflows/object-storage-release-candidate.yml@refs/heads/work/object-storage-release-candidate'
+          cosign sign --yes "${reference}" >/dev/null
+          cosign verify \
+            --certificate-identity "${identity}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "${reference}" >/dev/null
+          echo "signature-identity=${identity}" >> "${GITHUB_OUTPUT}"
+
+      - name: Generate candidate image SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610  # v0.24.0
+        with:
+          image: ${{ steps.build.outputs.image }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/candidate-image.spdx.json
+          dependency-snapshot: false
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest candidate provenance
+        id: provenance
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6  # v4.2.0
+        with:
+          subject-name: ${{ steps.build.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest candidate SBOM
+        id: sbom
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6  # v4.2.0
+        with:
+          subject-name: ${{ steps.build.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/candidate-image.spdx.json
+          push-to-registry: true
+
+      - name: Export immutable candidate evidence
+        id: evidence
+        shell: bash
+        env:
+          IMAGE: ${{ steps.build.outputs.image }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+          PROVENANCE_REFERENCE: ${{ steps.provenance.outputs.attestation-url }}
+          SBOM_BUNDLE: ${{ steps.sbom.outputs.bundle-path }}
+          SBOM_REFERENCE: ${{ steps.sbom.outputs.attestation-url }}
+          SIGNATURE_IDENTITY: ${{ steps.sign.outputs.signature-identity }}
+        run: |
+          set -euo pipefail
+          bundle_digest() {
+            local path="$1"
+            [[ -f "${path}" ]] || {
+              echo "attestation bundle is missing" >&2
+              exit 1
+            }
+            printf 'sha256:%s' "$(sha256sum "${path}" | cut -d ' ' -f 1)"
+          }
+          validate_reference() {
+            local reference="$1"
+            [[ "${reference}" =~ ^https://github\.com/osvaldoandrade/tikti/attestations/[0-9]+$ ]] || {
+              echo "attestation reference is not immutable" >&2
+              exit 1
+            }
+          }
+          validate_reference "${PROVENANCE_REFERENCE}"
+          validate_reference "${SBOM_REFERENCE}"
+          provenance_digest="$(bundle_digest "${PROVENANCE_BUNDLE}")"
+          sbom_digest="$(bundle_digest "${SBOM_BUNDLE}")"
+          evidence_path="${RUNNER_TEMP}/cfp088-tikti-supply-chain.json"
+          jq -n \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg sourceSha "${GITHUB_SHA}" \
+            --arg sourceRef "${GITHUB_REF}" \
+            --arg runId "${GITHUB_RUN_ID}" \
+            --arg image "${IMAGE}" \
+            --arg imageDigest "${IMAGE_DIGEST}" \
+            --arg signatureIdentity "${SIGNATURE_IDENTITY}" \
+            --arg provenanceDigest "${provenance_digest}" \
+            --arg provenanceReference "${PROVENANCE_REFERENCE}" \
+            --arg sbomDigest "${sbom_digest}" \
+            --arg sbomReference "${SBOM_REFERENCE}" \
+            '{
+              schemaVersion: 1,
+              task: "CFP-088",
+              repository: $repository,
+              sourceSha: $sourceSha,
+              sourceRef: $sourceRef,
+              builderSha: $sourceSha,
+              workflowRunId: ($runId | tonumber),
+              image: $image,
+              imageDigest: $imageDigest,
+              signatureIdentity: $signatureIdentity,
+              provenance: {digest: $provenanceDigest, reference: $provenanceReference},
+              sbom: {digest: $sbomDigest, reference: $sbomReference}
+            }' > "${evidence_path}"
+          echo "evidence-path=${evidence_path}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## CFP-088 candidate supply chain"
+            echo
+            echo "- Repository: \`${GITHUB_REPOSITORY}\`"
+            echo "- Source: \`${GITHUB_SHA}\`"
+            echo "- Image: \`${IMAGE}@${IMAGE_DIGEST}\`"
+            echo "- Signature identity: \`${SIGNATURE_IDENTITY}\`"
+            echo "- Provenance: ${PROVENANCE_REFERENCE}"
+            echo "- SBOM: ${SBOM_REFERENCE}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload candidate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: cfp088-tikti-supply-chain-${{ github.sha }}
+          path: |
+            ${{ steps.evidence.outputs.evidence-path }}
+            ${{ runner.temp }}/candidate-image.spdx.json
+          if-no-files-found: error
+          retention-days: 90
