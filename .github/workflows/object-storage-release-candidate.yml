@@ -1,0 +1,21 @@
+name: object-storage-release-candidate
+
+on:
+  push:
+    branches:
+      - work/object-storage-release-candidate
+
+permissions:
+  contents: read
+
+jobs:
+  supply-chain:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: codecompany/code-admin-workflow-templates/.github/workflows/cfp088-candidate-image.yml@4761f140e72052ed9a04c1044ec55fd9972f12a2
+    with:
+      service_id: tikti
+      builder_sha: 4761f140e72052ed9a04c1044ec55fd9972f12a2
