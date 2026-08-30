@@ -25,6 +25,7 @@ storageSTS:
   syntheticAccountId: "000000000000"
   authorizerUrl: https://code-admin-api.example.com/internal/v1/object-storage:authorize
   minioStsEndpoint: http://minio.code-admin.svc:9000/
+  oidcJwksUrl: http://tikti.code-admin.svc:8080/internal/v1/storage/jwks.json
   serviceSubject: tikti:object-storage-sts
   credentialTtlSeconds: 900
   serviceAssertionTtlSeconds: 60
@@ -47,6 +48,7 @@ workloadIdentity:
 		"syntheticAccountId: \"123\"",
 		"authorizerUrl: https://evil.example.com/other",
 		"minioStsEndpoint: http://evil.example.com/",
+		"oidcJwksUrl: http://tikti.code-admin.svc:8080/v1/.well-known/jwks.json",
 		"serviceSubject: other-service",
 		"serviceSubject: \"\"",
 		"credentialTtlSeconds: 0",
@@ -77,6 +79,8 @@ func replacementKey(replacement string) string {
 		return "authorizerUrl: https://code-admin-api.example.com/internal/v1/object-storage:authorize"
 	case "minioStsEndpoint":
 		return "minioStsEndpoint: http://minio.code-admin.svc:9000/"
+	case "oidcJwksUrl":
+		return "oidcJwksUrl: http://tikti.code-admin.svc:8080/internal/v1/storage/jwks.json"
 	case "serviceSubject":
 		return "serviceSubject: tikti:object-storage-sts"
 	case "credentialTtlSeconds":

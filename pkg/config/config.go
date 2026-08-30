@@ -82,6 +82,7 @@ type StorageSTSConfig struct {
 	SyntheticAccountID         string `yaml:"syntheticAccountId"`
 	AuthorizerURL              string `yaml:"authorizerUrl"`
 	MinIOSTSEndpoint           string `yaml:"minioStsEndpoint"`
+	OIDCJWKSURL                string `yaml:"oidcJwksUrl"`
 	ServiceSubject             string `yaml:"serviceSubject"`
 	CredentialTTLSeconds       int    `yaml:"credentialTtlSeconds"`
 	ServiceAssertionTTLSeconds int    `yaml:"serviceAssertionTtlSeconds"`
@@ -541,6 +542,7 @@ func validateStorageSTS(c *Config) error {
 	broker.SyntheticAccountID = strings.TrimSpace(broker.SyntheticAccountID)
 	broker.AuthorizerURL = strings.TrimSpace(broker.AuthorizerURL)
 	broker.MinIOSTSEndpoint = strings.TrimSpace(broker.MinIOSTSEndpoint)
+	broker.OIDCJWKSURL = strings.TrimSpace(broker.OIDCJWKSURL)
 	broker.ServiceSubject = strings.TrimSpace(broker.ServiceSubject)
 	broker.ReadOnlyPolicy = strings.TrimSpace(broker.ReadOnlyPolicy)
 	broker.ReadWritePolicy = strings.TrimSpace(broker.ReadWritePolicy)
@@ -560,6 +562,9 @@ func validateStorageSTS(c *Config) error {
 	}
 	if !validStorageDependencyURL(broker.MinIOSTSEndpoint, "") {
 		return fmt.Errorf("storageSTS.minioStsEndpoint must be one exact private endpoint origin")
+	}
+	if !validStorageDependencyURL(broker.OIDCJWKSURL, "/internal/v1/storage/jwks.json") {
+		return fmt.Errorf("storageSTS.oidcJwksUrl must be the exact machine-only JWKS endpoint")
 	}
 	if broker.ServiceSubject != "tikti:object-storage-sts" {
 		return fmt.Errorf("storageSTS.serviceSubject must equal tikti:object-storage-sts")

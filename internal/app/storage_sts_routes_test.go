@@ -31,6 +31,53 @@ func (b appStorageResultBroker) Exchange(context.Context, storagests.Request, st
 	return b.result, nil
 }
 
+type appStorageJWKSProvider struct{}
+
+func (appStorageJWKSProvider) JWKS(context.Context) (map[string]any, error) {
+	return map[string]any{"keys": []any{}}, nil
+}
+
+func TestStorageOIDCRoutesAreDefaultOffExactAndOutsideCORS(t *testing.T) {
+	disabled := gin.New()
+	setupStorageOIDCMappings(disabled, &config.Config{}, nil)
+	for _, route := range disabled.Routes() {
+		if strings.Contains(route.Path, "/internal/v1/storage/") {
+			t.Fatalf("disabled OIDC metadata registered route %#v", route)
+		}
+	}
+
+	enabled := newSafeEngineWithWriters(&strings.Builder{}, &strings.Builder{})
+	cfg := &config.Config{StorageSTS: config.StorageSTSConfig{Enabled: true}}
+	controller := storagests.NewOIDCController(
+		"https://tikti.example.com",
+		"http://tikti.code-admin.svc:8080/internal/v1/storage/jwks.json",
+		appStorageJWKSProvider{},
+	)
+	setupStorageOIDCMappings(enabled, cfg, controller)
+	enabled.Use(cors.New(cors.Config{AllowOrigins: []string{"https://console.example.com"}, AllowMethods: []string{"GET"}}))
+
+	for _, test := range []struct {
+		method     string
+		path       string
+		wantStatus int
+	}{
+		{method: http.MethodGet, path: storagests.MachineOIDCDiscoveryPath, wantStatus: http.StatusOK},
+		{method: http.MethodGet, path: storagests.MachineOIDCJWKSPath, wantStatus: http.StatusOK},
+		{method: http.MethodGet, path: storagests.MachineOIDCDiscoveryPath + "/", wantStatus: http.StatusNotFound},
+		{method: http.MethodGet, path: storagests.MachineOIDCJWKSPath + "/", wantStatus: http.StatusNotFound},
+		{method: http.MethodOptions, path: storagests.MachineOIDCJWKSPath, wantStatus: http.StatusNotFound},
+	} {
+		request := httptest.NewRequest(test.method, test.path, nil)
+		request.Header.Set("Origin", "https://console.example.com")
+		response := httptest.NewRecorder()
+		enabled.ServeHTTP(response, request)
+		if response.Code != test.wantStatus || response.Header().Get("Location") != "" ||
+			response.Header().Get("Access-Control-Allow-Origin") != "" {
+			t.Fatalf("method=%s path=%s status=%d headers=%v body=%s", test.method, test.path, response.Code, response.Header(), response.Body.String())
+		}
+	}
+}
+
 func TestStorageSTSRouteIsDefaultOffExactAndOutsideCORS(t *testing.T) {
 	disabled := gin.New()
 	setupStorageSTSMappings(disabled, &config.Config{}, nil)

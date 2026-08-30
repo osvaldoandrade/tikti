@@ -1,6 +1,8 @@
 package app
 
 import (
+	"strings"
+
 	"github.com/osvaldoandrade/tikti/internal/controllers"
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/internal/services"
@@ -113,6 +115,27 @@ func setupStorageSTSMappings(engine *gin.Engine, cfg *config.Config, controller 
 	// installed. The credential response is intentionally non-browser-readable.
 	engine.OPTIONS("/v1/storage/sts", controller.RejectAlias)
 	engine.OPTIONS("/v1/storage/sts/", controller.RejectAlias)
+}
+
+func setupStorageOIDCMappings(engine *gin.Engine, cfg *config.Config, controller *storagests.OIDCController) {
+	if engine == nil || cfg == nil || !cfg.StorageSTS.Enabled || controller == nil {
+		return
+	}
+	engine.GET(storagests.MachineOIDCDiscoveryPath, controller.Discovery)
+	engine.GET(storagests.MachineOIDCJWKSPath, controller.JWKS)
+	// Register aliases and preflight explicitly so Gin cannot redirect these
+	// exact machine endpoints or expose browser-readable metadata through CORS.
+	for _, path := range []string{
+		storagests.MachineOIDCDiscoveryPath,
+		storagests.MachineOIDCDiscoveryPath + "/",
+		storagests.MachineOIDCJWKSPath,
+		storagests.MachineOIDCJWKSPath + "/",
+	} {
+		if strings.HasSuffix(path, "/") {
+			engine.GET(path, controller.Reject)
+		}
+		engine.OPTIONS(path, controller.Reject)
+	}
 }
 
 func setupExactMembershipReadMappings(engine *gin.Engine, cfg *config.Config, service services.ExactMembershipReadService) {

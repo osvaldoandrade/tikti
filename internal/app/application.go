@@ -111,6 +111,14 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	var storageOIDCController *storagests.OIDCController
+	if cfg.StorageSTS.Enabled {
+		storageOIDCController = storagests.NewOIDCController(
+			cfg.IssuerBaseURL,
+			cfg.StorageSTS.OIDCJWKSURL,
+			userService,
+		)
+	}
 	var exactMembershipService services.ExactMembershipReadService
 	if cfg.ExactMembershipReadRoutesV1 {
 		exactTenants, tenantsOK := tenantRepo.(repository.ExactTenantRepository)
@@ -151,6 +159,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}
 
 	engine := newSafeEngine()
+	setupStorageOIDCMappings(engine, cfg, storageOIDCController)
 	setupStorageSTSMappings(engine, cfg, storageSTSController)
 	setupExactMembershipReadMappings(engine, cfg, exactMembershipService)
 	setupMembershipV2WriteMappings(engine, cfg, membershipV2WriteService)

@@ -90,6 +90,7 @@ config:
     syntheticAccountId: "000000000000"
     authorizerUrl: ""
     minioStsEndpoint: ""
+    oidcJwksUrl: ""
     serviceSubject: "tikti:object-storage-sts"
     credentialTtlSeconds: 900
     serviceAssertionTtlSeconds: 60

@@ -2,6 +2,7 @@
 {{- if not (regexMatch `^[0-9]{12}$` .Values.config.storageSTS.syntheticAccountId) }}{{ fail "config.storageSTS.syntheticAccountId must contain exactly 12 digits" }}{{- end }}
 {{- if not (regexMatch `^https?://[^/?#]+/internal/v1/object-storage:authorize$` .Values.config.storageSTS.authorizerUrl) }}{{ fail "config.storageSTS.authorizerUrl must be the exact internal endpoint" }}{{- end }}
 {{- if not (regexMatch `^https?://[^/?#]+/?$` .Values.config.storageSTS.minioStsEndpoint) }}{{ fail "config.storageSTS.minioStsEndpoint must be one exact origin" }}{{- end }}
+{{- if not (regexMatch `^https?://[^/?#]+/internal/v1/storage/jwks\.json$` .Values.config.storageSTS.oidcJwksUrl) }}{{ fail "config.storageSTS.oidcJwksUrl must be the exact machine-only JWKS endpoint" }}{{- end }}
 {{- if ne .Values.config.storageSTS.serviceSubject "tikti:object-storage-sts" }}{{ fail "config.storageSTS.serviceSubject must be exact" }}{{- end }}
 {{- if ne (int .Values.config.storageSTS.credentialTtlSeconds) 900 }}{{ fail "config.storageSTS.credentialTtlSeconds must equal 900" }}{{- end }}
 {{- if or (lt (int .Values.config.storageSTS.serviceAssertionTtlSeconds) 1) (gt (int .Values.config.storageSTS.serviceAssertionTtlSeconds) 60) }}{{ fail "config.storageSTS.serviceAssertionTtlSeconds must be at most 60" }}{{- end }}
@@ -60,6 +61,9 @@ data:
       syntheticAccountId: {{ .Values.config.storageSTS.syntheticAccountId | quote }}
       authorizerUrl: {{ .Values.config.storageSTS.authorizerUrl | quote }}
       minioStsEndpoint: {{ .Values.config.storageSTS.minioStsEndpoint | quote }}
+{{- if .Values.config.storageSTS.enabled }}
+      oidcJwksUrl: {{ .Values.config.storageSTS.oidcJwksUrl | quote }}
+{{- end }}
       serviceSubject: {{ .Values.config.storageSTS.serviceSubject | quote }}
       credentialTtlSeconds: {{ .Values.config.storageSTS.credentialTtlSeconds }}
       serviceAssertionTtlSeconds: {{ .Values.config.storageSTS.serviceAssertionTtlSeconds }}
