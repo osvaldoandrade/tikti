@@ -32,6 +32,7 @@ type Config struct {
 	JwksKeyID                          string                   `yaml:"jwksKeyId"`
 	WorkloadIdentity                   WorkloadIdentityConfig   `yaml:"workloadIdentity"`
 	WorkloadAccountBFF                 WorkloadAccountBFFConfig `yaml:"workloadAccountBFF"`
+	StorageSTS                         StorageSTSConfig         `yaml:"storageSTS"`
 	SAML                               SAMLConfig               `yaml:"saml"`
 	HTTP                               HTTPConfig               `yaml:"http"`
 	ForwardAuth                        ForwardAuthConfig        `yaml:"forwardAuth"`
@@ -63,6 +64,7 @@ type ForwardAuthConfig struct {
 // WorkloadIdentityConfig validates Kubernetes projected ServiceAccount tokens
 // and controls the short-lived access tokens issued to bound controllers.
 type WorkloadIdentityConfig struct {
+	ClusterRef            string                           `yaml:"clusterRef"`
 	Issuer                string                           `yaml:"issuer"`
 	Audience              string                           `yaml:"audience"`
 	JWKSURL               string                           `yaml:"jwksUrl"`
@@ -71,6 +73,22 @@ type WorkloadIdentityConfig struct {
 	HTTPTimeoutSeconds    int                              `yaml:"httpTimeoutSeconds"`
 	JWKSCacheTTLSeconds   int                              `yaml:"jwksCacheTtlSeconds"`
 	AccessTokenTTLSeconds int                              `yaml:"accessTokenTtlSeconds"`
+}
+
+// StorageSTSConfig defines the independent, default-off S3 web-identity
+// broker. Every authority-bearing value is fixed by trusted configuration.
+type StorageSTSConfig struct {
+	Enabled                    bool   `yaml:"enabled"`
+	SyntheticAccountID         string `yaml:"syntheticAccountId"`
+	AuthorizerURL              string `yaml:"authorizerUrl"`
+	MinIOSTSEndpoint           string `yaml:"minioStsEndpoint"`
+	ServiceSubject             string `yaml:"serviceSubject"`
+	CredentialTTLSeconds       int    `yaml:"credentialTtlSeconds"`
+	ServiceAssertionTTLSeconds int    `yaml:"serviceAssertionTtlSeconds"`
+	DependencyTimeoutSeconds   int    `yaml:"dependencyTimeoutSeconds"`
+	MaximumConcurrent          int    `yaml:"maximumConcurrent"`
+	ReadOnlyPolicy             string `yaml:"readOnlyPolicy"`
+	ReadWritePolicy            string `yaml:"readWritePolicy"`
 }
 
 // WorkloadIdentityProviderConfig declares one trusted Kubernetes token issuer.
@@ -236,7 +254,7 @@ func LoadConfig(filePath string) (*Config, error) {
 	})
 	data = []byte(expanded)
 
-	var c Config
+	c := Config{StorageSTS: defaultStorageSTSConfig()}
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, err
 	}
@@ -406,6 +424,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_ISSUER")); value != "" {
 		c.WorkloadIdentity.Issuer = value
 	}
+	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_CLUSTER_REF")); value != "" {
+		c.WorkloadIdentity.ClusterRef = value
+	}
 	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_AUDIENCE")); value != "" {
 		c.WorkloadIdentity.Audience = value
 	}
@@ -415,16 +436,23 @@ func LoadConfig(filePath string) (*Config, error) {
 	if value := strings.TrimSpace(os.Getenv("WORKLOAD_IDENTITY_JWKS_BEARER_TOKEN_FILE")); value != "" {
 		c.WorkloadIdentity.JWKSBearerTokenFile = value
 	}
+	c.WorkloadIdentity.ClusterRef = optionalExpandedValue(c.WorkloadIdentity.ClusterRef)
 	c.WorkloadIdentity.Issuer = optionalExpandedValue(c.WorkloadIdentity.Issuer)
 	c.WorkloadIdentity.JWKSURL = optionalExpandedValue(c.WorkloadIdentity.JWKSURL)
 	c.WorkloadIdentity.JWKSBearerTokenFile = optionalExpandedValue(c.WorkloadIdentity.JWKSBearerTokenFile)
 	if len(c.WorkloadIdentity.Providers) > 16 {
 		return nil, fmt.Errorf("workload identity supports at most 16 providers")
 	}
-	seenProviderRefs := make(map[string]struct{}, len(c.WorkloadIdentity.Providers))
+	seenProviderRefs := make(map[string]struct{}, len(c.WorkloadIdentity.Providers)+1)
 	seenProviderIssuers := make(map[string]struct{}, len(c.WorkloadIdentity.Providers)+1)
 	if strings.TrimSpace(c.WorkloadIdentity.Issuer) != "" {
 		seenProviderIssuers[c.WorkloadIdentity.Issuer] = struct{}{}
+		if c.WorkloadIdentity.ClusterRef != "" {
+			if !validClusterRef(c.WorkloadIdentity.ClusterRef) {
+				return nil, fmt.Errorf("workload identity clusterRef is invalid")
+			}
+			seenProviderRefs[c.WorkloadIdentity.ClusterRef] = struct{}{}
+		}
 	}
 	for index := range c.WorkloadIdentity.Providers {
 		provider := &c.WorkloadIdentity.Providers[index]
@@ -439,7 +467,7 @@ func LoadConfig(filePath string) (*Config, error) {
 		if provider.ClusterRef == "" || provider.Issuer == "" || provider.JWKSURL == "" {
 			return nil, fmt.Errorf("workload identity provider %d requires clusterRef, issuer, and jwksUrl", index)
 		}
-		if strings.ContainsAny(provider.ClusterRef, " \t\r\n/:") || len(provider.ClusterRef) > 128 {
+		if !validClusterRef(provider.ClusterRef) {
 			return nil, fmt.Errorf("workload identity provider %d has an invalid clusterRef", index)
 		}
 		if provider.Authentication != "none" && provider.Authentication != "gcp" {
@@ -483,6 +511,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	if (strings.TrimSpace(c.WorkloadIdentity.Issuer) == "") != (strings.TrimSpace(c.WorkloadIdentity.JWKSURL) == "") {
 		return nil, fmt.Errorf("workload identity issuer and jwksUrl must be configured together")
 	}
+	if err := validateStorageSTS(&c); err != nil {
+		return nil, err
+	}
 	if err := validateWorkloadAccountBFF(&c); err != nil {
 		return nil, err
 	}
@@ -503,6 +534,106 @@ func LoadConfig(filePath string) (*Config, error) {
 		c.SAML.SP.AllowedSigAlgs = []string{"rsa-sha256"}
 	}
 	return &c, nil
+}
+
+func validateStorageSTS(c *Config) error {
+	broker := &c.StorageSTS
+	broker.SyntheticAccountID = strings.TrimSpace(broker.SyntheticAccountID)
+	broker.AuthorizerURL = strings.TrimSpace(broker.AuthorizerURL)
+	broker.MinIOSTSEndpoint = strings.TrimSpace(broker.MinIOSTSEndpoint)
+	broker.ServiceSubject = strings.TrimSpace(broker.ServiceSubject)
+	broker.ReadOnlyPolicy = strings.TrimSpace(broker.ReadOnlyPolicy)
+	broker.ReadWritePolicy = strings.TrimSpace(broker.ReadWritePolicy)
+	if !broker.Enabled {
+		return nil
+	}
+	if len(broker.SyntheticAccountID) != 12 {
+		return fmt.Errorf("storageSTS.syntheticAccountId must contain exactly 12 digits")
+	}
+	for _, character := range broker.SyntheticAccountID {
+		if character < '0' || character > '9' {
+			return fmt.Errorf("storageSTS.syntheticAccountId must contain exactly 12 digits")
+		}
+	}
+	if !validStorageDependencyURL(broker.AuthorizerURL, "/internal/v1/object-storage:authorize") {
+		return fmt.Errorf("storageSTS.authorizerUrl must be the exact bounded internal authorizer endpoint")
+	}
+	if !validStorageDependencyURL(broker.MinIOSTSEndpoint, "") {
+		return fmt.Errorf("storageSTS.minioStsEndpoint must be one exact private endpoint origin")
+	}
+	if broker.ServiceSubject != "tikti:object-storage-sts" {
+		return fmt.Errorf("storageSTS.serviceSubject must equal tikti:object-storage-sts")
+	}
+	if broker.CredentialTTLSeconds != 900 || broker.ServiceAssertionTTLSeconds < 1 || broker.ServiceAssertionTTLSeconds > 60 {
+		return fmt.Errorf("storageSTS token lifetimes are outside the reviewed bounds")
+	}
+	if broker.DependencyTimeoutSeconds < 1 || broker.DependencyTimeoutSeconds > 10 ||
+		broker.MaximumConcurrent < 1 || broker.MaximumConcurrent > 32 {
+		return fmt.Errorf("storageSTS dependency or concurrency bounds are invalid")
+	}
+	if broker.ReadOnlyPolicy != "code-admin-object-readonly-v1" || broker.ReadWritePolicy != "code-admin-object-readwrite-v1" {
+		return fmt.Errorf("storageSTS policies must equal the two fixed reviewed policy names")
+	}
+	if c.WorkloadIdentity.Audience != "tikti-workload-exchange" ||
+		(strings.TrimSpace(c.WorkloadIdentity.Issuer) == "" && len(c.WorkloadIdentity.Providers) == 0) ||
+		(strings.TrimSpace(c.WorkloadIdentity.Issuer) != "" && !validClusterRef(c.WorkloadIdentity.ClusterRef)) {
+		return fmt.Errorf("storageSTS requires exact workload identity issuer, cluster, and audience configuration")
+	}
+	if !validHTTPSOrigin(c.IssuerBaseURL) {
+		return fmt.Errorf("storageSTS requires issuerBaseUrl to be one exact HTTPS origin")
+	}
+	return nil
+}
+
+func defaultStorageSTSConfig() StorageSTSConfig {
+	return StorageSTSConfig{
+		SyntheticAccountID: "000000000000", ServiceSubject: "tikti:object-storage-sts",
+		CredentialTTLSeconds: 900, ServiceAssertionTTLSeconds: 60,
+		DependencyTimeoutSeconds: 3, MaximumConcurrent: 8,
+		ReadOnlyPolicy: "code-admin-object-readonly-v1", ReadWritePolicy: "code-admin-object-readwrite-v1",
+	}
+}
+
+func validClusterRef(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) < 1 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
+		return false
+	}
+	for _, character := range []byte(value) {
+		if character != '-' && (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func validHTTPSOrigin(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
+		(parsed.Path == "" || parsed.Path == "/") && parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func validStorageDependencyURL(raw, exactPath string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	path := parsed.EscapedPath()
+	if exactPath == "" {
+		if path != "" && path != "/" {
+			return false
+		}
+	} else if path != exactPath {
+		return false
+	}
+	if parsed.Scheme == "https" {
+		return true
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	host := strings.ToLower(parsed.Hostname())
+	return host == "localhost" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".svc.cluster.local")
 }
 
 func validateWorkloadAccountBFF(c *Config) error {

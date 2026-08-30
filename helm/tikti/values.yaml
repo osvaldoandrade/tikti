@@ -70,6 +70,7 @@ config:
   membershipV2WriteRoutesV1: false
   membershipV2WriteRoutesV1Tenants: []
   workloadIdentity:
+    clusterRef: ""
     issuer: ""
     audience: "tikti-workload-exchange"
     jwksUrl: ""
@@ -84,6 +85,18 @@ config:
   workloadAccountBFF:
     enabled: false
     clients: []
+  storageSTS:
+    enabled: false
+    syntheticAccountId: "000000000000"
+    authorizerUrl: ""
+    minioStsEndpoint: ""
+    serviceSubject: "tikti:object-storage-sts"
+    credentialTtlSeconds: 900
+    serviceAssertionTtlSeconds: 60
+    dependencyTimeoutSeconds: 3
+    maximumConcurrent: 8
+    readOnlyPolicy: "code-admin-object-readonly-v1"
+    readWritePolicy: "code-admin-object-readwrite-v1"
 
 secrets:
   enabled: true

@@ -2,7 +2,13 @@ IMAGE_NAME ?= tikti
 IMAGE_TAG ?= dev
 IMAGE_URI ?= $(IMAGE_NAME):$(IMAGE_TAG)
 
-.PHONY: build docker-build docker-push lint
+.PHONY: build docker-build docker-push lint test helm-test
+
+test:
+	go test ./...
+
+helm-test:
+	bash hack/test-storage-sts-chart.sh
 
 build:
 	go build -o bin/tikti ./cmd/tikti

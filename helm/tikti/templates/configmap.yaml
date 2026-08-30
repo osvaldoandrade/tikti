@@ -1,3 +1,21 @@
+{{- if .Values.config.storageSTS.enabled }}
+{{- if not (regexMatch `^[0-9]{12}$` .Values.config.storageSTS.syntheticAccountId) }}{{ fail "config.storageSTS.syntheticAccountId must contain exactly 12 digits" }}{{- end }}
+{{- if not (regexMatch `^https?://[^/?#]+/internal/v1/object-storage:authorize$` .Values.config.storageSTS.authorizerUrl) }}{{ fail "config.storageSTS.authorizerUrl must be the exact internal endpoint" }}{{- end }}
+{{- if not (regexMatch `^https?://[^/?#]+/?$` .Values.config.storageSTS.minioStsEndpoint) }}{{ fail "config.storageSTS.minioStsEndpoint must be one exact origin" }}{{- end }}
+{{- if ne .Values.config.storageSTS.serviceSubject "tikti:object-storage-sts" }}{{ fail "config.storageSTS.serviceSubject must be exact" }}{{- end }}
+{{- if ne (int .Values.config.storageSTS.credentialTtlSeconds) 900 }}{{ fail "config.storageSTS.credentialTtlSeconds must equal 900" }}{{- end }}
+{{- if or (lt (int .Values.config.storageSTS.serviceAssertionTtlSeconds) 1) (gt (int .Values.config.storageSTS.serviceAssertionTtlSeconds) 60) }}{{ fail "config.storageSTS.serviceAssertionTtlSeconds must be at most 60" }}{{- end }}
+{{- if or (lt (int .Values.config.storageSTS.dependencyTimeoutSeconds) 1) (gt (int .Values.config.storageSTS.dependencyTimeoutSeconds) 10) }}{{ fail "config.storageSTS.dependencyTimeoutSeconds is outside bounds" }}{{- end }}
+{{- if or (lt (int .Values.config.storageSTS.maximumConcurrent) 1) (gt (int .Values.config.storageSTS.maximumConcurrent) 32) }}{{ fail "config.storageSTS.maximumConcurrent is outside bounds" }}{{- end }}
+{{- if or (ne .Values.config.storageSTS.readOnlyPolicy "code-admin-object-readonly-v1") (ne .Values.config.storageSTS.readWritePolicy "code-admin-object-readwrite-v1") }}{{ fail "config.storageSTS policy names must be fixed" }}{{- end }}
+{{- if not (regexMatch `^https://[^/?#]+/?$` .Values.config.issuerBaseUrl) }}{{ fail "config.issuerBaseUrl must be an exact HTTPS origin for storageSTS" }}{{- end }}
+{{- if ne .Values.config.workloadIdentity.audience "tikti-workload-exchange" }}{{ fail "storageSTS requires the exact workload audience" }}{{- end }}
+{{- if and (eq .Values.config.workloadIdentity.issuer "") (eq (len .Values.config.workloadIdentity.providers) 0) }}{{ fail "storageSTS requires workload identity verification" }}{{- end }}
+{{- if and (ne .Values.config.workloadIdentity.issuer "") (or (eq .Values.config.workloadIdentity.clusterRef "") (eq .Values.config.workloadIdentity.jwksUrl "")) }}{{ fail "storageSTS legacy workload issuer requires clusterRef and jwksUrl" }}{{- end }}
+{{- range .Values.config.workloadIdentity.providers }}
+{{- if or (eq .clusterRef "") (eq .issuer "") (eq .jwksUrl "") }}{{ fail "storageSTS workload providers require clusterRef, issuer, and jwksUrl" }}{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -23,6 +41,7 @@ data:
     membershipV2WriteRoutesV1: {{ .Values.config.membershipV2WriteRoutesV1 }}
     membershipV2WriteRoutesV1Tenants: {{ .Values.config.membershipV2WriteRoutesV1Tenants | toJson }}
     workloadIdentity:
+      clusterRef: {{ .Values.config.workloadIdentity.clusterRef | quote }}
       issuer: {{ .Values.config.workloadIdentity.issuer | quote }}
       audience: {{ .Values.config.workloadIdentity.audience | quote }}
       jwksUrl: {{ .Values.config.workloadIdentity.jwksUrl | quote }}
@@ -36,6 +55,18 @@ data:
       enabled: {{ .Values.config.workloadAccountBFF.enabled }}
       clients:
         {{- toYaml .Values.config.workloadAccountBFF.clients | nindent 8 }}
+    storageSTS:
+      enabled: {{ .Values.config.storageSTS.enabled }}
+      syntheticAccountId: {{ .Values.config.storageSTS.syntheticAccountId | quote }}
+      authorizerUrl: {{ .Values.config.storageSTS.authorizerUrl | quote }}
+      minioStsEndpoint: {{ .Values.config.storageSTS.minioStsEndpoint | quote }}
+      serviceSubject: {{ .Values.config.storageSTS.serviceSubject | quote }}
+      credentialTtlSeconds: {{ .Values.config.storageSTS.credentialTtlSeconds }}
+      serviceAssertionTtlSeconds: {{ .Values.config.storageSTS.serviceAssertionTtlSeconds }}
+      dependencyTimeoutSeconds: {{ .Values.config.storageSTS.dependencyTimeoutSeconds }}
+      maximumConcurrent: {{ .Values.config.storageSTS.maximumConcurrent }}
+      readOnlyPolicy: {{ .Values.config.storageSTS.readOnlyPolicy | quote }}
+      readWritePolicy: {{ .Values.config.storageSTS.readWritePolicy | quote }}
     saml:
       enabled: {{ .Values.saml.enabled }}
       sp:

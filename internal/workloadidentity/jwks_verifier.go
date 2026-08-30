@@ -29,17 +29,27 @@ const (
 )
 
 type JWKSVerifier struct {
-	issuer   string
-	audience string
-	jwksURL  *url.URL
-	http     *http.Client
-	cacheTTL time.Duration
-	now      func() time.Time
+	issuer     string
+	clusterRef string
+	audience   string
+	jwksURL    *url.URL
+	http       *http.Client
+	cacheTTL   time.Duration
+	now        func() time.Time
 
 	mu                    sync.Mutex
 	keys                  map[string]*rsa.PublicKey
 	expiresAt             time.Time
 	nextUnknownKIDRefresh time.Time
+}
+
+// WithClusterRef binds the trusted issuer to its operator-configured cluster
+// identifier. ClusterRef is never read from the untrusted token.
+func (v *JWKSVerifier) WithClusterRef(clusterRef string) *JWKSVerifier {
+	if v != nil {
+		v.clusterRef = strings.TrimSpace(clusterRef)
+	}
+	return v
 }
 
 type jwksDocument struct {
@@ -122,6 +132,8 @@ func (v *JWKSVerifier) Verify(ctx context.Context, subjectToken string) (domain.
 	if err != nil {
 		return domain.WorkloadSubject{}, domain.ErrWorkloadTokenInvalid
 	}
+	subject.Issuer = v.issuer
+	subject.ClusterRef = v.clusterRef
 	return subject, nil
 }
 

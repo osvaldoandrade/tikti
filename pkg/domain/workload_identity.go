@@ -28,6 +28,8 @@ var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 // by a projected token. It contains no token material.
 type WorkloadSubject struct {
 	Subject        string
+	Issuer         string
+	ClusterRef     string
 	Namespace      string
 	ServiceAccount string
 }

@@ -14,14 +14,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/osvaldoandrade/tikti/internal/providers"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/services"
+	"github.com/osvaldoandrade/tikti/internal/storagests"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/internal/workloadidentity"
 	"github.com/osvaldoandrade/tikti/pkg/config"
+	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 // Application wires runtime configuration, the Gin engine and the user service.
@@ -104,6 +107,10 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		cfg.JwksKeyID,
 		time.Duration(cfg.WorkloadIdentity.AccessTokenTTLSeconds)*time.Second,
 	)
+	storageSTSController, err := newStorageSTSController(cfg, workloadService)
+	if err != nil {
+		return nil, err
+	}
 	var exactMembershipService services.ExactMembershipReadService
 	if cfg.ExactMembershipReadRoutesV1 {
 		exactTenants, tenantsOK := tenantRepo.(repository.ExactTenantRepository)
@@ -144,6 +151,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}
 
 	engine := newSafeEngine()
+	setupStorageSTSMappings(engine, cfg, storageSTSController)
 	setupExactMembershipReadMappings(engine, cfg, exactMembershipService)
 	setupMembershipV2WriteMappings(engine, cfg, membershipV2WriteService)
 
@@ -161,6 +169,60 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		WorkloadSvc:        workloadService,
 		WorkloadAccountSvc: workloadAccountService,
 	}, nil
+}
+
+type storageProjectedTokenVerifier struct {
+	service services.WorkloadIdentityService
+}
+
+func (v storageProjectedTokenVerifier) Verify(ctx context.Context, token string) (domain.WorkloadSubject, error) {
+	if v.service == nil {
+		return domain.WorkloadSubject{}, domain.ErrWorkloadIdentityUnavailable
+	}
+	return v.service.VerifyProjectedToken(ctx, token)
+}
+
+func newStorageSTSController(cfg *config.Config, workloadService services.WorkloadIdentityService) (*storagests.Controller, error) {
+	if cfg == nil || !cfg.StorageSTS.Enabled {
+		return nil, nil
+	}
+	if workloadService == nil || cfg.WorkloadIdentity.Audience != "tikti-workload-exchange" ||
+		(cfg.WorkloadIdentity.Issuer != "" && cfg.WorkloadIdentity.ClusterRef == "") {
+		return nil, fmt.Errorf("storage STS requires exact workload identity verification")
+	}
+	for _, provider := range cfg.WorkloadIdentity.Providers {
+		if strings.TrimSpace(provider.ClusterRef) == "" {
+			return nil, fmt.Errorf("storage STS requires a clusterRef for every workload issuer")
+		}
+	}
+	signer, err := storagests.NewSigner(storagests.SigningConfig{
+		Issuer: cfg.IssuerBaseURL, ServiceSubject: cfg.StorageSTS.ServiceSubject,
+		KeyID: cfg.JwksKeyID, PrivateKeyPEM: cfg.JwksPrivateKey,
+		ServiceAssertionTTL: time.Duration(cfg.StorageSTS.ServiceAssertionTTLSeconds) * time.Second,
+		CredentialTTL:       time.Duration(cfg.StorageSTS.CredentialTTLSeconds) * time.Second,
+		ReadOnlyPolicy:      cfg.StorageSTS.ReadOnlyPolicy, ReadWritePolicy: cfg.StorageSTS.ReadWritePolicy,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize storage STS signer: %w", err)
+	}
+	timeout := time.Duration(cfg.StorageSTS.DependencyTimeoutSeconds) * time.Second
+	authorizer, err := storagests.NewAuthorizerClient(cfg.StorageSTS.AuthorizerURL, &http.Client{Timeout: timeout}, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("initialize storage authorizer client")
+	}
+	minio, err := storagests.NewMinIOClient(cfg.StorageSTS.MinIOSTSEndpoint, &http.Client{Timeout: timeout}, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("initialize MinIO STS client")
+	}
+	metrics := storagests.NewMetrics(prometheus.DefaultRegisterer)
+	broker, err := storagests.NewService(
+		storageProjectedTokenVerifier{service: workloadService}, signer, authorizer, minio,
+		cfg.StorageSTS.MaximumConcurrent, metrics,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize storage STS broker: %w", err)
+	}
+	return storagests.NewController(cfg.StorageSTS.SyntheticAccountID, broker, metrics), nil
 }
 
 func validateMembershipV2WriteRuntimeConfig(cfg *config.Config) error {
@@ -206,14 +268,14 @@ func validateExactMembershipReadRuntimeConfig(cfg *config.Config) ([]byte, error
 
 func newWorkloadTokenVerifier(cfg config.WorkloadIdentityConfig) (services.WorkloadTokenVerifier, error) {
 	type provider struct {
-		issuer, jwksURL, bearerTokenFile, authentication string
+		clusterRef, issuer, jwksURL, bearerTokenFile, authentication string
 	}
 	providers := make([]provider, 0, len(cfg.Providers)+1)
 	if strings.TrimSpace(cfg.Issuer) != "" {
-		providers = append(providers, provider{cfg.Issuer, cfg.JWKSURL, cfg.JWKSBearerTokenFile, "none"})
+		providers = append(providers, provider{cfg.ClusterRef, cfg.Issuer, cfg.JWKSURL, cfg.JWKSBearerTokenFile, "none"})
 	}
 	for _, item := range cfg.Providers {
-		providers = append(providers, provider{item.Issuer, item.JWKSURL, item.JWKSBearerTokenFile, item.Authentication})
+		providers = append(providers, provider{item.ClusterRef, item.Issuer, item.JWKSURL, item.JWKSBearerTokenFile, item.Authentication})
 	}
 	if len(providers) == 0 {
 		return nil, nil
@@ -242,6 +304,7 @@ func newWorkloadTokenVerifier(cfg config.WorkloadIdentityConfig) (services.Workl
 		if verifierErr != nil {
 			return nil, fmt.Errorf("init workload identity verifier for issuer %q: %w", item.issuer, verifierErr)
 		}
+		verifier.WithClusterRef(item.clusterRef)
 		trusted[strings.TrimSpace(item.issuer)] = verifier
 	}
 	if len(trusted) == 1 {

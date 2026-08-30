@@ -4,6 +4,7 @@ import (
 	"github.com/osvaldoandrade/tikti/internal/controllers"
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/internal/services"
+	"github.com/osvaldoandrade/tikti/internal/storagests"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 
@@ -100,6 +101,18 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		samlAdmin.PUT("", samlAdminController.Put)
 		samlAdmin.DELETE("", samlAdminController.Delete)
 	}
+}
+
+func setupStorageSTSMappings(engine *gin.Engine, cfg *config.Config, controller *storagests.Controller) {
+	if engine == nil || cfg == nil || !cfg.StorageSTS.Enabled || controller == nil {
+		return
+	}
+	engine.POST("/v1/storage/sts", controller.Handle)
+	engine.POST("/v1/storage/sts/", controller.RejectAlias)
+	// Deny browser preflight before the global browser CORS middleware is
+	// installed. The credential response is intentionally non-browser-readable.
+	engine.OPTIONS("/v1/storage/sts", controller.RejectAlias)
+	engine.OPTIONS("/v1/storage/sts/", controller.RejectAlias)
 }
 
 func setupExactMembershipReadMappings(engine *gin.Engine, cfg *config.Config, service services.ExactMembershipReadService) {

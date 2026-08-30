@@ -31,14 +31,15 @@ const (
 func TestJWKSVerifierValidatesProjectedServiceAccountToken(t *testing.T) {
 	key := verifierTestKey(t)
 	server, calls := jwksTestServer(t, key, testWorkloadKid, 0)
-	verifier := newTestVerifier(t, server, time.Minute)
+	verifier := newTestVerifier(t, server, time.Minute).WithClusterRef("code-cloud")
 	token := signProjectedToken(t, key, testWorkloadKid, projectedClaims(time.Now()))
 
 	subject, err := verifier.Verify(context.Background(), token)
 	if err != nil {
 		t.Fatalf("Verify() error = %v", err)
 	}
-	if subject.Subject != testWorkloadSubject || subject.Namespace != "code-admin" || subject.ServiceAccount != "code-admin-controller-queue" {
+	if subject.Subject != testWorkloadSubject || subject.Namespace != "code-admin" || subject.ServiceAccount != "code-admin-controller-queue" ||
+		subject.Issuer != testWorkloadIssuer || subject.ClusterRef != "code-cloud" {
 		t.Fatalf("Verify() subject = %#v", subject)
 	}
 	if calls.Load() != 1 {

@@ -15,6 +15,7 @@ exactMembershipReadRoutesV1Tenants: []
 membershipV2WriteRoutesV1: false
 membershipV2WriteRoutesV1Tenants: []
 workloadIdentity:
+  clusterRef: ${WORKLOAD_IDENTITY_CLUSTER_REF}
   issuer: ${WORKLOAD_IDENTITY_ISSUER}
   audience: tikti-workload-exchange
   jwksUrl: ${WORKLOAD_IDENTITY_JWKS_URL}
@@ -24,6 +25,18 @@ workloadIdentity:
 workloadAccountBFF:
   enabled: false
   clients: []
+storageSTS:
+  enabled: false
+  syntheticAccountId: "000000000000"
+  authorizerUrl: ""
+  minioStsEndpoint: ""
+  serviceSubject: tikti:object-storage-sts
+  credentialTtlSeconds: 900
+  serviceAssertionTtlSeconds: 60
+  dependencyTimeoutSeconds: 3
+  maximumConcurrent: 8
+  readOnlyPolicy: code-admin-object-readonly-v1
+  readWritePolicy: code-admin-object-readwrite-v1
 
 # ── SAML (HLD §16) ──────────────────────────────────────────────
 # saml:
