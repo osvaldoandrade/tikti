@@ -24,6 +24,8 @@ type tenantDiscoveryAuthorization struct {
 	scopes            []string
 }
 
+const tenantFeatureAdministrationScope = "code-admin:features:write"
+
 func WithTenantScopedTokenClaimsV1(enabled bool, tenants []string, tenantRepo repository.TenantRepository) UserServiceOption {
 	return func(service *userService) {
 		service.tenantRepo = tenantRepo
@@ -287,7 +289,11 @@ func homeGlobalAuthority(user *domain.User, signedRole string, candidates []stri
 	fromHome := homeAuthority(user, signedRole, candidates)
 	result := make([]string, 0, len(fromHome))
 	for _, scope := range fromHome {
-		if scopepolicy.RequiresHomeAuthority(scope) {
+		// Feature writes are requested only by Code Admin's fixed, short-lived
+		// tenant-admin profile. Preserve the exact target-membership boundary,
+		// while allowing the signed built-in ADMIN and COMPANY_ADMIN identities
+		// to perform that elevation without delegating it to a custom tenant role.
+		if scopepolicy.RequiresHomeAuthority(scope) || scope == tenantFeatureAdministrationScope {
 			result = append(result, scope)
 		}
 	}

@@ -132,6 +132,50 @@ func TestTenantTargetDiscovery_RoleProfilesPreserveHomeGlobalScopes(t *testing.T
 	}
 }
 
+func TestTenantTargetDiscovery_BuiltInAdministratorsCanElevateFeatureWritesForMemberTenant(t *testing.T) {
+	featureScopes, valid := scopepolicy.CanonicalAudienceScopes(append(
+		append([]string(nil), managedAudienceScopes...),
+		"code-admin:features:read", "code-admin:features:write",
+	))
+	if !valid {
+		t.Fatal("feature scope fixture must be canonicalizable")
+	}
+
+	for _, profile := range []struct {
+		name      string
+		userRole  domain.UserRole
+		wantWrite bool
+	}{
+		{name: "admin", userRole: domain.RoleAdmin, wantWrite: true},
+		{name: "company admin", userRole: domain.RoleCompanyAdmin, wantWrite: true},
+		{name: "employee", userRole: domain.RoleCompanyEmployee, wantWrite: false},
+	} {
+		t.Run(profile.name, func(t *testing.T) {
+			service, idToken := newTenantTargetDiscoveryService(
+				t, "bereia-admin", []string{"code-admin:features:read"}, profile.userRole,
+			)
+			service.clientSvc = &mockClientService{getClientFn: func(_ context.Context, tenantID, clientID string) (*domain.Client, error) {
+				return &domain.Client{
+					Id: clientID, TenantId: tenantID, Type: domain.ClientTypeService,
+					AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+					DefaultScopes:     append([]string(nil), featureScopes...), Status: domain.ClientStatusActive,
+					ManagedBy: domain.CodeAdminAudienceClientManager,
+				}, nil
+			}}
+			request := tenantTargetRequest(idToken, "bereia")
+			request.ScopeCeilingV1 = append([]string(nil), featureScopes...)
+
+			response, err := service.TokenExchange(context.Background(), request)
+			if err != nil {
+				t.Fatalf("exchange: %v", err)
+			}
+			if got := slices.Contains(response.Scopes, "code-admin:features:write"); got != profile.wantWrite {
+				t.Fatalf("feature write=%t want=%t scopes=%v", got, profile.wantWrite, response.Scopes)
+			}
+		})
+	}
+}
+
 func TestTenantTargetDiscovery_CanReturnToSignedHomeTenant(t *testing.T) {
 	service, idToken := newTenantTargetDiscoveryService(
 		t, "bereia-read", []string{"code-admin:workloads:read"}, domain.RoleAdmin,
