@@ -49,6 +49,14 @@ if value and not marker then return {"shadow", value} end
 if marker and not value then return {"corrupt", ""} end
 if marker ~= value then return {"corrupt", ""} end
 return {"existing", value}`)
+	managedClientReconcileScript = redis.NewScript(`
+local value = redis.call("HGET", KEYS[1], ARGV[1])
+local marker = redis.call("HGET", KEYS[2], ARGV[1])
+if not value or not marker then return {"changed", value or ""} end
+if value ~= ARGV[2] or marker ~= ARGV[2] then return {"changed", value} end
+redis.call("HSET", KEYS[1], ARGV[1], ARGV[3])
+redis.call("HSET", KEYS[2], ARGV[1], ARGV[3])
+return {"updated", ARGV[3]}`)
 	managedClientGetScript = redis.NewScript(`
 local value = redis.call("HGET", KEYS[1], ARGV[1])
 local marker = redis.call("HGET", KEYS[2], ARGV[1])
@@ -91,7 +99,7 @@ func (r *clientRepo) Create(ctx context.Context, tenantID string, client *domain
 	}
 }
 
-// EnsureManagedAudience atomically creates or replays one exact managed client.
+// EnsureManagedAudience atomically creates, replays, or reconciles one owned managed client.
 func (r *clientRepo) EnsureManagedAudience(
 	ctx context.Context,
 	tenantID string,
@@ -104,32 +112,60 @@ func (r *clientRepo) EnsureManagedAudience(
 	if err != nil {
 		return nil, false, err
 	}
-	values, err := managedClientEnsureScript.Eval(ctx, r.client, []string{
-		clientsKey(tenantID), managedClientsKey(tenantID),
-	}, client.Id, payload).StringSlice()
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return nil, false, err
+	keys := []string{clientsKey(tenantID), managedClientsKey(tenantID)}
+	for range 4 {
+		values, ensureErr := managedClientEnsureScript.Eval(ctx, r.client, keys, client.Id, payload).StringSlice()
+		if errors.Is(ensureErr, context.Canceled) || errors.Is(ensureErr, context.DeadlineExceeded) {
+			return nil, false, ensureErr
+		}
+		if ensureErr != nil || len(values) != 2 {
+			return nil, false, errStoredManagedClientContract
+		}
+		if values[0] == "shadow" {
+			return nil, false, domain.ErrManagedClientConflict
+		}
+		if values[0] == "corrupt" || values[0] != "created" && values[0] != "existing" {
+			return nil, false, errStoredManagedClientContract
+		}
+		stored, ok := decodeManagedAudienceClient(tenantID, values[1])
+		if !ok {
+			return nil, false, errStoredManagedClientContract
+		}
+		storedPayload, marshalErr := json.Marshal(stored)
+		if marshalErr != nil || values[1] != string(storedPayload) {
+			return nil, false, errStoredManagedClientContract
+		}
+		if sameManagedAudienceClient(stored, client) {
+			if values[1] != string(payload) {
+				return nil, false, errStoredManagedClientContract
+			}
+			return stored, values[0] == "created", nil
+		}
+		if values[0] == "created" || !sameManagedAudienceOwner(stored, client) {
+			return nil, false, errStoredManagedClientContract
+		}
+		updated, updateErr := managedClientReconcileScript.Eval(
+			ctx, r.client, keys, client.Id, values[1], payload,
+		).StringSlice()
+		if errors.Is(updateErr, context.Canceled) || errors.Is(updateErr, context.DeadlineExceeded) {
+			return nil, false, updateErr
+		}
+		if updateErr != nil || len(updated) != 2 {
+			return nil, false, errStoredManagedClientContract
+		}
+		if updated[0] == "changed" {
+			continue
+		}
+		if updated[0] != "updated" || updated[1] != string(payload) {
+			return nil, false, errStoredManagedClientContract
+		}
+		reconciled, ok := decodeManagedAudienceClient(tenantID, updated[1])
+		if !ok || !sameManagedAudienceClient(reconciled, client) {
+			return nil, false, errStoredManagedClientContract
+		}
+		return reconciled, false, nil
 	}
-	if err != nil || len(values) != 2 {
-		return nil, false, errStoredManagedClientContract
-	}
-	if values[0] == "shadow" {
-		return nil, false, domain.ErrManagedClientConflict
-	}
-	if values[0] == "corrupt" || values[0] != "created" && values[0] != "existing" {
-		return nil, false, errStoredManagedClientContract
-	}
-	stored, ok := decodeManagedAudienceClient(tenantID, values[1])
-	if !ok {
-		return nil, false, errStoredManagedClientContract
-	}
-	if !sameManagedAudienceClient(stored, client) {
-		return nil, false, domain.ErrManagedClientConflict
-	}
-	if values[1] != string(payload) {
-		return nil, false, errStoredManagedClientContract
-	}
-	return stored, values[0] == "created", nil
+	return nil, false, domain.ErrManagedClientConflict
 }
 
 func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
@@ -239,8 +275,12 @@ func validManagedAudienceClient(tenantID string, client *domain.Client) bool {
 }
 
 func sameManagedAudienceClient(left, right *domain.Client) bool {
+	return sameManagedAudienceOwner(left, right) &&
+		slices.Equal(left.DefaultScopes, right.DefaultScopes)
+}
+
+func sameManagedAudienceOwner(left, right *domain.Client) bool {
 	return left != nil && right != nil && validManagedAudienceClient(left.TenantId, left) &&
 		validManagedAudienceClient(right.TenantId, right) && left.Id == right.Id &&
-		left.TenantId == right.TenantId && left.ManagedBy == right.ManagedBy &&
-		slices.Equal(left.DefaultScopes, right.DefaultScopes)
+		left.TenantId == right.TenantId && left.ManagedBy == right.ManagedBy
 }

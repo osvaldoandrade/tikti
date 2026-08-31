@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -194,7 +195,39 @@ func TestClientRepo_EnsureManagedAudienceConcurrentReplay(t *testing.T) {
 	}
 }
 
-func TestClientRepo_EnsureManagedAudienceConflictsWithoutAdoption(t *testing.T) {
+func TestClientRepo_EnsureManagedAudienceReconcilesOwnedDefinition(t *testing.T) {
+	rdb, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	initial := managedAudienceFixture("bereia", "code-admin:workloads:read")
+	if _, created, err := repo.EnsureManagedAudience(ctx, "bereia", initial); err != nil || !created {
+		t.Fatalf("initial ensure: created=%v err=%v", created, err)
+	}
+
+	desired := managedAudienceFixture(
+		"bereia",
+		"code-admin:features:read",
+		"code-admin:features:write",
+		"code-admin:workloads:read",
+	)
+	stored, created, err := repo.EnsureManagedAudience(ctx, "bereia", desired)
+	if err != nil || created {
+		t.Fatalf("reconcile: created=%v err=%v", created, err)
+	}
+	if !sameManagedAudienceClient(stored, desired) {
+		t.Fatalf("reconciled client=%+v, want %+v", stored, desired)
+	}
+	want, err := json.Marshal(desired)
+	if err != nil {
+		t.Fatalf("marshal desired client: %v", err)
+	}
+	for _, key := range []string{clientsKey("bereia"), managedClientsKey("bereia")} {
+		if got := rdb.HGet(ctx, key, domain.CodeAdminAudienceClientID).Val(); got != string(want) {
+			t.Fatalf("%s contains %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestClientRepo_EnsureManagedAudienceRejectsUnownedDefinition(t *testing.T) {
 	rdb, repo := newClientRepoForTest(t)
 	ctx := context.Background()
 	want := managedAudienceFixture("bereia", "code-admin:workloads:read")
@@ -205,11 +238,6 @@ func TestClientRepo_EnsureManagedAudienceConflictsWithoutAdoption(t *testing.T) 
 		"bereia", "code-admin:workloads:read",
 	)); err != nil || created {
 		t.Fatalf("replay: created=%v err=%v", created, err)
-	}
-	if _, _, err := repo.EnsureManagedAudience(ctx, "bereia", managedAudienceFixture(
-		"bereia", "code-admin:workloads:write",
-	)); !errors.Is(err, domain.ErrManagedClientConflict) {
-		t.Fatalf("expected immutable definition failure, got %v", err)
 	}
 	legacy := `{"clientId":"code-admin-api","tenantId":"storifly","type":"SERVICE","allowedGrantTypes":["token_exchange"],"defaultScopes":["code-admin:workloads:read"],"status":"ACTIVE"}`
 	if err := rdb.HSet(ctx, clientsKey("storifly"), domain.CodeAdminAudienceClientID, legacy).Err(); err != nil {
@@ -222,6 +250,20 @@ func TestClientRepo_EnsureManagedAudienceConflictsWithoutAdoption(t *testing.T) 
 	}
 	if rdb.HExists(ctx, managedClientsKey("storifly"), domain.CodeAdminAudienceClientID).Val() {
 		t.Fatal("legacy client was adopted")
+	}
+
+	corrupt := `{"clientId":"code-admin-api","tenantId":"bereia","type":"SERVICE","allowedGrantTypes":["token_exchange"],"defaultScopes":["not canonical"],"status":"ACTIVE","managedBy":"tikti:code-admin-audience:v1"}`
+	if err := rdb.HSet(ctx, clientsKey("bereia"), domain.CodeAdminAudienceClientID, corrupt).Err(); err != nil {
+		t.Fatalf("seed corrupt client: %v", err)
+	}
+	if err := rdb.HSet(ctx, managedClientsKey("bereia"), domain.CodeAdminAudienceClientID, corrupt).Err(); err != nil {
+		t.Fatalf("seed corrupt marker: %v", err)
+	}
+	if _, _, err := repo.EnsureManagedAudience(ctx, "bereia", want); !errors.Is(err, errStoredManagedClientContract) {
+		t.Fatalf("expected corrupt managed definition failure, got %v", err)
+	}
+	if got := rdb.HGet(ctx, clientsKey("bereia"), domain.CodeAdminAudienceClientID).Val(); got != corrupt {
+		t.Fatal("corrupt managed client was overwritten")
 	}
 }
 
