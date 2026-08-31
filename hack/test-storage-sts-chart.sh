@@ -25,6 +25,7 @@ must_fail \
   --set config.issuerBaseUrl=https://tikti.example.com \
   --set config.storageSTS.authorizerUrl=https://api.example.com/internal/v1/object-storage:authorize \
   --set config.storageSTS.minioStsEndpoint=http://minio.code-admin.svc:9000 \
+  --set config.storageSTS.oidcJwksUrl=https://api.example.com/internal/v1/storage/jwks.json \
   --set config.workloadIdentity.issuer=https://cluster.example.com \
   --set config.workloadIdentity.clusterRef=code-cloud \
   --set config.workloadIdentity.jwksUrl=https://cluster.example.com/jwks \
@@ -35,6 +36,7 @@ enabled=$(helm template storage-sts "$chart" \
   --set config.issuerBaseUrl=https://tikti.example.com \
   --set config.storageSTS.authorizerUrl=https://api.example.com/internal/v1/object-storage:authorize \
   --set config.storageSTS.minioStsEndpoint=http://minio.code-admin.svc:9000 \
+  --set config.storageSTS.oidcJwksUrl=https://api.example.com/internal/v1/storage/jwks.json \
   --set config.workloadIdentity.issuer=https://cluster.example.com \
   --set config.workloadIdentity.clusterRef=code-cloud \
   --set config.workloadIdentity.jwksUrl=https://cluster.example.com/jwks)
@@ -42,6 +44,7 @@ enabled_config=$(yq ea '[select(.kind == "ConfigMap") | .data."tikti.yaml"] | .[
 for contract in \
   'enabled: true' \
   'syntheticAccountId: "000000000000"' \
+  'oidcJwksUrl: "https://api.example.com/internal/v1/storage/jwks.json"' \
   'serviceSubject: "tikti:object-storage-sts"' \
   'credentialTtlSeconds: 900' \
   'maximumConcurrent: 8' \
