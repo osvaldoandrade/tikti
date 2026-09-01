@@ -85,6 +85,40 @@ func (s *Signer) SignMinIOAssertion(now time.Time, approval Approval) (string, e
 	})
 }
 
+// SignAdminMinIOAssertion creates the short-lived assertion used only inside
+// Tikti to obtain credentials for one reviewed administrative operation. An
+// object key and the Console access token are intentionally absent.
+func (s *Signer) SignAdminMinIOAssertion(now time.Time, approval AdminApproval) (string, error) {
+	if s == nil || s.key == nil || approval.ActorSubject == "" || approval.ActorSubject != strings.TrimSpace(approval.ActorSubject) ||
+		!validDNSLabel(approval.TenantID) || !validAdminAuthorizationDecision(approval.Decision, approval.Operation) {
+		return "", fmt.Errorf("invalid administrative storage approval")
+	}
+	policy := s.readOnlyPolicy
+	if approval.Operation == AdminOperationUpload {
+		if approval.Decision.Policy != ReadWriteAccess {
+			return "", fmt.Errorf("invalid administrative storage policy")
+		}
+		policy = s.readWritePolicy
+	} else if (approval.Operation != AdminOperationList && approval.Operation != AdminOperationDownload) ||
+		approval.Decision.Policy != ReadOnlyAccess {
+		return "", fmt.Errorf("invalid administrative storage policy")
+	}
+	now = now.UTC().Truncate(time.Second)
+	return s.sign(jwt.MapClaims{
+		"iss": s.issuer, "aud": MinIOAudience, "client_id": MinIOAudience,
+		"sub": approval.ActorSubject, "tid": approval.TenantID,
+		"administrative_operation": string(approval.Operation),
+		"bucket_uid":               approval.Decision.Bucket.UID,
+		"bucket_generation":        approval.Decision.Bucket.ObservedGeneration,
+		"preferred_username":       approval.Decision.Bucket.ProviderBucketName,
+		"policy":                   policy,
+		"jti":                      uuid.NewString(),
+		"iat":                      now.Unix(),
+		"nbf":                      now.Add(-5 * time.Second).Unix(),
+		"exp":                      now.Add(s.credentialTTL).Unix(),
+	})
+}
+
 func (s *Signer) sign(claims jwt.MapClaims) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = s.keyID

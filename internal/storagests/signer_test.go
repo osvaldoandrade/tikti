@@ -67,6 +67,39 @@ func TestSignerSeparatesServiceAndMinIOAssertions(t *testing.T) {
 	}
 }
 
+func TestSignerCreatesOperationBoundAdministrativeMinIOAssertion(t *testing.T) {
+	key, privatePEM := storageTestKey(t)
+	signer, err := NewSigner(SigningConfig{
+		Issuer: "https://tikti.example.com", ServiceSubject: "tikti:object-storage-sts", KeyID: "tikti-key-1",
+		PrivateKeyPEM: privatePEM, ServiceAssertionTTL: time.Minute, CredentialTTL: 15 * time.Minute,
+		ReadOnlyPolicy: "code-admin-object-readonly-v1", ReadWritePolicy: "code-admin-object-readwrite-v1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	approval := AdminApproval{
+		ActorSubject: "user-1", TenantID: "payments", Operation: AdminOperationUpload,
+		Decision: adminAllowDecision(ReadWriteAccess),
+	}
+	tokenValue, err := signer.SignAdminMinIOAssertion(time.Unix(1_800_000_000, 0).UTC(), approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims := parseStorageTestToken(t, key, tokenValue)
+	if claims["aud"] != MinIOAudience || claims["sub"] != "user-1" || claims["tid"] != "payments" ||
+		claims["administrative_operation"] != string(AdminOperationUpload) ||
+		claims["bucket_uid"] != "bucket-uid" || claims["preferred_username"] != "cf-payments-invoices-47e89ff7e282" ||
+		claims["policy"] != "code-admin-object-readwrite-v1" ||
+		int64(claims["exp"].(float64)-claims["iat"].(float64)) != 900 {
+		t.Fatalf("administrative MinIO claims = %#v", claims)
+	}
+	for _, forbidden := range []string{"scope", "accessToken", "accessTokenSha256", "objectKey", "url"} {
+		if _, found := claims[forbidden]; found {
+			t.Fatalf("administrative assertion contains %q: %#v", forbidden, claims)
+		}
+	}
+}
+
 func storageTestKey(t *testing.T) (*rsa.PrivateKey, string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)

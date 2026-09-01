@@ -138,6 +138,22 @@ func setupStorageOIDCMappings(engine *gin.Engine, cfg *config.Config, controller
 	}
 }
 
+func setupObjectStorageBrowserMappings(engine *gin.Engine, cfg *config.Config, controller *storagests.AdminController) {
+	if engine == nil || cfg == nil || !cfg.ObjectStorageBrowser.Enabled || controller == nil {
+		return
+	}
+	base := "/v1/admin/tenants/:tenantId/storage/buckets/:bucketId"
+	routes := engine.Group(base, utils.RequiredApiKeyHeader(cfg.ApiKey))
+	routes.GET("/objects", controller.List)
+	routes.POST("/objects/upload-url", controller.UploadURL)
+	routes.POST("/objects/download-url", controller.DownloadURL)
+	for _, path := range []string{"/objects", "/objects/upload-url", "/objects/download-url"} {
+		routes.OPTIONS(path, controller.Reject)
+		routes.GET(path+"/", controller.Reject)
+		routes.POST(path+"/", controller.Reject)
+	}
+}
+
 func setupExactMembershipReadMappings(engine *gin.Engine, cfg *config.Config, service services.ExactMembershipReadService) {
 	if engine == nil || cfg == nil || !cfg.ExactMembershipReadRoutesV1 || service == nil {
 		return

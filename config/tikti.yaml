@@ -38,6 +38,11 @@ storageSTS:
   maximumConcurrent: 8
   readOnlyPolicy: code-admin-object-readonly-v1
   readWritePolicy: code-admin-object-readwrite-v1
+objectStorageBrowser:
+  enabled: false
+  adminAuthorizerUrl: ""
+  maximumPresignTtlSeconds: 60
+  cohortTenants: []
 
 # ── SAML (HLD §16) ──────────────────────────────────────────────
 # saml:

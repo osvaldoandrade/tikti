@@ -17,6 +17,17 @@
 {{- if or (eq .clusterRef "") (eq .issuer "") (eq .jwksUrl "") }}{{ fail "storageSTS workload providers require clusterRef, issuer, and jwksUrl" }}{{- end }}
 {{- end }}
 {{- end }}
+{{- if .Values.config.objectStorageBrowser.enabled }}
+{{- if not .Values.config.storageSTS.enabled }}{{ fail "config.objectStorageBrowser.enabled requires config.storageSTS.enabled" }}{{- end }}
+{{- if not (regexMatch `^https?://[^/?#]+/internal/v1/object-storage/authorize-admin$` .Values.config.objectStorageBrowser.adminAuthorizerUrl) }}{{ fail "config.objectStorageBrowser.adminAuthorizerUrl must be the exact internal endpoint" }}{{- end }}
+{{- if ne (int .Values.config.objectStorageBrowser.maximumPresignTtlSeconds) 60 }}{{ fail "config.objectStorageBrowser.maximumPresignTtlSeconds must equal 60" }}{{- end }}
+{{- if or (eq (len .Values.config.objectStorageBrowser.cohortTenants) 0) (gt (len .Values.config.objectStorageBrowser.cohortTenants) 100) }}{{ fail "config.objectStorageBrowser.cohortTenants must contain 1 to 100 tenants" }}{{- end }}
+{{- if ne (len (uniq .Values.config.objectStorageBrowser.cohortTenants)) (len .Values.config.objectStorageBrowser.cohortTenants) }}{{ fail "config.objectStorageBrowser.cohortTenants must contain unique tenants" }}{{- end }}
+{{- range .Values.config.objectStorageBrowser.cohortTenants }}
+{{- if or (gt (len .) 63) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` .)) }}{{ fail "config.objectStorageBrowser.cohortTenants must contain canonical tenant IDs" }}{{- end }}
+{{- end }}
+{{- if ne .Values.config.defaultAudience "code-admin-api" }}{{ fail "config.objectStorageBrowser requires defaultAudience code-admin-api" }}{{- end }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -71,6 +82,11 @@ data:
       maximumConcurrent: {{ .Values.config.storageSTS.maximumConcurrent }}
       readOnlyPolicy: {{ .Values.config.storageSTS.readOnlyPolicy | quote }}
       readWritePolicy: {{ .Values.config.storageSTS.readWritePolicy | quote }}
+    objectStorageBrowser:
+      enabled: {{ .Values.config.objectStorageBrowser.enabled }}
+      adminAuthorizerUrl: {{ .Values.config.objectStorageBrowser.adminAuthorizerUrl | quote }}
+      maximumPresignTtlSeconds: {{ .Values.config.objectStorageBrowser.maximumPresignTtlSeconds }}
+      cohortTenants: {{ .Values.config.objectStorageBrowser.cohortTenants | toJson }}
     saml:
       enabled: {{ .Values.saml.enabled }}
       sp:

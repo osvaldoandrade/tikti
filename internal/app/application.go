@@ -111,6 +111,10 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	storageAdminController, err := newObjectStorageAdminController(cfg, userService)
+	if err != nil {
+		return nil, err
+	}
 	var storageOIDCController *storagests.OIDCController
 	if cfg.StorageSTS.Enabled {
 		storageOIDCController = storagests.NewOIDCController(
@@ -161,6 +165,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	engine := newSafeEngine()
 	setupStorageOIDCMappings(engine, cfg, storageOIDCController)
 	setupStorageSTSMappings(engine, cfg, storageSTSController)
+	setupObjectStorageBrowserMappings(engine, cfg, storageAdminController)
 	setupExactMembershipReadMappings(engine, cfg, exactMembershipService)
 	setupMembershipV2WriteMappings(engine, cfg, membershipV2WriteService)
 
@@ -232,6 +237,51 @@ func newStorageSTSController(cfg *config.Config, workloadService services.Worklo
 		return nil, fmt.Errorf("initialize storage STS broker: %w", err)
 	}
 	return storagests.NewController(cfg.StorageSTS.SyntheticAccountID, broker, metrics), nil
+}
+
+func newObjectStorageAdminController(cfg *config.Config, userService services.UserService) (*storagests.AdminController, error) {
+	if cfg == nil || !cfg.ObjectStorageBrowser.Enabled {
+		return nil, nil
+	}
+	if !cfg.StorageSTS.Enabled || userService == nil {
+		return nil, fmt.Errorf("object storage browser requires storage STS and access-token validation")
+	}
+	signer, err := storagests.NewSigner(storagests.SigningConfig{
+		Issuer: cfg.IssuerBaseURL, ServiceSubject: cfg.StorageSTS.ServiceSubject,
+		KeyID: cfg.JwksKeyID, PrivateKeyPEM: cfg.JwksPrivateKey,
+		ServiceAssertionTTL: time.Duration(cfg.StorageSTS.ServiceAssertionTTLSeconds) * time.Second,
+		CredentialTTL:       time.Duration(cfg.StorageSTS.CredentialTTLSeconds) * time.Second,
+		ReadOnlyPolicy:      cfg.StorageSTS.ReadOnlyPolicy, ReadWritePolicy: cfg.StorageSTS.ReadWritePolicy,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("initialize administrative storage signer: %w", err)
+	}
+	timeout := time.Duration(cfg.StorageSTS.DependencyTimeoutSeconds) * time.Second
+	authorizer, err := storagests.NewAdminAuthorizerClient(
+		cfg.ObjectStorageBrowser.AdminAuthorizerURL,
+		&http.Client{Timeout: timeout},
+		timeout,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize administrative storage authorizer")
+	}
+	minio, err := storagests.NewMinIOClient(
+		cfg.StorageSTS.MinIOSTSEndpoint,
+		&http.Client{Timeout: timeout},
+		timeout,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize administrative MinIO client")
+	}
+	broker, err := storagests.NewAdminService(
+		userService, signer, authorizer, minio, minio,
+		cfg.IssuerBaseURL, cfg.DefaultAudience, cfg.ObjectStorageBrowser.CohortTenants,
+		cfg.StorageSTS.MaximumConcurrent,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("initialize administrative object storage broker: %w", err)
+	}
+	return storagests.NewAdminController(broker), nil
 }
 
 func validateMembershipV2WriteRuntimeConfig(cfg *config.Config) error {

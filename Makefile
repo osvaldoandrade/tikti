@@ -2,13 +2,17 @@ IMAGE_NAME ?= tikti
 IMAGE_TAG ?= dev
 IMAGE_URI ?= $(IMAGE_NAME):$(IMAGE_TAG)
 
-.PHONY: build docker-build docker-push lint test helm-test
+.PHONY: build docker-build docker-push lint test helm-test fuzz-object-storage
 
 test:
 	go test ./...
 
 helm-test:
 	bash hack/test-storage-sts-chart.sh
+
+fuzz-object-storage:
+	go test ./internal/storagests -run '^$$' -fuzz '^FuzzAdministrativeListXMLShapeNeverPanics$$' -fuzztime=10s
+	go test ./internal/storagests -run '^$$' -fuzz '^FuzzAdministrativeSigV4PresignRemainsKeyBound$$' -fuzztime=10s
 
 build:
 	go build -o bin/tikti ./cmd/tikti

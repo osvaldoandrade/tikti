@@ -17,32 +17,33 @@ import (
 
 // Config captures runtime parameters loaded from YAML or the environment.
 type Config struct {
-	Port                               int                      `yaml:"port"`
-	RedisAddr                          string                   `yaml:"redisAddr"`
-	RedisHost                          string                   `yaml:"redisHost"`
-	RedisPort                          int                      `yaml:"redisPort"`
-	RedisDB                            int                      `yaml:"redisDb"`
-	RedisPassword                      string                   `yaml:"redisPassword"`
-	RedisURL                           string                   `yaml:"redisUrl"`
-	JwtSecret                          string                   `yaml:"jwtSecret"`
-	ApiKey                             string                   `yaml:"apiKey"`
-	IssuerBaseURL                      string                   `yaml:"issuerBaseUrl"`
-	DefaultAudience                    string                   `yaml:"defaultAudience"`
-	JwksPrivateKey                     string                   `yaml:"jwksPrivateKey"`
-	JwksKeyID                          string                   `yaml:"jwksKeyId"`
-	WorkloadIdentity                   WorkloadIdentityConfig   `yaml:"workloadIdentity"`
-	WorkloadAccountBFF                 WorkloadAccountBFFConfig `yaml:"workloadAccountBFF"`
-	StorageSTS                         StorageSTSConfig         `yaml:"storageSTS"`
-	SAML                               SAMLConfig               `yaml:"saml"`
-	HTTP                               HTTPConfig               `yaml:"http"`
-	ForwardAuth                        ForwardAuthConfig        `yaml:"forwardAuth"`
-	TenantScopedTokenClaimsV1          bool                     `yaml:"tenantScopedTokenClaimsV1"`
-	TenantScopedTokenClaimsV1Tenants   []string                 `yaml:"tenantScopedTokenClaimsV1Tenants"`
-	ExactMembershipReadRoutesV1        bool                     `yaml:"exactMembershipReadRoutesV1"`
-	ExactMembershipReadRoutesV1Tenants []string                 `yaml:"exactMembershipReadRoutesV1Tenants"`
-	ExactMembershipPageTokenSecret     string                   `yaml:"-"`
-	MembershipV2WriteRoutesV1          bool                     `yaml:"membershipV2WriteRoutesV1"`
-	MembershipV2WriteRoutesV1Tenants   []string                 `yaml:"membershipV2WriteRoutesV1Tenants"`
+	Port                               int                        `yaml:"port"`
+	RedisAddr                          string                     `yaml:"redisAddr"`
+	RedisHost                          string                     `yaml:"redisHost"`
+	RedisPort                          int                        `yaml:"redisPort"`
+	RedisDB                            int                        `yaml:"redisDb"`
+	RedisPassword                      string                     `yaml:"redisPassword"`
+	RedisURL                           string                     `yaml:"redisUrl"`
+	JwtSecret                          string                     `yaml:"jwtSecret"`
+	ApiKey                             string                     `yaml:"apiKey"`
+	IssuerBaseURL                      string                     `yaml:"issuerBaseUrl"`
+	DefaultAudience                    string                     `yaml:"defaultAudience"`
+	JwksPrivateKey                     string                     `yaml:"jwksPrivateKey"`
+	JwksKeyID                          string                     `yaml:"jwksKeyId"`
+	WorkloadIdentity                   WorkloadIdentityConfig     `yaml:"workloadIdentity"`
+	WorkloadAccountBFF                 WorkloadAccountBFFConfig   `yaml:"workloadAccountBFF"`
+	StorageSTS                         StorageSTSConfig           `yaml:"storageSTS"`
+	ObjectStorageBrowser               ObjectStorageBrowserConfig `yaml:"objectStorageBrowser"`
+	SAML                               SAMLConfig                 `yaml:"saml"`
+	HTTP                               HTTPConfig                 `yaml:"http"`
+	ForwardAuth                        ForwardAuthConfig          `yaml:"forwardAuth"`
+	TenantScopedTokenClaimsV1          bool                       `yaml:"tenantScopedTokenClaimsV1"`
+	TenantScopedTokenClaimsV1Tenants   []string                   `yaml:"tenantScopedTokenClaimsV1Tenants"`
+	ExactMembershipReadRoutesV1        bool                       `yaml:"exactMembershipReadRoutesV1"`
+	ExactMembershipReadRoutesV1Tenants []string                   `yaml:"exactMembershipReadRoutesV1Tenants"`
+	ExactMembershipPageTokenSecret     string                     `yaml:"-"`
+	MembershipV2WriteRoutesV1          bool                       `yaml:"membershipV2WriteRoutesV1"`
+	MembershipV2WriteRoutesV1Tenants   []string                   `yaml:"membershipV2WriteRoutesV1Tenants"`
 }
 
 // HTTPConfig defines the public server boundary.
@@ -90,6 +91,15 @@ type StorageSTSConfig struct {
 	MaximumConcurrent          int    `yaml:"maximumConcurrent"`
 	ReadOnlyPolicy             string `yaml:"readOnlyPolicy"`
 	ReadWritePolicy            string `yaml:"readWritePolicy"`
+}
+
+// ObjectStorageBrowserConfig gates the administrative list/upload/download
+// surface independently from the workload STS endpoint.
+type ObjectStorageBrowserConfig struct {
+	Enabled                  bool     `yaml:"enabled"`
+	AdminAuthorizerURL       string   `yaml:"adminAuthorizerUrl"`
+	MaximumPresignTTLSeconds int      `yaml:"maximumPresignTtlSeconds"`
+	CohortTenants            []string `yaml:"cohortTenants"`
 }
 
 // WorkloadIdentityProviderConfig declares one trusted Kubernetes token issuer.
@@ -255,7 +265,7 @@ func LoadConfig(filePath string) (*Config, error) {
 	})
 	data = []byte(expanded)
 
-	c := Config{StorageSTS: defaultStorageSTSConfig()}
+	c := Config{StorageSTS: defaultStorageSTSConfig(), ObjectStorageBrowser: defaultObjectStorageBrowserConfig()}
 	if err := yaml.Unmarshal(data, &c); err != nil {
 		return nil, err
 	}
@@ -515,6 +525,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	if err := validateStorageSTS(&c); err != nil {
 		return nil, err
 	}
+	if err := validateObjectStorageBrowser(&c); err != nil {
+		return nil, err
+	}
 	if err := validateWorkloadAccountBFF(&c); err != nil {
 		return nil, err
 	}
@@ -597,6 +610,39 @@ func defaultStorageSTSConfig() StorageSTSConfig {
 		DependencyTimeoutSeconds: 3, MaximumConcurrent: 8,
 		ReadOnlyPolicy: "code-admin-object-readonly-v1", ReadWritePolicy: "code-admin-object-readwrite-v1",
 	}
+}
+
+func defaultObjectStorageBrowserConfig() ObjectStorageBrowserConfig {
+	return ObjectStorageBrowserConfig{MaximumPresignTTLSeconds: 60}
+}
+
+func validateObjectStorageBrowser(c *Config) error {
+	browser := &c.ObjectStorageBrowser
+	browser.AdminAuthorizerURL = strings.TrimSpace(browser.AdminAuthorizerURL)
+	tenants, err := canonicalNamedTenantAllowlist("objectStorageBrowser.cohortTenants", browser.CohortTenants)
+	if err != nil {
+		return err
+	}
+	browser.CohortTenants = tenants
+	if !browser.Enabled {
+		return nil
+	}
+	if !c.StorageSTS.Enabled {
+		return fmt.Errorf("objectStorageBrowser.enabled requires storageSTS.enabled")
+	}
+	if !validStorageDependencyURL(browser.AdminAuthorizerURL, "/internal/v1/object-storage/authorize-admin") {
+		return fmt.Errorf("objectStorageBrowser.adminAuthorizerUrl must be the exact bounded internal authorizer endpoint")
+	}
+	if browser.MaximumPresignTTLSeconds != 60 {
+		return fmt.Errorf("objectStorageBrowser.maximumPresignTtlSeconds must equal 60")
+	}
+	if len(browser.CohortTenants) == 0 {
+		return fmt.Errorf("objectStorageBrowser.cohortTenants must not be empty when enabled")
+	}
+	if strings.TrimSpace(c.DefaultAudience) != "code-admin-api" {
+		return fmt.Errorf("objectStorageBrowser requires defaultAudience code-admin-api")
+	}
+	return nil
 }
 
 func validClusterRef(value string) bool {
