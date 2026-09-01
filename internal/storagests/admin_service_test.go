@@ -233,6 +233,31 @@ func TestAdminServiceFailsClosedOnTenantScopeKeyQuotaAndDecisionMismatch(t *test
 	}
 }
 
+func TestAdminServiceHidesCrossTenantRequestsInsideEnabledCohort(t *testing.T) {
+	t.Parallel()
+	authorizer := &adminTestAuthorizer{result: adminAllowDecision(ReadWriteAccess)}
+	issuer := &adminCredentialIssuer{}
+	operator := &adminObjectOperator{}
+	service, err := NewAdminServiceWithDelete(
+		adminTokenVerifier{claims: jwt.MapClaims{
+			"sub": "user-1", "tid": "payments", "scope": "code-admin:storage:write",
+		}},
+		adminTestSigner{}, authorizer, issuer, operator,
+		"https://tikti.example.com", "code-admin-api",
+		[]string{"payments", "identity"}, []string{"payments", "identity"}, 4,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, publicErr := service.CreateUploadURL(context.Background(), AdminUploadRequest{
+		TenantID: "identity", BucketID: "invoices", Key: "a.txt", Size: 1, ContentType: "text/plain",
+	}, "opaque-access-token-value", "request-cross-tenant")
+	if publicErr == nil || publicErr.HTTPStatus != http.StatusNotFound || authorizer.request.TenantID != "" ||
+		issuer.assertion != "" || operator.key != "" {
+		t.Fatalf("cross-tenant error=%#v authorizer=%#v issuer=%#v operator=%#v", publicErr, authorizer, issuer, operator)
+	}
+}
+
 func toJSON(t *testing.T, value any) string {
 	t.Helper()
 	raw, err := json.Marshal(value)

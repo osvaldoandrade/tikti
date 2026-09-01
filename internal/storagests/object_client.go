@@ -159,7 +159,8 @@ func (c *MinIOClient) ListObjects(
 
 // DeleteObject performs ordinary S3 DeleteObject for the current view only.
 // The strong If-Match condition prevents deleting a replacement object and a
-// single HEAD resolves an ambiguous replay without addressing any version ID.
+// one object HEAD plus a bucket-existence probe resolves an ambiguous replay
+// without addressing any version ID. Every unclassified 404 fails closed.
 func (c *MinIOClient) DeleteObject(
 	ctx context.Context,
 	bucket, key, etag, region string,
@@ -179,7 +180,7 @@ func (c *MinIOClient) DeleteObject(
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxMinIOObjectResponseBytes))
 	_ = response.Body.Close()
 	switch status {
-	case http.StatusNoContent, http.StatusNotFound:
+	case http.StatusNoContent:
 		return nil
 	case http.StatusPreconditionFailed:
 		return c.resolveConditionalDelete(requestCtx, bucket, key, etag, region, credentials)
@@ -197,13 +198,18 @@ func (c *MinIOClient) resolveConditionalDelete(
 	if err != nil {
 		return err
 	}
-	defer func() { _ = response.Body.Close() }()
+	status := response.StatusCode
+	errorCode := strings.TrimSpace(response.Header.Get("X-Minio-Error-Code"))
+	currentETag := strings.TrimSpace(response.Header.Get("ETag"))
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxMinIOObjectResponseBytes))
-	switch response.StatusCode {
+	_ = response.Body.Close()
+	switch status {
 	case http.StatusNotFound:
-		return nil
+		if errorCode != "NoSuchKey" {
+			return ErrDependencyUnavailable
+		}
+		return c.requireBucketExists(ctx, bucket, region, credentials)
 	case http.StatusOK:
-		currentETag := strings.TrimSpace(response.Header.Get("ETag"))
 		if validAdminStrongETag(currentETag) && currentETag != listedETag {
 			return ErrAdminObjectChanged
 		}
@@ -211,7 +217,32 @@ func (c *MinIOClient) resolveConditionalDelete(
 	return ErrDependencyUnavailable
 }
 
+func (c *MinIOClient) requireBucketExists(
+	ctx context.Context,
+	bucket, region string,
+	credentials Credentials,
+) error {
+	response, err := c.signedS3Request(ctx, http.MethodHead, bucket, "", "", region, credentials)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxMinIOObjectResponseBytes))
+	if response.StatusCode != http.StatusOK {
+		return ErrDependencyUnavailable
+	}
+	return nil
+}
+
 func (c *MinIOClient) signedObjectRequest(
+	ctx context.Context,
+	method, bucket, key, etag, region string,
+	credentials Credentials,
+) (*http.Response, error) {
+	return c.signedS3Request(ctx, method, bucket, key, etag, region, credentials)
+}
+
+func (c *MinIOClient) signedS3Request(
 	ctx context.Context,
 	method, bucket, key, etag, region string,
 	credentials Credentials,
@@ -223,7 +254,10 @@ func (c *MinIOClient) signedObjectRequest(
 	now := c.now().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	payloadHash := awsSHA256Hex(nil)
-	canonicalURI := "/" + awsURIEncode(bucket, true) + "/" + awsURIEncode(key, false)
+	canonicalURI := "/" + awsURIEncode(bucket, true)
+	if key != "" {
+		canonicalURI += "/" + awsURIEncode(key, false)
+	}
 	canonicalHeaders := "host:" + strings.ToLower(base.Host) + "\n"
 	signedHeaders := "host"
 	if etag != "" {

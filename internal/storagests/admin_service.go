@@ -223,7 +223,10 @@ func (s *AdminService) authorize(
 	actor, _ := claims["sub"].(string)
 	claimTenant, _ := claims["tid"].(string)
 	scopeText, _ := claims["scope"].(string)
-	if actor == "" || len(actor) > 253 || actor != strings.TrimSpace(actor) || claimTenant != tenantID ||
+	if claimTenant != tenantID {
+		return AdminApproval{}, Credentials{}, adminPublicError(http.StatusNotFound, CodeAccessDenied, "not_found", "The bucket was not found.")
+	}
+	if actor == "" || len(actor) > 253 || actor != strings.TrimSpace(actor) ||
 		!slices.Contains(strings.Fields(scopeText), requiredScope) {
 		return AdminApproval{}, Credentials{}, adminPublicError(http.StatusForbidden, CodeAccessDenied, "access_denied", "Access is denied.")
 	}

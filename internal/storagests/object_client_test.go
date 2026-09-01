@@ -9,7 +9,14 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
+
+type administrativeRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f administrativeRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestMinIOClientListsObjectsWithSessionSigV4AndBoundedXML(t *testing.T) {
 	t.Parallel()
@@ -71,13 +78,19 @@ func TestMinIOClientConditionallyDeletesCurrentObjectWithSignedETag(t *testing.T
 func TestMinIOClientResolvesConditionalDeleteReplayWithoutDeletingAVersion(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		name       string
-		headStatus int
-		headETag   string
-		want       error
+		name          string
+		headStatus    int
+		headETag      string
+		headErrorCode string
+		bucketStatus  int
+		want          error
+		wantCalls     int
 	}{
-		{name: "already absent", headStatus: http.StatusNotFound},
-		{name: "changed", headStatus: http.StatusOK, headETag: `"new-etag"`, want: ErrAdminObjectChanged},
+		{name: "already absent", headStatus: http.StatusNotFound, headErrorCode: "NoSuchKey", bucketStatus: http.StatusOK, wantCalls: 3},
+		{name: "bucket absent is ambiguous", headStatus: http.StatusNotFound, headErrorCode: "NoSuchKey", bucketStatus: http.StatusNotFound, want: ErrDependencyUnavailable, wantCalls: 3},
+		{name: "provider says bucket absent", headStatus: http.StatusNotFound, headErrorCode: "NoSuchBucket", want: ErrDependencyUnavailable, wantCalls: 2},
+		{name: "unclassified not found is ambiguous", headStatus: http.StatusNotFound, want: ErrDependencyUnavailable, wantCalls: 2},
+		{name: "changed", headStatus: http.StatusOK, headETag: `"new-etag"`, want: ErrAdminObjectChanged, wantCalls: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
@@ -93,8 +106,18 @@ func TestMinIOClientResolvesConditionalDeleteReplayWithoutDeletingAVersion(t *te
 				if r.Method != http.MethodHead || r.Header.Get("If-Match") != "" {
 					t.Fatalf("resolution request=%s headers=%v", r.Method, r.Header)
 				}
+				if calls == 3 {
+					if r.URL.Path != "/cf-payments-invoices-47e89ff7e282" {
+						t.Fatalf("bucket probe path=%s", r.URL.Path)
+					}
+					w.WriteHeader(test.bucketStatus)
+					return
+				}
 				if test.headETag != "" {
 					w.Header().Set("ETag", test.headETag)
+				}
+				if test.headErrorCode != "" {
+					w.Header().Set("X-Minio-Error-Code", test.headErrorCode)
 				}
 				w.WriteHeader(test.headStatus)
 			}))
@@ -108,10 +131,68 @@ func TestMinIOClientResolvesConditionalDeleteReplayWithoutDeletingAVersion(t *te
 				context.Background(), "cf-payments-invoices-47e89ff7e282", "reports/a.txt", `"etag"`,
 				"us-central1", adminTestCredentialsAt(client.now()),
 			)
-			if !errors.Is(err, test.want) || calls != 2 {
-				t.Fatalf("error=%v want=%v calls=%d", err, test.want, calls)
+			if !errors.Is(err, test.want) || calls != test.wantCalls {
+				t.Fatalf("error=%v want=%v calls=%d wantCalls=%d", err, test.want, calls, test.wantCalls)
 			}
 		})
+	}
+}
+
+func TestMinIOClientRejectsEveryDirectDeleteNotFoundAsAmbiguous(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, body string
+		want       error
+	}{
+		{name: "object not found remains ambiguous", body: `<Error><Code>NoSuchKey</Code><Message>absent</Message></Error>`, want: ErrDependencyUnavailable},
+		{name: "bucket absent", body: `<Error><Code>NoSuchBucket</Code><Message>absent</Message></Error>`, want: ErrDependencyUnavailable},
+		{name: "malformed error", body: `<Error><Code>NoSuchKey`, want: ErrDependencyUnavailable},
+		{name: "unknown provider code", body: `<Error><Code>UnknownNotFound</Code></Error>`, want: ErrDependencyUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/xml")
+				w.WriteHeader(http.StatusNotFound)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			client, err := NewMinIOClient(server.URL, server.Client(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.now = func() time.Time { return time.Date(2026, 8, 31, 12, 30, 0, 0, time.UTC) }
+			err = client.DeleteObject(
+				context.Background(), "cf-payments-invoices-47e89ff7e282", "reports/a.txt", `"etag"`,
+				"us-central1", adminTestCredentialsAt(client.now()),
+			)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("error=%v want=%v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestMinIOClientDoesNotRetryAfterDeleteTransmissionFailure(t *testing.T) {
+	t.Parallel()
+	calls := 0
+	httpClient := &http.Client{Transport: administrativeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		if request.Method != http.MethodDelete || request.Header.Get("If-Match") != `"etag"` {
+			t.Fatalf("request=%s headers=%v", request.Method, request.Header)
+		}
+		return nil, context.DeadlineExceeded
+	})}
+	client, err := NewMinIOClient("http://minio.code-admin.svc:9000", httpClient, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now = func() time.Time { return time.Date(2026, 8, 31, 12, 30, 0, 0, time.UTC) }
+	err = client.DeleteObject(
+		context.Background(), "cf-payments-invoices-47e89ff7e282", "reports/a.txt", `"etag"`,
+		"us-central1", adminTestCredentialsAt(client.now()),
+	)
+	if !errors.Is(err, ErrDependencyUnavailable) || calls != 1 {
+		t.Fatalf("error=%v calls=%d", err, calls)
 	}
 }
 
@@ -229,6 +310,22 @@ func FuzzAdministrativeSigV4PresignRemainsKeyBound(f *testing.F) {
 			parsed.Query().Get("X-Amz-Expires") != "60" || parsed.Query().Get("X-Amz-SignedHeaders") != "content-type;host" ||
 			result.Headers["Content-Type"] != contentType || strings.Contains(result.URL, strings.Repeat("s", 40)) {
 			t.Fatalf("unbound presign result=%#v parsed=%#v error=%v", result, parsed, parseErr)
+		}
+	})
+}
+
+func FuzzAdministrativeDeleteKeyAndETagValidation(f *testing.F) {
+	f.Add("reports/a.txt", `"etag"`)
+	f.Add("../escape", `W/"weak"`)
+	f.Add("unicode/olá.txt", `"strong-visible"`)
+	f.Fuzz(func(t *testing.T, key, etag string) {
+		keyValid := validAdminObjectKey(key)
+		etagValid := validAdminStrongETag(etag)
+		if keyValid && (len(key) == 0 || len(key) > 1024 || !utf8.ValidString(key) || strings.HasPrefix(key, "/") || strings.HasSuffix(key, "/") || strings.Contains(key, "\\")) {
+			t.Fatalf("invalid canonical key accepted: length=%d", len(key))
+		}
+		if etagValid && (len(etag) < 3 || len(etag) > 128 || etag[0] != '"' || etag[len(etag)-1] != '"') {
+			t.Fatalf("invalid strong ETag accepted: length=%d", len(etag))
 		}
 	})
 }
