@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"mime"
 	"net/http"
 	"slices"
@@ -24,8 +25,10 @@ type AdminService struct {
 	authorizer                 AdminAuthorizer
 	issuer                     CredentialIssuer
 	objects                    AdminObjectOperator
+	deletes                    AdminObjectDeleteOperator
 	tokenIssuer, tokenAudience string
 	cohort                     map[string]struct{}
+	deleteCohort               map[string]struct{}
 	semaphore                  chan struct{}
 	now                        func() time.Time
 }
@@ -40,6 +43,22 @@ func NewAdminService(
 	cohortTenants []string,
 	maximumConcurrent int,
 ) (*AdminService, error) {
+	return NewAdminServiceWithDelete(
+		verifier, signer, authorizer, issuer, objects,
+		tokenIssuer, tokenAudience, cohortTenants, nil, maximumConcurrent,
+	)
+}
+
+func NewAdminServiceWithDelete(
+	verifier AdminAccessTokenValidator,
+	signer AdminAssertionSigner,
+	authorizer AdminAuthorizer,
+	issuer CredentialIssuer,
+	objects AdminObjectOperator,
+	tokenIssuer, tokenAudience string,
+	cohortTenants, deleteCohortTenants []string,
+	maximumConcurrent int,
+) (*AdminService, error) {
 	if verifier == nil || signer == nil || authorizer == nil || issuer == nil || objects == nil ||
 		!validHTTPSIssuer(tokenIssuer) || strings.TrimSpace(tokenAudience) == "" || len(tokenAudience) > 128 ||
 		len(cohortTenants) == 0 || maximumConcurrent < 1 || maximumConcurrent > 32 {
@@ -52,16 +71,33 @@ func NewAdminService(
 		}
 		cohort[tenantID] = struct{}{}
 	}
+	deleteCohort := make(map[string]struct{}, len(deleteCohortTenants))
+	for _, tenantID := range deleteCohortTenants {
+		if !validDNSLabel(tenantID) {
+			return nil, ErrInvalidDependencyResponse
+		}
+		if _, enabled := cohort[tenantID]; !enabled {
+			return nil, ErrInvalidDependencyResponse
+		}
+		deleteCohort[tenantID] = struct{}{}
+	}
+	deletes, _ := objects.(AdminObjectDeleteOperator)
+	if len(deleteCohort) > 0 && deletes == nil {
+		return nil, ErrInvalidDependencyResponse
+	}
 	return &AdminService{
-		verifier: verifier, signer: signer, authorizer: authorizer, issuer: issuer, objects: objects,
+		verifier: verifier, signer: signer, authorizer: authorizer, issuer: issuer, objects: objects, deletes: deletes,
 		tokenIssuer: strings.TrimSuffix(tokenIssuer, "/"), tokenAudience: tokenAudience,
-		cohort: cohort, semaphore: make(chan struct{}, maximumConcurrent), now: time.Now,
+		cohort: cohort, deleteCohort: deleteCohort, semaphore: make(chan struct{}, maximumConcurrent), now: time.Now,
 	}, nil
 }
 
 func (s *AdminService) List(ctx context.Context, request AdminListRequest, accessToken, requestID string) (AdminObjectList, *Error) {
 	if request.PageSize < 1 || request.PageSize > 200 || len(request.PageToken) > 2048 || !validAdminPrefix(request.Prefix) {
 		return AdminObjectList{}, adminPublicError(http.StatusBadRequest, CodeInvalidParameterValue, "invalid_request", "The object list request is invalid.")
+	}
+	if request.IncludeDeleteMetadata && !s.deleteEnabled(request.TenantID) {
+		return AdminObjectList{}, adminPublicError(http.StatusNotFound, CodeAccessDenied, "not_found", "The bucket was not found.")
 	}
 	approval, credentials, publicErr := s.authorize(ctx, request.TenantID, request.BucketID, AdminOperationList, adminReadScope, accessToken, requestID)
 	if publicErr != nil {
@@ -70,6 +106,22 @@ func (s *AdminService) List(ctx context.Context, request AdminListRequest, acces
 	result, err := s.objects.ListObjects(ctx, approval.Decision.Bucket.ProviderBucketName, request.Prefix, request.PageSize, request.PageToken, approval.Decision.Bucket.Region, credentials)
 	if err != nil || result.SchemaVersion != AdminObjectStorageVersion || result.Prefix != request.Prefix || len(result.Items) > request.PageSize || len(result.NextPageToken) > 2048 {
 		return AdminObjectList{}, adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "provider_unavailable", "Object storage is temporarily unavailable.")
+	}
+	for index := range result.Items {
+		item := &result.Items[index]
+		if item.Kind == "prefix" {
+			if item.ETag != "" {
+				return AdminObjectList{}, adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "provider_unavailable", "Object storage is temporarily unavailable.")
+			}
+			continue
+		}
+		if request.IncludeDeleteMetadata {
+			if !validAdminStrongETag(item.ETag) {
+				return AdminObjectList{}, adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "provider_unavailable", "Object storage is temporarily unavailable.")
+			}
+		} else {
+			item.ETag = ""
+		}
 	}
 	return result, nil
 }
@@ -116,6 +168,33 @@ func (s *AdminService) CreateDownloadURL(ctx context.Context, request AdminDownl
 		return AdminSignedURL{}, adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "provider_unavailable", "Object storage is temporarily unavailable.")
 	}
 	return result, nil
+}
+
+func (s *AdminService) Delete(ctx context.Context, request AdminDeleteRequest, accessToken, requestID string) *Error {
+	if !validAdminObjectKey(request.Key) || !validAdminStrongETag(request.ETag) {
+		return adminPublicError(http.StatusBadRequest, CodeInvalidParameterValue, "invalid_request", "The delete request is invalid.")
+	}
+	if !s.deleteEnabled(request.TenantID) || s.deletes == nil {
+		return adminPublicError(http.StatusNotFound, CodeAccessDenied, "not_found", "The bucket was not found.")
+	}
+	approval, credentials, publicErr := s.authorize(ctx, request.TenantID, request.BucketID, AdminOperationDelete, adminWriteScope, accessToken, requestID)
+	if publicErr != nil {
+		return publicErr
+	}
+	if approval.Decision.Policy != ReadWriteAccess {
+		return adminPublicError(http.StatusForbidden, CodeAccessDenied, "access_denied", "Access is denied.")
+	}
+	err := s.deletes.DeleteObject(
+		ctx, approval.Decision.Bucket.ProviderBucketName, request.Key, request.ETag,
+		approval.Decision.Bucket.Region, credentials,
+	)
+	if errors.Is(err, ErrAdminObjectChanged) {
+		return adminPublicError(http.StatusConflict, CodeInvalidParameterValue, "object_changed", "The object changed since it was listed.")
+	}
+	if err != nil {
+		return adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "provider_unavailable", "Object storage is temporarily unavailable.")
+	}
+	return nil
 }
 
 func (s *AdminService) authorize(
@@ -173,7 +252,7 @@ func (s *AdminService) authorize(
 		return AdminApproval{}, Credentials{}, adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "authorizer_invalid", "Object storage is temporarily unavailable.")
 	}
 	wantedPolicy := ReadOnlyAccess
-	if operation == AdminOperationUpload {
+	if operation == AdminOperationUpload || operation == AdminOperationDelete {
 		wantedPolicy = ReadWriteAccess
 	}
 	if decision.Policy != wantedPolicy {
@@ -233,6 +312,26 @@ func validAdminObjectKey(value string) bool {
 		}
 	}
 	return true
+}
+
+func validAdminStrongETag(value string) bool {
+	if len(value) < 3 || len(value) > 128 || value[0] != '"' || value[len(value)-1] != '"' {
+		return false
+	}
+	for _, character := range []byte(value[1 : len(value)-1]) {
+		if character < 0x21 || character > 0x7e || character == '"' {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *AdminService) deleteEnabled(tenantID string) bool {
+	if s == nil {
+		return false
+	}
+	_, enabled := s.deleteCohort[tenantID]
+	return enabled
 }
 
 func validAdminPrefix(value string) bool {

@@ -100,6 +100,8 @@ type ObjectStorageBrowserConfig struct {
 	AdminAuthorizerURL       string   `yaml:"adminAuthorizerUrl"`
 	MaximumPresignTTLSeconds int      `yaml:"maximumPresignTtlSeconds"`
 	CohortTenants            []string `yaml:"cohortTenants"`
+	DeleteEnabled            bool     `yaml:"deleteEnabled"`
+	DeleteCohortTenants      []string `yaml:"deleteCohortTenants"`
 }
 
 // WorkloadIdentityProviderConfig declares one trusted Kubernetes token issuer.
@@ -624,7 +626,15 @@ func validateObjectStorageBrowser(c *Config) error {
 		return err
 	}
 	browser.CohortTenants = tenants
+	deleteTenants, err := canonicalNamedTenantAllowlist("objectStorageBrowser.deleteCohortTenants", browser.DeleteCohortTenants)
+	if err != nil {
+		return err
+	}
+	browser.DeleteCohortTenants = deleteTenants
 	if !browser.Enabled {
+		if browser.DeleteEnabled {
+			return fmt.Errorf("objectStorageBrowser.deleteEnabled requires objectStorageBrowser.enabled")
+		}
 		return nil
 	}
 	if !c.StorageSTS.Enabled {
@@ -641,6 +651,20 @@ func validateObjectStorageBrowser(c *Config) error {
 	}
 	if strings.TrimSpace(c.DefaultAudience) != "code-admin-api" {
 		return fmt.Errorf("objectStorageBrowser requires defaultAudience code-admin-api")
+	}
+	if browser.DeleteEnabled {
+		if len(browser.DeleteCohortTenants) == 0 {
+			return fmt.Errorf("objectStorageBrowser.deleteCohortTenants must not be empty when delete is enabled")
+		}
+		cohort := make(map[string]struct{}, len(browser.CohortTenants))
+		for _, tenantID := range browser.CohortTenants {
+			cohort[tenantID] = struct{}{}
+		}
+		for _, tenantID := range browser.DeleteCohortTenants {
+			if _, enabled := cohort[tenantID]; !enabled {
+				return fmt.Errorf("objectStorageBrowser.deleteCohortTenants must be a subset of cohortTenants")
+			}
+		}
 	}
 	return nil
 }

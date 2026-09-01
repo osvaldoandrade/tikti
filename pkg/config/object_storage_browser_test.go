@@ -10,7 +10,7 @@ func TestObjectStorageBrowserDefaultsOff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ObjectStorageBrowser.Enabled || cfg.ObjectStorageBrowser.MaximumPresignTTLSeconds != 60 ||
+	if cfg.ObjectStorageBrowser.Enabled || cfg.ObjectStorageBrowser.DeleteEnabled || cfg.ObjectStorageBrowser.MaximumPresignTTLSeconds != 60 ||
 		len(cfg.ObjectStorageBrowser.CohortTenants) != 0 {
 		t.Fatalf("browser defaults = %#v", cfg.ObjectStorageBrowser)
 	}
@@ -38,6 +38,8 @@ objectStorageBrowser:
   adminAuthorizerUrl: https://code-admin-api.example.com/internal/v1/object-storage/authorize-admin
   maximumPresignTtlSeconds: 60
   cohortTenants: [payments]
+  deleteEnabled: true
+  deleteCohortTenants: [payments]
 workloadIdentity:
   issuer: https://cluster.example.com
   clusterRef: code-cloud
@@ -45,7 +47,7 @@ workloadIdentity:
   jwksUrl: https://cluster.example.com/jwks
 `
 	cfg, err := LoadConfig(writeTempConfig(t, valid))
-	if err != nil || !cfg.ObjectStorageBrowser.Enabled || len(cfg.ObjectStorageBrowser.CohortTenants) != 1 ||
+	if err != nil || !cfg.ObjectStorageBrowser.Enabled || !cfg.ObjectStorageBrowser.DeleteEnabled || len(cfg.ObjectStorageBrowser.CohortTenants) != 1 ||
 		cfg.ObjectStorageBrowser.CohortTenants[0] != "payments" {
 		t.Fatalf("valid browser config=%#v err=%v", cfg, err)
 	}
@@ -55,6 +57,7 @@ workloadIdentity:
 		{from: "maximumPresignTtlSeconds: 60", to: "maximumPresignTtlSeconds: 61"},
 		{from: "cohortTenants: [payments]", to: "cohortTenants: []"},
 		{from: "cohortTenants: [payments]", to: "cohortTenants: [payments, payments]"},
+		{from: "deleteCohortTenants: [payments]", to: "deleteCohortTenants: [identity]"},
 	} {
 		body := strings.Replace(valid, replacement.from, replacement.to, 1)
 		if _, loadErr := LoadConfig(writeTempConfig(t, body)); loadErr == nil {

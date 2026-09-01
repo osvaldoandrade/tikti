@@ -14,6 +14,7 @@ type adminControllerBroker struct {
 	list     AdminListRequest
 	upload   AdminUploadRequest
 	download AdminDownloadRequest
+	delete   AdminDeleteRequest
 	token    string
 }
 
@@ -29,6 +30,10 @@ func (b *adminControllerBroker) CreateDownloadURL(_ context.Context, request Adm
 	b.download, b.token = request, token
 	return AdminSignedURL{URL: "https://s3.example.com/bucket/key?signed=1", Method: http.MethodGet, ExpiresIn: 60}, nil
 }
+func (b *adminControllerBroker) Delete(_ context.Context, request AdminDeleteRequest, token, _ string) *Error {
+	b.delete, b.token = request, token
+	return nil
+}
 
 func TestAdminControllerRoutesAreExactStrictAndNonCacheable(t *testing.T) {
 	t.Parallel()
@@ -41,9 +46,10 @@ func TestAdminControllerRoutesAreExactStrictAndNonCacheable(t *testing.T) {
 	for _, test := range []struct {
 		method, path, body string
 	}{
-		{method: http.MethodGet, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects?prefix=reports%2F&pageSize=25&pageToken=opaque"},
+		{method: http.MethodGet, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects?prefix=reports%2F&pageSize=25&pageToken=opaque&include=object-delete-v1"},
 		{method: http.MethodPost, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects/upload-url", body: `{"key":"reports/a.txt","size":12,"contentType":"text/plain"}`},
 		{method: http.MethodPost, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects/download-url", body: `{"key":"reports/a.txt"}`},
+		{method: http.MethodPost, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects:delete", body: `{"key":"reports/a.txt","etag":"\"etag\""}`},
 	} {
 		request, _ := http.NewRequest(test.method, engine.URL+test.path, strings.NewReader(test.body))
 		request.Header.Set("Authorization", "Bearer opaque-access-token-value")
@@ -56,13 +62,17 @@ func TestAdminControllerRoutesAreExactStrictAndNonCacheable(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = response.Body.Close()
-		if response.StatusCode != http.StatusOK || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Pragma") != "no-cache" {
+		want := http.StatusOK
+		if strings.HasSuffix(test.path, "objects:delete") {
+			want = http.StatusNoContent
+		}
+		if response.StatusCode != want || response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Pragma") != "no-cache" {
 			t.Fatalf("path=%s status=%d headers=%v", test.path, response.StatusCode, response.Header)
 		}
 	}
-	if broker.list.TenantID != "payments" || broker.list.BucketID != "invoices" || broker.list.Prefix != "reports/" || broker.list.PageSize != 25 || broker.list.PageToken != "opaque" ||
-		broker.upload.Key != "reports/a.txt" || broker.upload.Size != 12 || broker.download.Key != "reports/a.txt" || broker.token != "opaque-access-token-value" {
-		t.Fatalf("list=%#v upload=%#v download=%#v token=%q", broker.list, broker.upload, broker.download, broker.token)
+	if broker.list.TenantID != "payments" || broker.list.BucketID != "invoices" || broker.list.Prefix != "reports/" || broker.list.PageSize != 25 || broker.list.PageToken != "opaque" || !broker.list.IncludeDeleteMetadata ||
+		broker.upload.Key != "reports/a.txt" || broker.upload.Size != 12 || broker.download.Key != "reports/a.txt" || broker.delete.Key != "reports/a.txt" || broker.delete.ETag != `"etag"` || broker.token != "opaque-access-token-value" {
+		t.Fatalf("list=%#v upload=%#v download=%#v delete=%#v token=%q", broker.list, broker.upload, broker.download, broker.delete, broker.token)
 	}
 }
 
@@ -98,5 +108,6 @@ func adminControllerEngine(controller *AdminController) http.Handler {
 	engine.GET(base+"/objects", controller.List)
 	engine.POST(base+"/objects/upload-url", controller.UploadURL)
 	engine.POST(base+"/objects/download-url", controller.DownloadURL)
+	engine.POST(base+"/objects:delete", controller.Delete)
 	return engine
 }

@@ -103,6 +103,8 @@ config:
     adminAuthorizerUrl: ""
     maximumPresignTtlSeconds: 60
     cohortTenants: []
+    deleteEnabled: false
+    deleteCohortTenants: []
 
 secrets:
   enabled: true

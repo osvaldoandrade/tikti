@@ -58,13 +58,15 @@ func (i *adminCredentialIssuer) Exchange(_ context.Context, assertion string, du
 
 type adminObjectOperator struct {
 	bucket, prefix, key, contentType, method string
+	etag                                     string
 	pageSize                                 int
 	credentials                              Credentials
+	deleteErr                                error
 }
 
 func (o *adminObjectOperator) ListObjects(_ context.Context, bucket, prefix string, pageSize int, _ string, _ string, credentials Credentials) (AdminObjectList, error) {
 	o.bucket, o.prefix, o.pageSize, o.credentials = bucket, prefix, pageSize, credentials
-	return AdminObjectList{SchemaVersion: AdminObjectStorageVersion, Prefix: prefix, Items: []AdminObject{{Key: "reports/", Kind: "prefix"}, {Key: "readme.txt", Kind: "object", Size: 12}}}, nil
+	return AdminObjectList{SchemaVersion: AdminObjectStorageVersion, Prefix: prefix, Items: []AdminObject{{Key: "reports/", Kind: "prefix"}, {Key: "readme.txt", Kind: "object", Size: 12, ETag: `"etag"`}}}, nil
 }
 
 func (o *adminObjectOperator) Presign(_ time.Time, endpoint, bucket, key, contentType, method, region string, ttl int, credentials Credentials) (AdminSignedURL, error) {
@@ -77,6 +79,14 @@ func (o *adminObjectOperator) Presign(_ time.Time, endpoint, bucket, key, conten
 		result.Headers = map[string]string{"Content-Type": contentType}
 	}
 	return result, nil
+}
+
+func (o *adminObjectOperator) DeleteObject(_ context.Context, bucket, key, etag, region string, credentials Credentials) error {
+	o.bucket, o.key, o.etag, o.credentials = bucket, key, etag, credentials
+	if region != "us-central1" {
+		return errors.New("unexpected region")
+	}
+	return o.deleteErr
 }
 
 func adminAllowDecision(policy string) AdminAuthorizationDecision {
@@ -95,15 +105,57 @@ func newAdminServiceForTest(t *testing.T, scopes string, decision AdminAuthoriza
 	authorizer := &adminTestAuthorizer{result: decision}
 	issuer := &adminCredentialIssuer{}
 	operator := &adminObjectOperator{}
-	service, err := NewAdminService(
+	service, err := NewAdminServiceWithDelete(
 		adminTokenVerifier{claims: jwt.MapClaims{"sub": "user-1", "tid": "payments", "scope": scopes}},
 		adminTestSigner{}, authorizer, issuer, operator,
-		"https://tikti.example.com", "code-admin-api", []string{"payments"}, 4,
+		"https://tikti.example.com", "code-admin-api", []string{"payments"}, []string{"payments"}, 4,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return service, authorizer, issuer, operator
+}
+
+func TestAdminServiceDeletesOnlyTheListedCurrentObjectWithWriteAuthority(t *testing.T) {
+	t.Parallel()
+	service, authorizer, _, operator := newAdminServiceForTest(
+		t, "code-admin:storage:read code-admin:storage:write", adminAllowDecision(ReadWriteAccess),
+	)
+	publicErr := service.Delete(context.Background(), AdminDeleteRequest{
+		TenantID: "payments", BucketID: "invoices", Key: "reports/a.txt", ETag: `"etag"`,
+	}, "opaque-access-token-value", "request-delete-1")
+	if publicErr != nil || authorizer.request.Operation != AdminOperationDelete ||
+		operator.bucket != "cf-payments-invoices-47e89ff7e282" || operator.key != "reports/a.txt" || operator.etag != `"etag"` {
+		t.Fatalf("error=%#v authorization=%#v operator=%#v", publicErr, authorizer.request, operator)
+	}
+
+	service, _, _, _ = newAdminServiceForTest(t, "code-admin:storage:read", adminAllowDecision(ReadWriteAccess))
+	publicErr = service.Delete(context.Background(), AdminDeleteRequest{
+		TenantID: "payments", BucketID: "invoices", Key: "reports/a.txt", ETag: `"etag"`,
+	}, "opaque-access-token-value", "request-delete-2")
+	if publicErr == nil || publicErr.HTTPStatus != http.StatusForbidden {
+		t.Fatalf("missing write error=%#v", publicErr)
+	}
+}
+
+func TestAdminServiceMapsChangedObjectAndRejectsWeakETag(t *testing.T) {
+	t.Parallel()
+	service, _, _, operator := newAdminServiceForTest(
+		t, "code-admin:storage:write", adminAllowDecision(ReadWriteAccess),
+	)
+	operator.deleteErr = ErrAdminObjectChanged
+	publicErr := service.Delete(context.Background(), AdminDeleteRequest{
+		TenantID: "payments", BucketID: "invoices", Key: "a.txt", ETag: `"etag"`,
+	}, "opaque-access-token-value", "request-delete-3")
+	if publicErr == nil || publicErr.HTTPStatus != http.StatusConflict || publicErr.Reason != "object_changed" {
+		t.Fatalf("changed error=%#v", publicErr)
+	}
+	publicErr = service.Delete(context.Background(), AdminDeleteRequest{
+		TenantID: "payments", BucketID: "invoices", Key: "a.txt", ETag: `W/"etag"`,
+	}, "opaque-access-token-value", "request-delete-4")
+	if publicErr == nil || publicErr.HTTPStatus != http.StatusBadRequest {
+		t.Fatalf("weak ETag error=%#v", publicErr)
+	}
 }
 
 func TestAdminServiceListsAndPresignsWithoutReturningCredentials(t *testing.T) {
@@ -118,6 +170,15 @@ func TestAdminServiceListsAndPresignsWithoutReturningCredentials(t *testing.T) {
 	if authorizer.request.Operation != AdminOperationList || authorizer.request.TenantID != "payments" || authorizer.request.BucketID != "invoices" ||
 		authorizer.request.ActorSubject != "user-1" || len(authorizer.request.AccessTokenSHA256) != 64 || issuer.assertion != "minio-assertion" {
 		t.Fatalf("authorization=%#v assertion=%q", authorizer.request, issuer.assertion)
+	}
+	if list.Items[1].ETag != "" {
+		t.Fatalf("legacy list leaked delete metadata: %#v", list.Items[1])
+	}
+	list, publicErr = service.List(context.Background(), AdminListRequest{
+		TenantID: "payments", BucketID: "invoices", Prefix: "", PageSize: 100, IncludeDeleteMetadata: true,
+	}, "opaque-access-token-value", "request-list-delete-metadata")
+	if publicErr != nil || list.Items[1].ETag != `"etag"` {
+		t.Fatalf("negotiated list=%#v err=%#v", list, publicErr)
 	}
 
 	service, authorizer, _, operator = newAdminServiceForTest(t, "code-admin:storage:read code-admin:storage:write", adminAllowDecision(ReadWriteAccess))

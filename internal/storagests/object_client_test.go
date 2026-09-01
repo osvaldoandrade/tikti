@@ -2,6 +2,7 @@ package storagests
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -36,8 +37,81 @@ func TestMinIOClientListsObjectsWithSessionSigV4AndBoundedXML(t *testing.T) {
 	client.now = func() time.Time { return time.Date(2026, 8, 31, 12, 30, 0, 0, time.UTC) }
 	result, err := client.ListObjects(context.Background(), "cf-payments-invoices-47e89ff7e282", "reports/", 25, "opaque-page", "us-central1", adminTestCredentialsAt(client.now()))
 	if err != nil || result.SchemaVersion != AdminObjectStorageVersion || result.Prefix != "reports/" || result.NextPageToken != "next-page" || len(result.Items) != 2 ||
-		result.Items[0].Kind != "prefix" || result.Items[0].Key != "reports/2026/" || result.Items[1].Key != "reports/a.txt" || result.Items[1].Size != 12 {
+		result.Items[0].Kind != "prefix" || result.Items[0].Key != "reports/2026/" || result.Items[1].Key != "reports/a.txt" || result.Items[1].Size != 12 || result.Items[1].ETag != `"etag"` {
 		t.Fatalf("result=%#v err=%v", result, err)
+	}
+}
+
+func TestMinIOClientConditionallyDeletesCurrentObjectWithSignedETag(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/cf-payments-invoices-47e89ff7e282/reports/a.txt" || r.URL.RawQuery != "" {
+			t.Fatalf("request=%s %s", r.Method, r.URL.String())
+		}
+		if r.Header.Get("If-Match") != `"etag"` || r.Header.Get("X-Amz-Security-Token") != "session-token-value-1234567890" ||
+			!strings.Contains(r.Header.Get("Authorization"), "SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date;x-amz-security-token") {
+			t.Fatalf("headers=%v", r.Header)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client, err := NewMinIOClient(server.URL, server.Client(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.now = func() time.Time { return time.Date(2026, 8, 31, 12, 30, 0, 0, time.UTC) }
+	if err := client.DeleteObject(
+		context.Background(), "cf-payments-invoices-47e89ff7e282", "reports/a.txt", `"etag"`,
+		"us-central1", adminTestCredentialsAt(client.now()),
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMinIOClientResolvesConditionalDeleteReplayWithoutDeletingAVersion(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name       string
+		headStatus int
+		headETag   string
+		want       error
+	}{
+		{name: "already absent", headStatus: http.StatusNotFound},
+		{name: "changed", headStatus: http.StatusOK, headETag: `"new-etag"`, want: ErrAdminObjectChanged},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if calls == 1 {
+					if r.Method != http.MethodDelete || r.Header.Get("If-Match") != `"etag"` {
+						t.Fatalf("delete request=%s headers=%v", r.Method, r.Header)
+					}
+					w.WriteHeader(http.StatusPreconditionFailed)
+					return
+				}
+				if r.Method != http.MethodHead || r.Header.Get("If-Match") != "" {
+					t.Fatalf("resolution request=%s headers=%v", r.Method, r.Header)
+				}
+				if test.headETag != "" {
+					w.Header().Set("ETag", test.headETag)
+				}
+				w.WriteHeader(test.headStatus)
+			}))
+			defer server.Close()
+			client, err := NewMinIOClient(server.URL, server.Client(), time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.now = func() time.Time { return time.Date(2026, 8, 31, 12, 30, 0, 0, time.UTC) }
+			err = client.DeleteObject(
+				context.Background(), "cf-payments-invoices-47e89ff7e282", "reports/a.txt", `"etag"`,
+				"us-central1", adminTestCredentialsAt(client.now()),
+			)
+			if !errors.Is(err, test.want) || calls != 2 {
+				t.Fatalf("error=%v want=%v calls=%d", err, test.want, calls)
+			}
+		})
 	}
 }
 

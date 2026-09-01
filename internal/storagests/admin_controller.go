@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,12 +21,23 @@ type AdminBroker interface {
 	CreateDownloadURL(context.Context, AdminDownloadRequest, string, string) (AdminSignedURL, *Error)
 }
 
+type AdminDeleteBroker interface {
+	Delete(context.Context, AdminDeleteRequest, string, string) *Error
+}
+
 type AdminController struct {
-	broker AdminBroker
+	broker  AdminBroker
+	deleter AdminDeleteBroker
+	metrics *Metrics
 }
 
 func NewAdminController(broker AdminBroker) *AdminController {
-	return &AdminController{broker: broker}
+	return NewAdminControllerWithMetrics(broker, nil)
+}
+
+func NewAdminControllerWithMetrics(broker AdminBroker, metrics *Metrics) *AdminController {
+	deleter, _ := broker.(AdminDeleteBroker)
+	return &AdminController{broker: broker, deleter: deleter, metrics: metrics}
 }
 
 func (h *AdminController) List(c *gin.Context) {
@@ -43,15 +55,62 @@ func (h *AdminController) List(c *gin.Context) {
 		}
 		pageSize = parsed
 	}
+	includeDelete := false
+	if values, present := c.Request.URL.Query()["include"]; present {
+		if len(values) != 1 || values[0] != "object-delete-v1" {
+			writeAdminError(c, adminPublicError(http.StatusBadRequest, CodeInvalidParameterValue, "invalid_request", "The object list request is invalid."))
+			return
+		}
+		includeDelete = true
+	}
 	result, publicErr := h.broker.List(c.Request.Context(), AdminListRequest{
 		TenantID: c.Param("tenantId"), BucketID: c.Param("bucketId"), Prefix: c.Query("prefix"),
-		PageSize: pageSize, PageToken: c.Query("pageToken"),
+		PageSize: pageSize, PageToken: c.Query("pageToken"), IncludeDeleteMetadata: includeDelete,
 	}, token, c.GetHeader("X-Request-Id"))
 	if publicErr != nil {
 		writeAdminError(c, publicErr)
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+func (h *AdminController) Delete(c *gin.Context) {
+	started := time.Now()
+	result, reason := "error", "internal"
+	var metrics *Metrics
+	if h != nil {
+		metrics = h.metrics
+	}
+	defer func() { metrics.observeAdmin("delete", result, reason, started) }()
+	adminResponseHeaders(c)
+	token, ok := adminBearer(c)
+	if !ok {
+		reason = "invalid_token"
+		return
+	}
+	if h == nil || h.deleter == nil {
+		reason = "provider_unavailable"
+		writeAdminError(c, adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "provider_unavailable", "Object storage is temporarily unavailable."))
+		return
+	}
+	var input struct {
+		Key  string `json:"key"`
+		ETag string `json:"etag"`
+	}
+	if !decodeAdminBrowserJSON(c, &input) {
+		reason = "invalid_request"
+		return
+	}
+	publicErr := h.deleter.Delete(c.Request.Context(), AdminDeleteRequest{
+		TenantID: c.Param("tenantId"), BucketID: c.Param("bucketId"), Key: input.Key, ETag: input.ETag,
+	}, token, c.GetHeader("X-Request-Id"))
+	if publicErr != nil {
+		reason = publicErr.Reason
+		writeAdminError(c, publicErr)
+		return
+	}
+	result, reason = "success", "allowed"
+	c.Status(http.StatusNoContent)
 }
 
 func (h *AdminController) UploadURL(c *gin.Context) {

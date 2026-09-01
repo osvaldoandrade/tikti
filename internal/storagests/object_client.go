@@ -42,6 +42,7 @@ type commonPrefixXML struct {
 type objectContentXML struct {
 	Key          string `xml:"Key"`
 	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
 	Size         int64  `xml:"Size"`
 }
 
@@ -136,7 +137,7 @@ func (c *MinIOClient) ListObjects(
 	}
 	for _, object := range resultXML.Contents {
 		modified, parseErr := time.Parse(time.RFC3339Nano, object.LastModified)
-		if !strings.HasPrefix(object.Key, prefix) || !validAdminObjectKey(object.Key) || object.Size < 0 || parseErr != nil {
+		if !strings.HasPrefix(object.Key, prefix) || !validAdminObjectKey(object.Key) || object.Size < 0 || parseErr != nil || !validAdminStrongETag(object.ETag) {
 			return AdminObjectList{}, ErrInvalidDependencyResponse
 		}
 		if _, duplicate := seenKeys[object.Key]; duplicate {
@@ -144,7 +145,7 @@ func (c *MinIOClient) ListObjects(
 		}
 		seenKeys[object.Key] = struct{}{}
 		items = append(items, AdminObject{
-			Key: object.Key, Kind: "object", Size: object.Size, LastModified: modified.UTC().Format(time.RFC3339Nano),
+			Key: object.Key, Kind: "object", Size: object.Size, LastModified: modified.UTC().Format(time.RFC3339Nano), ETag: object.ETag,
 		})
 	}
 	if resultXML.IsTruncated && resultXML.NextContinuationToken == "" || !resultXML.IsTruncated && resultXML.NextContinuationToken != "" {
@@ -154,6 +155,105 @@ func (c *MinIOClient) ListObjects(
 		SchemaVersion: AdminObjectStorageVersion, Prefix: prefix, Items: items,
 		NextPageToken: resultXML.NextContinuationToken,
 	}, nil
+}
+
+// DeleteObject performs ordinary S3 DeleteObject for the current view only.
+// The strong If-Match condition prevents deleting a replacement object and a
+// single HEAD resolves an ambiguous replay without addressing any version ID.
+func (c *MinIOClient) DeleteObject(
+	ctx context.Context,
+	bucket, key, etag, region string,
+	credentials Credentials,
+) error {
+	if c == nil || c.http == nil || !physicalNamePattern.MatchString(bucket) || !validAdminObjectKey(key) ||
+		!validAdminStrongETag(etag) || !regionPattern.MatchString(region) || !validAdminCredentials(credentials, c.now()) {
+		return ErrInvalidDependencyResponse
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	response, err := c.signedObjectRequest(requestCtx, http.MethodDelete, bucket, key, etag, region, credentials)
+	if err != nil {
+		return err
+	}
+	status := response.StatusCode
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxMinIOObjectResponseBytes))
+	_ = response.Body.Close()
+	switch status {
+	case http.StatusNoContent, http.StatusNotFound:
+		return nil
+	case http.StatusPreconditionFailed:
+		return c.resolveConditionalDelete(requestCtx, bucket, key, etag, region, credentials)
+	default:
+		return ErrDependencyUnavailable
+	}
+}
+
+func (c *MinIOClient) resolveConditionalDelete(
+	ctx context.Context,
+	bucket, key, listedETag, region string,
+	credentials Credentials,
+) error {
+	response, err := c.signedObjectRequest(ctx, http.MethodHead, bucket, key, "", region, credentials)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxMinIOObjectResponseBytes))
+	switch response.StatusCode {
+	case http.StatusNotFound:
+		return nil
+	case http.StatusOK:
+		currentETag := strings.TrimSpace(response.Header.Get("ETag"))
+		if validAdminStrongETag(currentETag) && currentETag != listedETag {
+			return ErrAdminObjectChanged
+		}
+	}
+	return ErrDependencyUnavailable
+}
+
+func (c *MinIOClient) signedObjectRequest(
+	ctx context.Context,
+	method, bucket, key, etag, region string,
+	credentials Credentials,
+) (*http.Response, error) {
+	base, err := url.Parse(c.endpoint)
+	if err != nil {
+		return nil, ErrInvalidDependencyResponse
+	}
+	now := c.now().UTC()
+	amzDate := now.Format("20060102T150405Z")
+	payloadHash := awsSHA256Hex(nil)
+	canonicalURI := "/" + awsURIEncode(bucket, true) + "/" + awsURIEncode(key, false)
+	canonicalHeaders := "host:" + strings.ToLower(base.Host) + "\n"
+	signedHeaders := "host"
+	if etag != "" {
+		canonicalHeaders += "if-match:" + etag + "\n"
+		signedHeaders += ";if-match"
+	}
+	canonicalHeaders += "x-amz-content-sha256:" + payloadHash + "\n" +
+		"x-amz-date:" + amzDate + "\n" +
+		"x-amz-security-token:" + strings.TrimSpace(credentials.SessionToken) + "\n"
+	signedHeaders += ";x-amz-content-sha256;x-amz-date;x-amz-security-token"
+	authorization := awsAuthorization(
+		method, canonicalURI, "", canonicalHeaders, signedHeaders, payloadHash,
+		base.Host, region, now, credentials,
+	)
+	request, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(c.endpoint, "/")+canonicalURI, nil)
+	if err != nil {
+		return nil, ErrDependencyUnavailable
+	}
+	request.Header.Set("X-Amz-Date", amzDate)
+	request.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	request.Header.Set("X-Amz-Security-Token", credentials.SessionToken)
+	request.Header.Set("Authorization", authorization)
+	if etag != "" {
+		request.Header.Set("If-Match", etag)
+	}
+	response, err := c.http.Do(request)
+	if err != nil {
+		return nil, ErrDependencyUnavailable
+	}
+	return response, nil
 }
 
 func (c *MinIOClient) Presign(

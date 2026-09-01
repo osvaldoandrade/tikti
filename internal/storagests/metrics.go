@@ -15,6 +15,8 @@ type Metrics struct {
 	throttled               prometheus.Counter
 	invalidToken            prometheus.Counter
 	providerResponseInvalid prometheus.Counter
+	adminRequests           *prometheus.CounterVec
+	adminDuration           *prometheus.HistogramVec
 }
 
 func NewMetrics(registerer prometheus.Registerer) *Metrics {
@@ -30,6 +32,8 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 		throttled:               prometheus.NewCounter(prometheus.CounterOpts{Name: "tikti_storage_sts_throttled_total", Help: "Storage STS exchanges rejected by the concurrency bound."}),
 		invalidToken:            prometheus.NewCounter(prometheus.CounterOpts{Name: "tikti_storage_sts_invalid_token_total", Help: "Projected tokens rejected by strict verification."}),
 		providerResponseInvalid: prometheus.NewCounter(prometheus.CounterOpts{Name: "tikti_storage_sts_provider_response_invalid_total", Help: "Invalid bounded MinIO STS responses."}),
+		adminRequests:           prometheus.NewCounterVec(prometheus.CounterOpts{Name: "tikti_storage_admin_object_requests_total", Help: "Administrative object requests by closed operation, result, and reason."}, []string{"operation", "result", "reason"}),
+		adminDuration:           prometheus.NewHistogramVec(prometheus.HistogramOpts{Name: "tikti_storage_admin_object_duration_seconds", Help: "Administrative object request duration by closed operation and result.", Buckets: prometheus.DefBuckets}, []string{"operation", "result"}),
 	}
 	metrics.requests = registerCounterVec(registerer, metrics.requests)
 	metrics.duration = registerHistogramVec(registerer, metrics.duration)
@@ -39,6 +43,8 @@ func NewMetrics(registerer prometheus.Registerer) *Metrics {
 	metrics.throttled = registerCounter(registerer, metrics.throttled)
 	metrics.invalidToken = registerCounter(registerer, metrics.invalidToken)
 	metrics.providerResponseInvalid = registerCounter(registerer, metrics.providerResponseInvalid)
+	metrics.adminRequests = registerCounterVec(registerer, metrics.adminRequests)
+	metrics.adminDuration = registerHistogramVec(registerer, metrics.adminDuration)
 	return metrics
 }
 
@@ -106,6 +112,25 @@ func (m *Metrics) observeMinIO(result string, started time.Time) {
 	}
 }
 
+func (m *Metrics) observeAdmin(operation, result, reason string, started time.Time) {
+	if m == nil {
+		return
+	}
+	operation = closedAdminOperation(operation)
+	result = closedResult(result)
+	m.adminRequests.WithLabelValues(operation, result, closedReason(reason)).Inc()
+	m.adminDuration.WithLabelValues(operation, result).Observe(time.Since(started).Seconds())
+}
+
+func closedAdminOperation(value string) string {
+	switch value {
+	case "list", "upload", "download", "delete":
+		return value
+	default:
+		return "internal"
+	}
+}
+
 func closedResult(value string) string {
 	if value == "success" {
 		return "success"
@@ -116,7 +141,7 @@ func closedResult(value string) string {
 func closedReason(value string) string {
 	switch value {
 	case "allowed", "invalid_request", "invalid_token", "denied", "authorizer_unavailable", "authorizer_invalid",
-		"provider_unavailable", "provider_invalid", "throttled", "internal":
+		"provider_unavailable", "provider_invalid", "object_changed", "throttled", "internal":
 		return value
 	default:
 		return "internal"

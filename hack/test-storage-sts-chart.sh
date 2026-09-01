@@ -22,6 +22,14 @@ if ! rg -q '^objectStorageBrowser:$' <<<"$baseline_config"; then
   echo "object storage browser config must render disabled by default" >&2
   exit 1
 fi
+for contract in \
+  'deleteEnabled: false' \
+  'deleteCohortTenants: []'; do
+  if ! rg -Fq "$contract" <<<"$baseline_config"; then
+    echo "object deletion must render disabled by default: $contract" >&2
+    exit 1
+  fi
+done
 
 must_fail --set config.storageSTS.enabled=true
 must_fail --set config.objectStorageBrowser.enabled=true
@@ -95,6 +103,47 @@ for contract in \
   'cohortTenants: ["payments"]'; do
   if ! rg -Fq "$contract" <<<"$browser_config"; then
     echo "enabled object storage browser config is missing: $contract" >&2
+    exit 1
+  fi
+done
+
+must_fail \
+  --set config.storageSTS.enabled=true \
+  --set config.issuerBaseUrl=https://tikti.example.com \
+  --set config.defaultAudience=code-admin-api \
+  --set config.storageSTS.authorizerUrl=https://api.example.com/internal/v1/object-storage:authorize \
+  --set config.storageSTS.minioStsEndpoint=http://minio.code-admin.svc:9000 \
+  --set config.storageSTS.oidcJwksUrl=https://api.example.com/internal/v1/storage/jwks.json \
+  --set config.workloadIdentity.issuer=https://cluster.example.com \
+  --set config.workloadIdentity.clusterRef=code-cloud \
+  --set config.workloadIdentity.jwksUrl=https://cluster.example.com/jwks \
+  --set config.objectStorageBrowser.enabled=true \
+  --set config.objectStorageBrowser.adminAuthorizerUrl=https://api.example.com/internal/v1/object-storage/authorize-admin \
+  --set 'config.objectStorageBrowser.cohortTenants[0]=bereia' \
+  --set config.objectStorageBrowser.deleteEnabled=true \
+  --set 'config.objectStorageBrowser.deleteCohortTenants[0]=local-tenant'
+
+browser_delete_enabled=$(helm template storage-sts "$chart" \
+  --set config.storageSTS.enabled=true \
+  --set config.issuerBaseUrl=https://tikti.example.com \
+  --set config.defaultAudience=code-admin-api \
+  --set config.storageSTS.authorizerUrl=https://api.example.com/internal/v1/object-storage:authorize \
+  --set config.storageSTS.minioStsEndpoint=http://minio.code-admin.svc:9000 \
+  --set config.storageSTS.oidcJwksUrl=https://api.example.com/internal/v1/storage/jwks.json \
+  --set config.workloadIdentity.issuer=https://cluster.example.com \
+  --set config.workloadIdentity.clusterRef=code-cloud \
+  --set config.workloadIdentity.jwksUrl=https://cluster.example.com/jwks \
+  --set config.objectStorageBrowser.enabled=true \
+  --set config.objectStorageBrowser.adminAuthorizerUrl=https://api.example.com/internal/v1/object-storage/authorize-admin \
+  --set 'config.objectStorageBrowser.cohortTenants[0]=bereia' \
+  --set config.objectStorageBrowser.deleteEnabled=true \
+  --set 'config.objectStorageBrowser.deleteCohortTenants[0]=bereia')
+browser_delete_config=$(yq ea '[select(.kind == "ConfigMap") | .data."tikti.yaml"] | .[0]' - <<<"$browser_delete_enabled")
+for contract in \
+  'deleteEnabled: true' \
+  'deleteCohortTenants: ["bereia"]'; do
+  if ! rg -Fq "$contract" <<<"$browser_delete_config"; then
+    echo "enabled object deletion config is missing: $contract" >&2
     exit 1
   fi
 done

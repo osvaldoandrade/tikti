@@ -26,7 +26,7 @@ func TestObjectStorageBrowserRoutesAreDefaultOffExactAndAPIKeyProtected(t *testi
 	broker := &adminControllerBrokerAdapter{}
 	controller := storagests.NewAdminController(broker)
 	enabled := newSafeEngineWithWriters(&strings.Builder{}, &strings.Builder{})
-	cfg := &config.Config{ApiKey: "server-key", ObjectStorageBrowser: config.ObjectStorageBrowserConfig{Enabled: true}}
+	cfg := &config.Config{ApiKey: "server-key", ObjectStorageBrowser: config.ObjectStorageBrowserConfig{Enabled: true, DeleteEnabled: true}}
 	setupObjectStorageBrowserMappings(enabled, cfg, controller)
 
 	for _, test := range []struct {
@@ -36,6 +36,7 @@ func TestObjectStorageBrowserRoutesAreDefaultOffExactAndAPIKeyProtected(t *testi
 		{name: "list", method: http.MethodGet, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects", apiKey: "server-key", want: http.StatusOK},
 		{name: "upload", method: http.MethodPost, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects/upload-url", apiKey: "server-key", body: `{"key":"a.txt","size":1,"contentType":"text/plain"}`, want: http.StatusOK},
 		{name: "download", method: http.MethodPost, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects/download-url", apiKey: "server-key", body: `{"key":"a.txt"}`, want: http.StatusOK},
+		{name: "delete", method: http.MethodPost, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects:delete", apiKey: "server-key", body: `{"key":"a.txt","etag":"\"etag\""}`, want: http.StatusNoContent},
 		{name: "missing api key", method: http.MethodGet, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects", want: http.StatusUnauthorized},
 		{name: "slash alias", method: http.MethodGet, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects/", apiKey: "server-key", want: http.StatusBadRequest},
 		{name: "preflight", method: http.MethodOptions, path: "/v1/admin/tenants/payments/storage/buckets/invoices/objects", apiKey: "server-key", want: http.StatusBadRequest},
@@ -65,4 +66,7 @@ func (*adminControllerBrokerAdapter) CreateUploadURL(_ context.Context, request 
 }
 func (*adminControllerBrokerAdapter) CreateDownloadURL(_ context.Context, _ storagests.AdminDownloadRequest, _, _ string) (storagests.AdminSignedURL, *storagests.Error) {
 	return storagests.AdminSignedURL{URL: "https://s3.example.com/bucket/key?signed=1", Method: http.MethodGet, ExpiresIn: 60}, nil
+}
+func (*adminControllerBrokerAdapter) Delete(_ context.Context, _ storagests.AdminDeleteRequest, _, _ string) *storagests.Error {
+	return nil
 }

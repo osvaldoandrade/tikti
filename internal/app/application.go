@@ -273,15 +273,20 @@ func newObjectStorageAdminController(cfg *config.Config, userService services.Us
 	if err != nil {
 		return nil, fmt.Errorf("initialize administrative MinIO client")
 	}
-	broker, err := storagests.NewAdminService(
+	deleteCohortTenants := []string(nil)
+	if cfg.ObjectStorageBrowser.DeleteEnabled {
+		deleteCohortTenants = cfg.ObjectStorageBrowser.DeleteCohortTenants
+	}
+	broker, err := storagests.NewAdminServiceWithDelete(
 		userService, signer, authorizer, minio, minio,
 		cfg.IssuerBaseURL, cfg.DefaultAudience, cfg.ObjectStorageBrowser.CohortTenants,
+		deleteCohortTenants,
 		cfg.StorageSTS.MaximumConcurrent,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("initialize administrative object storage broker: %w", err)
 	}
-	return storagests.NewAdminController(broker), nil
+	return storagests.NewAdminControllerWithMetrics(broker, storagests.NewMetrics(prometheus.DefaultRegisterer)), nil
 }
 
 func validateMembershipV2WriteRuntimeConfig(cfg *config.Config) error {

@@ -43,6 +43,8 @@ objectStorageBrowser:
   adminAuthorizerUrl: ""
   maximumPresignTtlSeconds: 60
   cohortTenants: []
+  deleteEnabled: false
+  deleteCohortTenants: []
 
 # ── SAML (HLD §16) ──────────────────────────────────────────────
 # saml:

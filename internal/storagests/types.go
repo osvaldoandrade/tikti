@@ -27,6 +27,7 @@ const (
 var (
 	ErrDependencyUnavailable     = errors.New("storage STS dependency unavailable")
 	ErrInvalidDependencyResponse = errors.New("storage STS dependency response invalid")
+	ErrAdminObjectChanged        = errors.New("administrative object changed")
 )
 
 // Code is the closed public AWS-style error vocabulary returned by the broker.

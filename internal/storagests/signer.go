@@ -94,7 +94,7 @@ func (s *Signer) SignAdminMinIOAssertion(now time.Time, approval AdminApproval) 
 		return "", fmt.Errorf("invalid administrative storage approval")
 	}
 	policy := s.readOnlyPolicy
-	if approval.Operation == AdminOperationUpload {
+	if approval.Operation == AdminOperationUpload || approval.Operation == AdminOperationDelete {
 		if approval.Decision.Policy != ReadWriteAccess {
 			return "", fmt.Errorf("invalid administrative storage policy")
 		}

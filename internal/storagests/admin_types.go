@@ -15,6 +15,7 @@ const (
 	AdminOperationList     AdminOperation = "List"
 	AdminOperationUpload   AdminOperation = "Upload"
 	AdminOperationDownload AdminOperation = "Download"
+	AdminOperationDelete   AdminOperation = "Delete"
 )
 
 type AdminAuthorizationRequest struct {
@@ -61,6 +62,7 @@ type AdminObject struct {
 	Kind         string `json:"kind"`
 	Size         int64  `json:"size,omitempty"`
 	LastModified string `json:"lastModified,omitempty"`
+	ETag         string `json:"etag,omitempty"`
 }
 
 type AdminObjectList struct {
@@ -80,6 +82,7 @@ type AdminSignedURL struct {
 type AdminListRequest struct {
 	TenantID, BucketID, Prefix, PageToken string
 	PageSize                              int
+	IncludeDeleteMetadata                 bool
 }
 
 type AdminUploadRequest struct {
@@ -89,6 +92,10 @@ type AdminUploadRequest struct {
 
 type AdminDownloadRequest struct {
 	TenantID, BucketID, Key string
+}
+
+type AdminDeleteRequest struct {
+	TenantID, BucketID, Key, ETag string
 }
 
 type AdminAccessTokenValidator interface {
@@ -107,4 +114,8 @@ type AdminAuthorizer interface {
 type AdminObjectOperator interface {
 	ListObjects(context.Context, string, string, int, string, string, Credentials) (AdminObjectList, error)
 	Presign(time.Time, string, string, string, string, string, string, int, Credentials) (AdminSignedURL, error)
+}
+
+type AdminObjectDeleteOperator interface {
+	DeleteObject(context.Context, string, string, string, string, Credentials) error
 }

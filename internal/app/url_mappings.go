@@ -147,7 +147,12 @@ func setupObjectStorageBrowserMappings(engine *gin.Engine, cfg *config.Config, c
 	routes.GET("/objects", controller.List)
 	routes.POST("/objects/upload-url", controller.UploadURL)
 	routes.POST("/objects/download-url", controller.DownloadURL)
-	for _, path := range []string{"/objects", "/objects/upload-url", "/objects/download-url"} {
+	paths := []string{"/objects", "/objects/upload-url", "/objects/download-url"}
+	if cfg.ObjectStorageBrowser.DeleteEnabled {
+		routes.POST("/objects:delete", controller.Delete)
+		paths = append(paths, "/objects:delete")
+	}
+	for _, path := range paths {
 		routes.OPTIONS(path, controller.Reject)
 		routes.GET(path+"/", controller.Reject)
 		routes.POST(path+"/", controller.Reject)
