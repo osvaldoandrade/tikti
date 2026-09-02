@@ -4,12 +4,15 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/utils"
@@ -59,6 +62,399 @@ func TestTenantTargetDiscovery_RequiresExactBereiaMembership(t *testing.T) {
 	response, err := service.TokenExchange(context.Background(), tenantTargetRequest(idToken, "bereia"))
 	if !errors.Is(err, domain.ErrInvalidTenant) || response != nil {
 		t.Fatalf("membership-free exchange response=%+v err=%v", response, err)
+	}
+}
+
+func TestTenantTargetDiscoveryV2_DiscoversNewExactMembershipForCanaryPrincipal(t *testing.T) {
+	home := "local-tenant"
+	user := &domain.User{
+		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, CompanyId: &home, TokenVersion: 3,
+	}
+	users := &mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }}
+	memberships := &mockMembershipRepo{
+		listExactFn: func(context.Context, string) ([]string, error) {
+			return []string{"bereia", "new-tenant"}, nil
+		},
+		getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+			return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: []string{tenantID + "-read"}}, nil
+		},
+	}
+	tenants := &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+		return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+	}}
+	roles := &mockRoleService{getByNameFn: func(_ context.Context, tenantID, roleName string) (*domain.RoleResp, error) {
+		if roleName != tenantID+"-read" {
+			t.Fatalf("unexpected role read: tenant=%s role=%s", tenantID, roleName)
+		}
+		return &domain.RoleResp{Name: roleName, Permissions: []string{"code-admin:workloads:read"}}, nil
+	}}
+	service := NewUserService(
+		users, memberships, roles, discoveryClientService(t, false),
+		"secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithTenantScopedTokenClaimsV1(true, []string{"bereia"}, tenants),
+		WithTenantTargetDiscoveryV2(true, []string{"local-tenant"}, tenants),
+	).(*userService)
+	idToken := signTenantHomeToken(t, "secret", user, user.Role)
+	request := tenantTargetRequest(idToken, "new-tenant")
+	request.DiscoverTenantTargetsV1 = false
+	request.DiscoverTenantTargetsV2 = true
+
+	response, err := service.TokenExchange(context.Background(), request)
+	if err != nil {
+		t.Fatalf("dynamic discovery exchange: %v", err)
+	}
+	if response.PrincipalTenantID != home ||
+		!slices.Equal(response.AuthorizedTenants, []string{"bereia", "local-tenant", "new-tenant"}) ||
+		!slices.Equal(response.Scopes, []string{
+			"code-admin:clusters:read", "code-admin:workloads:read", "console:clusters:read",
+		}) {
+		t.Fatalf("unexpected dynamic authority: %+v", response)
+	}
+
+	legacy := tenantTargetRequest(idToken, "new-tenant")
+	if legacyResponse, legacyErr := service.TokenExchange(context.Background(), legacy); !errors.Is(legacyErr, domain.ErrInvalidTenant) || legacyResponse != nil {
+		t.Fatalf("v1 accepted a non-allowlisted target response=%+v err=%v", legacyResponse, legacyErr)
+	}
+}
+
+func TestTenantTargetDiscoveryV2_PreservesLegacyDiscoveryOutsidePrincipalCohort(t *testing.T) {
+	home := "bereia"
+	user := &domain.User{
+		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, CompanyId: &home, TokenVersion: 3,
+	}
+	tenants := &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+		return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+	}}
+	service := NewUserService(
+		&mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }},
+		&mockMembershipRepo{listExactFn: func(context.Context, string) ([]string, error) {
+			return []string{"new-tenant"}, nil
+		}},
+		&mockRoleService{}, discoveryClientService(t, false),
+		"secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithTenantScopedTokenClaimsV1(true, []string{"bereia", "local-tenant"}, tenants),
+		WithTenantTargetDiscoveryV2(true, []string{"local-tenant"}, tenants),
+	).(*userService)
+	registry := prometheus.NewRegistry()
+	service.tenantDiscoveryMetrics = NewTenantDiscoveryMetrics(registry)
+	request := tenantTargetRequest(signTenantHomeTokenForTenant(t, "secret", user, user.Role, home), home)
+	request.DiscoverTenantTargetsV1 = false
+	request.DiscoverTenantTargetsV2 = true
+
+	response, err := service.TokenExchange(context.Background(), request)
+	if err != nil {
+		t.Fatalf("legacy discovery with dynamic canary enabled: %v", err)
+	}
+	if response.PrincipalTenantID != home ||
+		!slices.Equal(response.AuthorizedTenants, []string{"bereia"}) ||
+		!slices.Equal(response.Scopes, managedAudienceScopes) {
+		t.Fatalf("unexpected legacy authority: %+v", response)
+	}
+	if value := tenantDiscoveryCounterValue(t, service.tenantDiscoveryMetrics.requests, "fallback", "success", "allowed"); value != 1 {
+		t.Fatalf("fallback request metric=%v", value)
+	}
+}
+
+func TestTenantTargetDiscoveryV2_FallbackPreservesV1MembershipRoleLimit(t *testing.T) {
+	home := "bereia"
+	target := "local-tenant"
+	user := &domain.User{
+		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, CompanyId: &home, TokenVersion: 3,
+	}
+	roleNames := make([]string, 101)
+	for index := range roleNames {
+		roleNames[index] = fmt.Sprintf("role-%03d", index)
+	}
+	roleReads := 0
+	tenants := &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+		return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+	}}
+	service := NewUserService(
+		&mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }},
+		&mockMembershipRepo{
+			listExactFn: func(context.Context, string) ([]string, error) { return []string{target}, nil },
+			getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+				return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: append([]string(nil), roleNames...)}, nil
+			},
+		},
+		&mockRoleService{getByNameFn: func(_ context.Context, _ string, roleName string) (*domain.RoleResp, error) {
+			roleReads++
+			return &domain.RoleResp{Name: roleName, Permissions: []string{"code-admin:workloads:read"}}, nil
+		}},
+		discoveryClientService(t, false), "secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithTenantScopedTokenClaimsV1(true, []string{home, target}, tenants),
+		WithTenantTargetDiscoveryV2(true, []string{"canary-home"}, tenants),
+	).(*userService)
+	request := tenantTargetRequest(signTenantHomeTokenForTenant(t, "secret", user, user.Role, home), target)
+	request.DiscoverTenantTargetsV1 = false
+	request.DiscoverTenantTargetsV2 = true
+
+	response, err := service.TokenExchange(context.Background(), request)
+	if err != nil || response == nil || roleReads != 101 {
+		t.Fatalf("fallback response=%+v reads=%d err=%v", response, roleReads, err)
+	}
+}
+
+func TestTenantTargetDiscoveryV2_ExcludesMemberWithoutManagedAudience(t *testing.T) {
+	home := "local-tenant"
+	user := &domain.User{
+		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, CompanyId: &home, TokenVersion: 3,
+	}
+	tenants := &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+		return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+	}}
+	clients := discoveryClientService(t, false)
+	validClient := clients.getClientFn
+	clients.getClientFn = func(ctx context.Context, tenantID, clientID string) (*domain.Client, error) {
+		if tenantID == "new-tenant" {
+			return nil, nil
+		}
+		return validClient(ctx, tenantID, clientID)
+	}
+	service := NewUserService(
+		&mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }},
+		&mockMembershipRepo{
+			listExactFn: func(context.Context, string) ([]string, error) { return []string{"new-tenant"}, nil },
+			getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+				return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: []string{"reader"}}, nil
+			},
+		},
+		&mockRoleService{}, clients,
+		"secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithTenantScopedTokenClaimsV1(true, []string{"bereia", "local-tenant"}, tenants),
+		WithTenantTargetDiscoveryV2(true, []string{"local-tenant"}, tenants),
+	).(*userService)
+	request := tenantTargetRequest(signTenantHomeToken(t, "secret", user, user.Role), home)
+	request.DiscoverTenantTargetsV1 = false
+	request.DiscoverTenantTargetsV2 = true
+
+	response, err := service.TokenExchange(context.Background(), request)
+	if err != nil {
+		t.Fatalf("dynamic home exchange: %v", err)
+	}
+	if !slices.Equal(response.AuthorizedTenants, []string{"local-tenant"}) {
+		t.Fatalf("client-incomplete tenant became eligible: %+v", response)
+	}
+}
+
+func TestTenantTargetDiscoveryV2_ExcludesMemberWithUnresolvableRole(t *testing.T) {
+	home := "local-tenant"
+	user := &domain.User{
+		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, CompanyId: &home, TokenVersion: 3,
+	}
+	tenants := &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+		return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+	}}
+	service := NewUserService(
+		&mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }},
+		&mockMembershipRepo{
+			listExactFn: func(context.Context, string) ([]string, error) { return []string{"new-tenant"}, nil },
+			getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+				return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: []string{"missing-reader"}}, nil
+			},
+		},
+		&mockRoleService{getByNameFn: func(context.Context, string, string) (*domain.RoleResp, error) {
+			return nil, domain.ErrNotFound
+		}},
+		discoveryClientService(t, false),
+		"secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithTenantScopedTokenClaimsV1(true, []string{"bereia", "local-tenant"}, tenants),
+		WithTenantTargetDiscoveryV2(true, []string{"local-tenant"}, tenants),
+	).(*userService)
+	registry := prometheus.NewRegistry()
+	service.tenantDiscoveryMetrics = NewTenantDiscoveryMetrics(registry)
+	request := tenantTargetRequest(signTenantHomeToken(t, "secret", user, user.Role), home)
+	request.DiscoverTenantTargetsV1 = false
+	request.DiscoverTenantTargetsV2 = true
+
+	response, err := service.TokenExchange(context.Background(), request)
+	if err != nil {
+		t.Fatalf("dynamic home exchange: %v", err)
+	}
+	if !slices.Equal(response.AuthorizedTenants, []string{"local-tenant"}) {
+		t.Fatalf("tenant with unresolvable role became eligible: %+v", response)
+	}
+	if value := tenantDiscoveryCounterValue(t, service.tenantDiscoveryMetrics.omissions, "v2", "role_unresolvable"); value != 1 {
+		t.Fatalf("role omission metric=%v", value)
+	}
+}
+
+func TestTenantDiscoveryMetricsCollapseUnknownLabelValues(t *testing.T) {
+	registry := prometheus.NewRegistry()
+	metrics := NewTenantDiscoveryMetrics(registry)
+	metrics.observeRequest("tenant-secret", nil, 3)
+	metrics.observeOmission("tenant-secret", "role-secret")
+	if value := tenantDiscoveryCounterValue(t, metrics.requests, "internal", "success", "allowed"); value != 1 {
+		t.Fatalf("closed request metric=%v", value)
+	}
+	if value := tenantDiscoveryCounterValue(t, metrics.omissions, "internal", "internal"); value != 1 {
+		t.Fatalf("closed omission metric=%v", value)
+	}
+}
+
+func tenantDiscoveryCounterValue(t *testing.T, counter *prometheus.CounterVec, labels ...string) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := counter.WithLabelValues(labels...).Write(metric); err != nil {
+		t.Fatalf("write metric: %v", err)
+	}
+	return metric.GetCounter().GetValue()
+}
+
+func TestTenantTargetDiscoveryV2_BoundsAuthorizedTargetsForAPIContract(t *testing.T) {
+	for _, test := range []struct {
+		members int
+		want    int
+		wantErr error
+	}{
+		{members: 99, want: 100},
+		{members: 100, wantErr: domain.ErrInvalidTenant},
+	} {
+		t.Run(fmt.Sprintf("members-%d", test.members), func(t *testing.T) {
+			tenantIDs := make([]string, test.members)
+			for index := range tenantIDs {
+				tenantIDs[index] = fmt.Sprintf("tenant-%03d", index)
+			}
+			user := &domain.User{Id: "user-1", Status: domain.UserStatusActive}
+			service := &userService{
+				exactMembershipRepo: &mockMembershipRepo{
+					listExactFn: func(context.Context, string) ([]string, error) {
+						return append([]string(nil), tenantIDs...), nil
+					},
+					getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+						return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: []string{"reader"}}, nil
+					},
+				},
+				tenantRepo: &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+					return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+				}},
+				roleSvc: &mockRoleService{getByNameFn: func(_ context.Context, _ string, roleName string) (*domain.RoleResp, error) {
+					return &domain.RoleResp{Name: roleName, Permissions: []string{"code-admin:workloads:read"}}, nil
+				}},
+				clientSvc: discoveryClientService(t, false),
+			}
+			targets, err := service.authorizedTenantTargets(context.Background(), user, "local-tenant", true)
+			if !errors.Is(err, test.wantErr) || len(targets) != test.want {
+				t.Fatalf("members=%d targets=%d err=%v", test.members, len(targets), err)
+			}
+		})
+	}
+}
+
+func TestTenantTargetDiscoveryV2_BoundsRoleResolutionWork(t *testing.T) {
+	tenantIDs := []string{"tenant-1", "tenant-2", "tenant-3", "tenant-4", "tenant-5", "tenant-6"}
+	roles := make([]string, 100)
+	for index := range roles {
+		roles[index] = fmt.Sprintf("role-%03d", index)
+	}
+	roleReads := 0
+	service := &userService{
+		exactMembershipRepo: &mockMembershipRepo{
+			listExactFn: func(context.Context, string) ([]string, error) {
+				return append([]string(nil), tenantIDs...), nil
+			},
+			getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+				return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: append([]string(nil), roles...)}, nil
+			},
+		},
+		tenantRepo: &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+			return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+		}},
+		roleSvc: &mockRoleService{getByNameFn: func(_ context.Context, _ string, roleName string) (*domain.RoleResp, error) {
+			roleReads++
+			return &domain.RoleResp{Name: roleName, Permissions: []string{"code-admin:workloads:read"}}, nil
+		}},
+		clientSvc: discoveryClientService(t, false),
+	}
+	targets, err := service.authorizedTenantTargets(
+		context.Background(), &domain.User{Id: "user-1", Status: domain.UserStatusActive}, "local-tenant", true,
+	)
+	if !errors.Is(err, domain.ErrInvalidTenant) || targets != nil || roleReads != 500 {
+		t.Fatalf("role-resolution budget targets=%v reads=%d err=%v", targets, roleReads, err)
+	}
+}
+
+func TestTenantTargetDiscoveryV2_TokenExchangeSharesRoleLookupBudget(t *testing.T) {
+	home := "local-tenant"
+	user := &domain.User{
+		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, CompanyId: &home, TokenVersion: 3,
+	}
+	tenantIDs := []string{"tenant-1", "tenant-2", "tenant-3", "tenant-4", "tenant-5"}
+	roles := make([]string, maximumDynamicMembershipRoles)
+	for index := range roles {
+		roles[index] = fmt.Sprintf("role-%03d", index)
+	}
+	roleReads := 0
+	service := NewUserService(
+		&mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }},
+		&mockMembershipRepo{
+			listExactFn: func(context.Context, string) ([]string, error) {
+				return append([]string(nil), tenantIDs...), nil
+			},
+			getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+				return &domain.Membership{
+					TenantId: tenantID, UserId: userID, Roles: append([]string(nil), roles...),
+				}, nil
+			},
+		},
+		&mockRoleService{getByNameFn: func(_ context.Context, _ string, roleName string) (*domain.RoleResp, error) {
+			roleReads++
+			return &domain.RoleResp{Name: roleName, Permissions: []string{"code-admin:workloads:read"}}, nil
+		}},
+		discoveryClientService(t, false), "secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithTenantScopedTokenClaimsV1(true, tenantIDs, &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+			return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+		}}),
+		WithTenantTargetDiscoveryV2(true, []string{home}, &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+			return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+		}}),
+	).(*userService)
+	request := tenantTargetRequest(signTenantHomeToken(t, "secret", user, user.Role), "tenant-5")
+	request.DiscoverTenantTargetsV1 = false
+	request.DiscoverTenantTargetsV2 = true
+
+	response, err := service.TokenExchange(context.Background(), request)
+	if err != nil || response == nil {
+		t.Fatalf("exchange response=%+v err=%v", response, err)
+	}
+	if roleReads != maximumDiscoveryRoleLookups {
+		t.Fatalf("role definitions were resolved more than once: reads=%d budget=%d", roleReads, maximumDiscoveryRoleLookups)
+	}
+}
+
+func TestTenantTargetDiscoveryV2_FailsClosedOutsidePrincipalCohort(t *testing.T) {
+	home := "other-home"
+	user := &domain.User{
+		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, CompanyId: &home, TokenVersion: 3,
+	}
+	service := NewUserService(
+		&mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }},
+		&mockMembershipRepo{
+			listExactFn: func(context.Context, string) ([]string, error) { return []string{"new-tenant"}, nil },
+			getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+				return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: []string{"new-tenant-read"}}, nil
+			},
+		},
+		&mockRoleService{}, discoveryClientService(t, false),
+		"secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithTenantTargetDiscoveryV2(true, []string{"local-tenant"}, &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+			return &domain.Tenant{Id: tenantID, Status: domain.TenantStatusActive}, nil
+		}}),
+	).(*userService)
+	request := tenantTargetRequest(signTenantHomeTokenForTenant(t, "secret", user, user.Role, home), "new-tenant")
+	request.DiscoverTenantTargetsV1 = false
+	request.DiscoverTenantTargetsV2 = true
+
+	response, err := service.TokenExchange(context.Background(), request)
+	if !errors.Is(err, domain.ErrInvalidTenant) || response != nil {
+		t.Fatalf("non-canary principal response=%+v err=%v", response, err)
 	}
 }
 
@@ -364,6 +760,15 @@ func discoveryClientService(t *testing.T, legacyHome bool) *mockClientService {
 func signTenantHomeToken(t *testing.T, secret string, user *domain.User, signedRole domain.UserRole) string {
 	t.Helper()
 	return signTenantHomeTokenVersion(t, secret, user, signedRole, user.TokenVersion)
+}
+
+func signTenantHomeTokenForTenant(t *testing.T, secret string, user *domain.User, signedRole domain.UserRole, tenantID string) string {
+	t.Helper()
+	claims := jwt.MapClaims{
+		"sub": user.Id, "email": user.Email, "role": string(signedRole),
+		"tid": tenantID, "iss": "https://issuer", "aud": "tikti", "ver": user.TokenVersion,
+	}
+	return signIDTokenWithClaims(t, secret, claims)
 }
 
 func signTenantHomeTokenVersion(t *testing.T, secret string, user *domain.User, signedRole domain.UserRole, version any) string {

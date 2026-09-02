@@ -24,7 +24,19 @@ type tenantDiscoveryAuthorization struct {
 	scopes            []string
 }
 
-const tenantFeatureAdministrationScope = "code-admin:features:write"
+type tenantDiscoverySnapshot struct {
+	authorizedTenants []string
+	authorizations    map[string]tenantScopedTokenAuthorization
+}
+
+const (
+	tenantFeatureAdministrationScope = "code-admin:features:write"
+	maximumMembershipsScanned        = 500
+	maximumAuthorizedTenantTargets   = 100
+	maximumMembershipRoles           = 500
+	maximumDynamicMembershipRoles    = 100
+	maximumDiscoveryRoleLookups      = 500
+)
 
 func WithTenantScopedTokenClaimsV1(enabled bool, tenants []string, tenantRepo repository.TenantRepository) UserServiceOption {
 	return func(service *userService) {
@@ -33,6 +45,17 @@ func WithTenantScopedTokenClaimsV1(enabled bool, tenants []string, tenantRepo re
 		service.tenantScopedTokenAllowlist = make(map[string]struct{}, len(tenants))
 		for _, tenantID := range tenants {
 			service.tenantScopedTokenAllowlist[tenantID] = struct{}{}
+		}
+	}
+}
+
+func WithTenantTargetDiscoveryV2(enabled bool, principalTenants []string, tenantRepo repository.TenantRepository) UserServiceOption {
+	return func(service *userService) {
+		service.tenantRepo = tenantRepo
+		service.tenantTargetDiscoveryV2 = enabled
+		service.tenantTargetDiscoveryV2Principals = make(map[string]struct{}, len(principalTenants))
+		for _, tenantID := range principalTenants {
+			service.tenantTargetDiscoveryV2Principals[tenantID] = struct{}{}
 		}
 	}
 }
@@ -55,8 +78,10 @@ func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context,
 	if user == nil || user.Status != domain.UserStatusActive || !validRoleTenantID(target) || s.exactMembershipRepo == nil || s.tenantRepo == nil {
 		return tenantScopedTokenAuthorization{}, domain.ErrInvalidTenant
 	}
-	tenantIDs, err := s.exactMembershipRepo.ListTenantIDsByUserExact(ctx, user.Id)
-	if err != nil || len(tenantIDs) == 0 || !containsString(tenantIDs, target) {
+	tenantIDs, exceeded, err := s.exactMembershipRepo.ListTenantIDsByUserExactBounded(
+		ctx, user.Id, maximumMembershipsScanned,
+	)
+	if err != nil || exceeded || len(tenantIDs) == 0 || !containsString(tenantIDs, target) {
 		return tenantScopedTokenAuthorization{}, domain.ErrInvalidTenant
 	}
 	var selectedRoles []string
@@ -99,7 +124,7 @@ func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context,
 }
 
 func canonicalMembershipRoles(values []string) ([]string, bool) {
-	if len(values) < 1 || len(values) > 500 {
+	if len(values) < 1 || len(values) > maximumMembershipRoles {
 		return nil, false
 	}
 	out := append([]string(nil), values...)
@@ -120,13 +145,20 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 	signedRole string,
 	scopeCeiling []string,
 	requestedScopes []string,
+	dynamicTargets bool,
+	metricMode string,
 ) (tenantDiscoveryAuthorization, error) {
 	if target == "" || strings.TrimSpace(target) != target || !validRoleTenantID(target) ||
 		!validSignedHome(user, home, signedRole) || s.clientSvc == nil {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
 	}
-	authorized, err := s.authorizedTenantTargets(ctx, user, home)
-	if err != nil || !slices.Contains(authorized, target) {
+	if dynamicTargets {
+		if _, allowed := s.tenantTargetDiscoveryV2Principals[home]; !allowed {
+			return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
+		}
+	}
+	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode)
+	if err != nil || !slices.Contains(discovery.authorizedTenants, target) {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
 	}
 	ceiling, ok := scopepolicy.CanonicalAudienceScopes(scopeCeiling)
@@ -151,7 +183,9 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 		!scopepolicy.ValidCanonicalAudienceScopes(clientDefaults) {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidAudience
 	}
-	roles, authority, err := s.targetAuthority(ctx, user, target, home, signedRole, clientDefaults)
+	roles, authority, err := s.targetAuthority(
+		ctx, user, target, home, signedRole, clientDefaults, dynamicTargets, discovery.authorizations,
+	)
 	if err != nil {
 		return tenantDiscoveryAuthorization{}, err
 	}
@@ -171,7 +205,7 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 	}
 	return tenantDiscoveryAuthorization{
 		tenantID: target, principalTenantID: home,
-		authorizedTenants: authorized, roles: roles, scopes: effective,
+		authorizedTenants: discovery.authorizedTenants, roles: roles, scopes: effective,
 	}, nil
 }
 
@@ -191,36 +225,94 @@ func (s *userService) authorizedTenantTargets(
 	ctx context.Context,
 	user *domain.User,
 	home string,
+	dynamicTargets bool,
 ) ([]string, error) {
-	if s.exactMembershipRepo == nil || s.tenantRepo == nil {
-		return nil, domain.ErrInvalidTenant
+	metricMode := "v1"
+	if dynamicTargets {
+		metricMode = "v2"
+	}
+	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode)
+	return discovery.authorizedTenants, err
+}
+
+func (s *userService) discoverTenantTargets(
+	ctx context.Context,
+	user *domain.User,
+	home string,
+	dynamicTargets bool,
+	metricMode string,
+) (tenantDiscoverySnapshot, error) {
+	if user == nil || user.Status != domain.UserStatusActive || s.exactMembershipRepo == nil || s.tenantRepo == nil {
+		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
 	homeTenant, err := s.tenantRepo.Get(ctx, home)
 	if err != nil || homeTenant == nil || homeTenant.Id != home || homeTenant.Status != domain.TenantStatusActive {
-		return nil, domain.ErrInvalidTenant
+		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
-	tenantIDs, err := s.exactMembershipRepo.ListTenantIDsByUserExact(ctx, user.Id)
-	if err != nil || len(tenantIDs) > 500 {
-		return nil, domain.ErrInvalidTenant
+	tenantIDs, exceeded, err := s.exactMembershipRepo.ListTenantIDsByUserExactBounded(
+		ctx, user.Id, maximumMembershipsScanned,
+	)
+	if err != nil || exceeded {
+		if exceeded {
+			s.tenantDiscoveryMetrics.observeOmission(metricMode, "membership_limit")
+		}
+		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
 	allowed := map[string]struct{}{home: {}}
+	authorizations := make(map[string]tenantScopedTokenAuthorization, len(tenantIDs))
+	resolvedRoleLookups := 0
 	for _, tenantID := range tenantIDs {
-		if _, canary := s.tenantScopedTokenAllowlist[tenantID]; !canary {
-			continue
+		if !dynamicTargets {
+			if _, canary := s.tenantScopedTokenAllowlist[tenantID]; !canary {
+				s.tenantDiscoveryMetrics.observeOmission(metricMode, "not_in_v1_cohort")
+				continue
+			}
 		}
 		membership, readErr := s.exactMembershipRepo.GetExact(ctx, tenantID, user.Id)
 		if readErr != nil || membership == nil || membership.TenantId != tenantID || membership.UserId != user.Id {
-			return nil, domain.ErrInvalidTenant
+			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 		}
-		if _, valid := canonicalMembershipRoles(membership.Roles); !valid {
-			return nil, domain.ErrInvalidTenant
+		roles, valid := canonicalMembershipRoles(membership.Roles)
+		if !valid {
+			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
+		}
+		if dynamicTargets && len(roles) > maximumDynamicMembershipRoles {
+			s.tenantDiscoveryMetrics.observeOmission(metricMode, "role_budget_exceeded")
+			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 		}
 		tenant, tenantErr := s.tenantRepo.Get(ctx, tenantID)
 		if tenantErr != nil {
-			return nil, domain.ErrInvalidTenant
+			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 		}
-		if tenant != nil && tenant.Id == tenantID && tenant.Status == domain.TenantStatusActive {
-			allowed[tenantID] = struct{}{}
+		if tenant == nil || tenant.Id != tenantID || tenant.Status != domain.TenantStatusActive {
+			s.tenantDiscoveryMetrics.observeOmission(metricMode, "tenant_inactive")
+			continue
+		}
+		if dynamicTargets && tenantID != home {
+			client, clientErr := s.clientSvc.GetClient(ctx, tenantID, domain.CodeAdminAudienceClientID)
+			if clientErr != nil || !domain.IsManagedCodeAdminAudience(tenantID, client) ||
+				!scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes) {
+				s.tenantDiscoveryMetrics.observeOmission(metricMode, "audience_unavailable")
+				continue
+			}
+		}
+		if dynamicTargets && tenantID != home {
+			if len(roles) > maximumDiscoveryRoleLookups-resolvedRoleLookups {
+				s.tenantDiscoveryMetrics.observeOmission(metricMode, "role_budget_exceeded")
+				return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
+			}
+			resolvedRoleLookups += len(roles)
+			authorization, resolvable := s.resolveMembershipRoleAuthorization(ctx, tenantID, roles)
+			if !resolvable {
+				s.tenantDiscoveryMetrics.observeOmission(metricMode, "role_unresolvable")
+				continue
+			}
+			authorizations[tenantID] = authorization
+		}
+		allowed[tenantID] = struct{}{}
+		if dynamicTargets && len(allowed) > maximumAuthorizedTenantTargets {
+			s.tenantDiscoveryMetrics.observeOmission(metricMode, "target_limit")
+			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 		}
 	}
 	result := make([]string, 0, len(allowed))
@@ -228,7 +320,38 @@ func (s *userService) authorizedTenantTargets(
 		result = append(result, tenantID)
 	}
 	sort.Strings(result)
-	return result, nil
+	return tenantDiscoverySnapshot{
+		authorizedTenants: result,
+		authorizations:    authorizations,
+	}, nil
+}
+
+func (s *userService) resolveMembershipRoleAuthorization(
+	ctx context.Context,
+	tenantID string,
+	roles []string,
+) (tenantScopedTokenAuthorization, bool) {
+	if s.roleSvc == nil {
+		return tenantScopedTokenAuthorization{}, false
+	}
+	permissions := make(map[string]struct{})
+	for _, roleName := range roles {
+		role, err := s.roleSvc.GetByName(ctx, tenantID, roleName)
+		if err != nil || role == nil || role.Name != roleName || !scopepolicy.ValidCanonicalPermissions(role.Permissions) {
+			return tenantScopedTokenAuthorization{}, false
+		}
+		for _, permission := range role.Permissions {
+			permissions[permission] = struct{}{}
+		}
+	}
+	resolved := make([]string, 0, len(permissions))
+	for permission := range permissions {
+		resolved = append(resolved, permission)
+	}
+	sort.Strings(resolved)
+	return tenantScopedTokenAuthorization{
+		roles: append([]string(nil), roles...), permissions: resolved,
+	}, true
 }
 
 func (s *userService) targetAuthority(
@@ -238,17 +361,29 @@ func (s *userService) targetAuthority(
 	home string,
 	signedRole string,
 	candidates []string,
+	dynamicTargets bool,
+	authorizations map[string]tenantScopedTokenAuthorization,
 ) ([]string, []string, error) {
 	if target == home {
 		return nil, homeAuthority(user, signedRole, candidates), nil
 	}
-	strict, protected := s.tenantScopedTokenTarget(target)
-	if !protected || strict == "" {
-		return nil, nil, domain.ErrInvalidTenant
-	}
-	authorization, err := s.resolveTenantScopedTokenAuthorization(ctx, user, strict)
-	if err != nil {
-		return nil, nil, err
+	var authorization tenantScopedTokenAuthorization
+	if dynamicTargets {
+		var authorized bool
+		authorization, authorized = authorizations[target]
+		if !authorized {
+			return nil, nil, domain.ErrInvalidTenant
+		}
+	} else {
+		strict, protected := s.tenantScopedTokenTarget(target)
+		if !protected || strict == "" {
+			return nil, nil, domain.ErrInvalidTenant
+		}
+		var err error
+		authorization, err = s.resolveTenantScopedTokenAuthorization(ctx, user, strict)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 	authority := make([]string, 0, len(authorization.permissions)+len(candidates))
 	for _, permission := range authorization.permissions {

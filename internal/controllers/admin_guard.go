@@ -125,3 +125,9 @@ func hasPlatformTenantAdminProvenance(claims jwt.MapClaims) bool {
 		claimString(claims, "role") == string(domain.RoleAdmin) &&
 		claimString(claims, domain.PlatformPrivilegeClaim) == domain.PlatformPrivilegeAdmin
 }
+
+func dynamicPlatformTenantTargetAllowed(cfg *config.Config, claims jwt.MapClaims) bool {
+	return cfg != nil && cfg.TenantTargetDiscoveryV2 &&
+		slices.Contains(cfg.TenantTargetDiscoveryV2PrincipalTenants, claimString(claims, "tid")) &&
+		hasPlatformTenantAdminProvenance(claims)
+}

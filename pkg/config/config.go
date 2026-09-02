@@ -17,33 +17,35 @@ import (
 
 // Config captures runtime parameters loaded from YAML or the environment.
 type Config struct {
-	Port                               int                        `yaml:"port"`
-	RedisAddr                          string                     `yaml:"redisAddr"`
-	RedisHost                          string                     `yaml:"redisHost"`
-	RedisPort                          int                        `yaml:"redisPort"`
-	RedisDB                            int                        `yaml:"redisDb"`
-	RedisPassword                      string                     `yaml:"redisPassword"`
-	RedisURL                           string                     `yaml:"redisUrl"`
-	JwtSecret                          string                     `yaml:"jwtSecret"`
-	ApiKey                             string                     `yaml:"apiKey"`
-	IssuerBaseURL                      string                     `yaml:"issuerBaseUrl"`
-	DefaultAudience                    string                     `yaml:"defaultAudience"`
-	JwksPrivateKey                     string                     `yaml:"jwksPrivateKey"`
-	JwksKeyID                          string                     `yaml:"jwksKeyId"`
-	WorkloadIdentity                   WorkloadIdentityConfig     `yaml:"workloadIdentity"`
-	WorkloadAccountBFF                 WorkloadAccountBFFConfig   `yaml:"workloadAccountBFF"`
-	StorageSTS                         StorageSTSConfig           `yaml:"storageSTS"`
-	ObjectStorageBrowser               ObjectStorageBrowserConfig `yaml:"objectStorageBrowser"`
-	SAML                               SAMLConfig                 `yaml:"saml"`
-	HTTP                               HTTPConfig                 `yaml:"http"`
-	ForwardAuth                        ForwardAuthConfig          `yaml:"forwardAuth"`
-	TenantScopedTokenClaimsV1          bool                       `yaml:"tenantScopedTokenClaimsV1"`
-	TenantScopedTokenClaimsV1Tenants   []string                   `yaml:"tenantScopedTokenClaimsV1Tenants"`
-	ExactMembershipReadRoutesV1        bool                       `yaml:"exactMembershipReadRoutesV1"`
-	ExactMembershipReadRoutesV1Tenants []string                   `yaml:"exactMembershipReadRoutesV1Tenants"`
-	ExactMembershipPageTokenSecret     string                     `yaml:"-"`
-	MembershipV2WriteRoutesV1          bool                       `yaml:"membershipV2WriteRoutesV1"`
-	MembershipV2WriteRoutesV1Tenants   []string                   `yaml:"membershipV2WriteRoutesV1Tenants"`
+	Port                                    int                        `yaml:"port"`
+	RedisAddr                               string                     `yaml:"redisAddr"`
+	RedisHost                               string                     `yaml:"redisHost"`
+	RedisPort                               int                        `yaml:"redisPort"`
+	RedisDB                                 int                        `yaml:"redisDb"`
+	RedisPassword                           string                     `yaml:"redisPassword"`
+	RedisURL                                string                     `yaml:"redisUrl"`
+	JwtSecret                               string                     `yaml:"jwtSecret"`
+	ApiKey                                  string                     `yaml:"apiKey"`
+	IssuerBaseURL                           string                     `yaml:"issuerBaseUrl"`
+	DefaultAudience                         string                     `yaml:"defaultAudience"`
+	JwksPrivateKey                          string                     `yaml:"jwksPrivateKey"`
+	JwksKeyID                               string                     `yaml:"jwksKeyId"`
+	WorkloadIdentity                        WorkloadIdentityConfig     `yaml:"workloadIdentity"`
+	WorkloadAccountBFF                      WorkloadAccountBFFConfig   `yaml:"workloadAccountBFF"`
+	StorageSTS                              StorageSTSConfig           `yaml:"storageSTS"`
+	ObjectStorageBrowser                    ObjectStorageBrowserConfig `yaml:"objectStorageBrowser"`
+	SAML                                    SAMLConfig                 `yaml:"saml"`
+	HTTP                                    HTTPConfig                 `yaml:"http"`
+	ForwardAuth                             ForwardAuthConfig          `yaml:"forwardAuth"`
+	TenantScopedTokenClaimsV1               bool                       `yaml:"tenantScopedTokenClaimsV1"`
+	TenantScopedTokenClaimsV1Tenants        []string                   `yaml:"tenantScopedTokenClaimsV1Tenants"`
+	TenantTargetDiscoveryV2                 bool                       `yaml:"tenantTargetDiscoveryV2"`
+	TenantTargetDiscoveryV2PrincipalTenants []string                   `yaml:"tenantTargetDiscoveryV2PrincipalTenants"`
+	ExactMembershipReadRoutesV1             bool                       `yaml:"exactMembershipReadRoutesV1"`
+	ExactMembershipReadRoutesV1Tenants      []string                   `yaml:"exactMembershipReadRoutesV1Tenants"`
+	ExactMembershipPageTokenSecret          string                     `yaml:"-"`
+	MembershipV2WriteRoutesV1               bool                       `yaml:"membershipV2WriteRoutesV1"`
+	MembershipV2WriteRoutesV1Tenants        []string                   `yaml:"membershipV2WriteRoutesV1Tenants"`
 }
 
 // HTTPConfig defines the public server boundary.
@@ -339,6 +341,34 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if c.TenantScopedTokenClaimsV1 && len(c.TenantScopedTokenClaimsV1Tenants) == 0 {
 		return nil, fmt.Errorf("tenantScopedTokenClaimsV1 requires a non-empty tenant allowlist")
+	}
+	if raw, exists := os.LookupEnv("TENANT_TARGET_DISCOVERY_V2"); exists {
+		switch strings.TrimSpace(raw) {
+		case "true":
+			c.TenantTargetDiscoveryV2 = true
+		case "false":
+			c.TenantTargetDiscoveryV2 = false
+		default:
+			return nil, fmt.Errorf("TENANT_TARGET_DISCOVERY_V2 must be true or false")
+		}
+	}
+	if raw, exists := os.LookupEnv("TENANT_TARGET_DISCOVERY_V2_PRINCIPAL_TENANTS"); exists {
+		c.TenantTargetDiscoveryV2PrincipalTenants = nil
+		if strings.TrimSpace(raw) != "" {
+			c.TenantTargetDiscoveryV2PrincipalTenants = strings.Split(raw, ",")
+		}
+	}
+	c.TenantTargetDiscoveryV2PrincipalTenants, err = canonicalNamedTenantAllowlist(
+		"tenantTargetDiscoveryV2PrincipalTenants", c.TenantTargetDiscoveryV2PrincipalTenants,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if c.TenantTargetDiscoveryV2 && len(c.TenantTargetDiscoveryV2PrincipalTenants) == 0 {
+		return nil, fmt.Errorf("tenantTargetDiscoveryV2 requires a non-empty principal tenant allowlist")
+	}
+	if c.TenantTargetDiscoveryV2 && !c.TenantScopedTokenClaimsV1 {
+		return nil, fmt.Errorf("tenantTargetDiscoveryV2 requires tenantScopedTokenClaimsV1 while the v1 fallback remains active")
 	}
 	if raw, exists := os.LookupEnv("EXACT_MEMBERSHIP_READ_ROUTES_V1"); exists {
 		switch strings.TrimSpace(raw) {

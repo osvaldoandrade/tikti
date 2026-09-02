@@ -17,6 +17,8 @@ import (
 func TestManagedAudienceClientController_EnsureContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	config, key := roleAccessConfig(t)
+	config.TenantScopedTokenClaimsV1 = true
+	config.TenantScopedTokenClaimsV1Tenants = []string{"bereia"}
 	created := true
 	var serviceError error
 	service := &fakeClientService{ensureFn: func(
@@ -71,6 +73,8 @@ func TestManagedAudienceClientController_EnsureContract(t *testing.T) {
 func TestManagedAudienceClientController_RejectsInvalidInput(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	config, key := roleAccessConfig(t)
+	config.TenantScopedTokenClaimsV1 = true
+	config.TenantScopedTokenClaimsV1Tenants = []string{"bereia"}
 	calls := 0
 	service := &fakeClientService{ensureFn: func(
 		context.Context,
@@ -81,7 +85,7 @@ func TestManagedAudienceClientController_RejectsInvalidInput(t *testing.T) {
 		return &domain.ManagedAudienceClientResp{}, true, nil
 	}}
 	router := gin.New()
-	router.PUT("/ensure", NewManagedAudienceClientController(service, config).Ensure)
+	router.PUT("/admin/tenants/:tenantId/clients/code-admin-api:ensure", NewManagedAudienceClientController(service, config).Ensure)
 	auth := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
 		"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope,
 		"role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
@@ -99,7 +103,7 @@ func TestManagedAudienceClientController_RejectsInvalidInput(t *testing.T) {
 		{name: "oversized", body: `{"defaultScopes":["` + strings.Repeat("x", managedAudienceClientBodyLimit) + `"]}`, contentType: "application/json", status: http.StatusRequestEntityTooLarge},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPut, "/ensure", strings.NewReader(test.body))
+			req := httptest.NewRequest(http.MethodPut, "/admin/tenants/bereia/clients/code-admin-api:ensure", strings.NewReader(test.body))
 			req.Header.Set("Authorization", auth)
 			req.Header.Set("Content-Type", test.contentType)
 			recorder := httptest.NewRecorder()
@@ -111,5 +115,54 @@ func TestManagedAudienceClientController_RejectsInvalidInput(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("invalid inputs called service %d times", calls)
+	}
+}
+
+func TestManagedAudienceClientController_DynamicTargetRequiresPrincipalCanary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg, key := roleAccessConfig(t)
+	cfg.TenantScopedTokenClaimsV1 = true
+	cfg.TenantScopedTokenClaimsV1Tenants = []string{"bereia"}
+	cfg.TenantTargetDiscoveryV2 = true
+	cfg.TenantTargetDiscoveryV2PrincipalTenants = []string{"local-tenant"}
+	calls := 0
+	service := &fakeClientService{ensureFn: func(
+		_ context.Context,
+		tenantID string,
+		request domain.ManagedAudienceClientEnsureReq,
+	) (*domain.ManagedAudienceClientResp, bool, error) {
+		calls++
+		return &domain.ManagedAudienceClientResp{
+			ClientId: domain.CodeAdminAudienceClientID, TenantId: tenantID,
+			Type: domain.ClientTypeService, AllowedGrantTypes: []string{"token_exchange"},
+			DefaultScopes: request.DefaultScopes, Status: domain.ClientStatusActive,
+		}, true, nil
+	}}
+	router := gin.New()
+	router.PUT("/admin/tenants/:tenantId/clients/code-admin-api:ensure", NewManagedAudienceClientController(service, cfg).Ensure)
+	request := func(target, principal string) *httptest.ResponseRecorder {
+		auth := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+			"sub": "platform-operator", "tid": principal, "scope": domain.PlatformTenantAdminScope,
+			"role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+		})
+		req := httptest.NewRequest(http.MethodPut, "/admin/tenants/"+target+"/clients/code-admin-api:ensure", strings.NewReader(`{"defaultScopes":["code-admin:workloads:read"]}`))
+		req.Header.Set("Authorization", auth)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	if response := request("new-tenant", "local-tenant"); response.Code != http.StatusCreated || calls != 1 {
+		t.Fatalf("canary response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+	if response := request("new-tenant", "foreign-tenant"); response.Code != http.StatusNotFound || calls != 1 {
+		t.Fatalf("foreign response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+	cfg.TenantTargetDiscoveryV2 = false
+	if response := request("new-tenant", "local-tenant"); response.Code != http.StatusNotFound || calls != 1 {
+		t.Fatalf("disabled response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	}
+	if response := request("bereia", "foreign-tenant"); response.Code != http.StatusCreated || calls != 2 {
+		t.Fatalf("static response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
 }

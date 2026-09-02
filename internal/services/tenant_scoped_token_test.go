@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -113,6 +114,38 @@ func TestTenantScopedTokenClaimsPreserveLegacyOutsideCanary(t *testing.T) {
 				t.Fatalf("legacy claims=%v err=%v", claims, err)
 			}
 		})
+	}
+}
+
+func TestTenantScopedTokenV1PreservesFiveHundredRoleMembershipCompatibility(t *testing.T) {
+	roleNames := make([]string, 500)
+	for index := range roleNames {
+		roleNames[index] = fmt.Sprintf("role-%03d", index)
+	}
+	roleReads := 0
+	memberships := &mockMembershipRepo{
+		listExactFn: func(context.Context, string) ([]string, error) { return []string{"bereia"}, nil },
+		getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+			return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: append([]string(nil), roleNames...)}, nil
+		},
+	}
+	service := NewUserService(
+		nil,
+		memberships,
+		&mockRoleService{getByNameFn: func(_ context.Context, _ string, roleName string) (*domain.RoleResp, error) {
+			roleReads++
+			return &domain.RoleResp{Name: roleName, Permissions: []string{"bereia:read"}}, nil
+		}},
+		nil, "", "", "", "", "",
+		WithTenantScopedTokenClaimsV1(true, []string{"bereia"}, &fakeTenantRepo{getFn: func(context.Context, string) (*domain.Tenant, error) {
+			return &domain.Tenant{Id: "bereia", Status: domain.TenantStatusActive}, nil
+		}}),
+	).(*userService)
+	authorization, err := service.resolveTenantScopedTokenAuthorization(
+		context.Background(), &domain.User{Id: "user-1", Status: domain.UserStatusActive}, "bereia",
+	)
+	if err != nil || len(authorization.roles) != 500 || roleReads != 500 {
+		t.Fatalf("v1 compatibility roles=%d reads=%d err=%v", len(authorization.roles), roleReads, err)
 	}
 }
 

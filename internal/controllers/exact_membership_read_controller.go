@@ -109,7 +109,7 @@ func (r *exactMembershipReadController) authorize(c *gin.Context, tenantID, user
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient tenant administration scope"})
 		return claims, false
 	}
-	if !slices.Contains(r.allowed, tenantID) {
+	if !slices.Contains(r.allowed, tenantID) && !(platform && dynamicPlatformTenantTargetAllowed(r.cfg, claims)) {
 		c.Status(http.StatusNotFound)
 		return claims, false
 	}

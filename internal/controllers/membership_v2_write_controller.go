@@ -119,7 +119,7 @@ func (r *membershipV2WriteController) authorize(c *gin.Context, tenantID, userID
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient tenant administration scope"})
 		return nil, false
 	}
-	if !slices.Contains(r.allowed, tenantID) {
+	if !slices.Contains(r.allowed, tenantID) && !dynamicPlatformTenantTargetAllowed(r.cfg, claims) {
 		c.Status(http.StatusNotFound)
 		return nil, false
 	}

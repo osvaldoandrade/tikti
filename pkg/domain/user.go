@@ -141,6 +141,7 @@ type TokenExchangeReq struct {
 	Subject                 string   `json:"subject,omitempty"`
 	TenantID                string   `json:"tenantId,omitempty"`
 	DiscoverTenantTargetsV1 bool     `json:"discoverTenantTargetsV1,omitempty"`
+	DiscoverTenantTargetsV2 bool     `json:"discoverTenantTargetsV2,omitempty"`
 	ScopeCeilingV1          []string `json:"scopeCeilingV1,omitempty"`
 }
 

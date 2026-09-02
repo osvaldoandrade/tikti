@@ -54,7 +54,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if err := validateMembershipV2WriteRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
-	if cfg.TenantScopedTokenClaimsV1 {
+	if cfg.TenantScopedTokenClaimsV1 || cfg.TenantTargetDiscoveryV2 {
 		if err := scopepolicy.ValidateCompiled(); err != nil {
 			return nil, fmt.Errorf("validate tenant scope policy: %w", err)
 		}
@@ -77,6 +77,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	clientService := services.NewClientService(clientRepo, services.WithManagedAudienceClients(
 		cfg.TenantScopedTokenClaimsV1,
 		cfg.TenantScopedTokenClaimsV1Tenants,
+	), services.WithDynamicManagedAudienceClients(
+		cfg.TenantTargetDiscoveryV2,
+		tenantRepo,
 	))
 
 	userService := services.NewUserService(
@@ -93,6 +96,14 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 			cfg.TenantScopedTokenClaimsV1,
 			cfg.TenantScopedTokenClaimsV1Tenants,
 			tenantRepo,
+		),
+		services.WithTenantTargetDiscoveryV2(
+			cfg.TenantTargetDiscoveryV2,
+			cfg.TenantTargetDiscoveryV2PrincipalTenants,
+			tenantRepo,
+		),
+		services.WithTenantDiscoveryMetrics(
+			services.NewTenantDiscoveryMetrics(prometheus.DefaultRegisterer),
 		),
 	)
 	workloadVerifier, err := newWorkloadTokenVerifier(cfg.WorkloadIdentity)

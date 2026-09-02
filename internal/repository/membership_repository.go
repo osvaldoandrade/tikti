@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,13 +27,17 @@ type MembershipRepository interface {
 type ExactMembershipRepository interface {
 	GetExact(ctx context.Context, tenantID string, userID string) (*domain.Membership, error)
 	ListTenantIDsByUserExact(ctx context.Context, userID string) ([]string, error)
+	ListTenantIDsByUserExactBounded(ctx context.Context, userID string, maximum int) ([]string, bool, error)
 }
 
 type membershipRepo struct {
 	client *redis.Client
 }
 
-const membershipsByUserPrefix = "membershipsByUser:"
+const (
+	membershipsByUserPrefix           = "membershipsByUser:"
+	maximumExactMembershipTenantReads = 500
+)
 
 var errStoredMembershipContract = errors.New("stored membership contract mismatch")
 
@@ -56,6 +61,22 @@ if v2 or v2Reverse == 1 then return "locked" end
 redis.call("HDEL", KEYS[3], ARGV[1])
 redis.call("SREM", KEYS[4], ARGV[2])
 return "deleted"
+`
+
+const membershipExactTenantIDsBoundedScript = `
+local maximum = tonumber(ARGV[1])
+if maximum == nil or maximum < 1 then
+  return redis.error_reply("invalid maximum")
+end
+if redis.call("SCARD", KEYS[1]) > maximum then
+  return {"limit"}
+end
+local result = {"ok"}
+local tenants = redis.call("SMEMBERS", KEYS[1])
+for index = 1, #tenants do
+  result[#result + 1] = tenants[index]
+end
+return result
 `
 
 // NewMembershipRepo keeps legacy-only records writable but permanently guards
@@ -156,23 +177,65 @@ func (r *membershipRepo) ListTenantIDsByUser(ctx context.Context, userID string)
 }
 
 func (r *membershipRepo) ListTenantIDsByUserExact(ctx context.Context, userID string) ([]string, error) {
-	if userID == "" || strings.TrimSpace(userID) != userID {
-		return nil, errStoredMembershipContract
-	}
-	values, err := r.client.SMembers(ctx, membershipsByUserPrefix+userID).Result()
-	if err == redis.Nil {
-		return []string{}, nil
-	}
+	values, exceeded, err := r.ListTenantIDsByUserExactBounded(ctx, userID, maximumExactMembershipTenantReads)
 	if err != nil {
 		return nil, err
 	}
-	for _, tenantID := range values {
-		if !canonicalMembershipTenantID(tenantID) {
-			return nil, errStoredMembershipContract
+	if exceeded {
+		return nil, errStoredMembershipContract
+	}
+	return values, nil
+}
+
+// ListTenantIDsByUserExactBounded atomically checks cardinality before Redis
+// materializes the reverse index. The hard ceiling prevents a caller from
+// accidentally turning this authorization read into an unbounded SMEMBERS.
+func (r *membershipRepo) ListTenantIDsByUserExactBounded(
+	ctx context.Context,
+	userID string,
+	maximum int,
+) ([]string, bool, error) {
+	if userID == "" || strings.TrimSpace(userID) != userID {
+		return nil, false, errStoredMembershipContract
+	}
+	if maximum < 1 || maximum > maximumExactMembershipTenantReads {
+		return nil, false, errStoredMembershipContract
+	}
+	result, err := r.client.Eval(
+		ctx,
+		membershipExactTenantIDsBoundedScript,
+		[]string{membershipsByUserPrefix + userID},
+		strconv.Itoa(maximum),
+	).Slice()
+	if err != nil {
+		return nil, false, err
+	}
+	if len(result) == 0 {
+		return nil, false, errStoredMembershipContract
+	}
+	marker, ok := result[0].(string)
+	if !ok {
+		return nil, false, errStoredMembershipContract
+	}
+	if marker == "limit" {
+		return nil, true, nil
+	}
+	if marker != "ok" {
+		return nil, false, errStoredMembershipContract
+	}
+	values := make([]string, 0, len(result)-1)
+	for _, raw := range result[1:] {
+		tenantID, valid := raw.(string)
+		if !valid {
+			return nil, false, errStoredMembershipContract
 		}
+		if !canonicalMembershipTenantID(tenantID) {
+			return nil, false, errStoredMembershipContract
+		}
+		values = append(values, tenantID)
 	}
 	sort.Strings(values)
-	return values, nil
+	return values, false, nil
 }
 
 func (r *membershipRepo) Delete(ctx context.Context, tenantID string, userID string) error {

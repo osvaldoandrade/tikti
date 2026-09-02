@@ -310,6 +310,54 @@ func TestNewApplicationAndWorkloadVerifier(t *testing.T) {
 	}
 }
 
+func TestNewApplicationWiresDynamicManagedAudienceTarget(t *testing.T) {
+	server := miniredis.RunT(t)
+	application, err := NewApplication(&config.Config{
+		RedisAddr:                               server.Addr(),
+		TenantTargetDiscoveryV2:                 true,
+		TenantTargetDiscoveryV2PrincipalTenants: []string{"local-tenant"},
+	})
+	if err != nil {
+		t.Fatalf("dynamic application startup: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Redis.Close() })
+	if _, _, err = application.TenantSvc.CreateWithID(context.Background(), "new-tenant", domain.TenantCreateReq{
+		Name: "New Tenant", Slug: "new-tenant",
+	}); err != nil {
+		t.Fatalf("create dynamic tenant: %v", err)
+	}
+	response, created, err := application.ClientSvc.EnsureCodeAdminAudience(context.Background(), "new-tenant", domain.ManagedAudienceClientEnsureReq{
+		DefaultScopes: []string{"code-admin:workloads:read"},
+	})
+	if err != nil || !created || response.TenantId != "new-tenant" {
+		t.Fatalf("dynamic managed client: response=%+v created=%v err=%v", response, created, err)
+	}
+	router := gin.New()
+	SetupMappings(
+		router,
+		application.Config,
+		application.UserService,
+		application.TenantSvc,
+		application.MemberSvc,
+		application.RoleSvc,
+		application.ClientSvc,
+		application.WorkloadSvc,
+		application.WorkloadAccountSvc,
+		nil,
+		nil,
+	)
+	found := false
+	for _, route := range router.Routes() {
+		if route.Method == http.MethodPut && route.Path == "/v1/admin/tenants/:tenantId/clients/code-admin-api:ensure" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("dynamic managed audience route is not mounted")
+	}
+}
+
 func applicationRoleToken(t *testing.T, privateKey string, claims jwt.MapClaims) string {
 	key, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(privateKey))
 	if err != nil {

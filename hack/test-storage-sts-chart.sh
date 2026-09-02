@@ -31,6 +31,10 @@ for contract in \
   fi
 done
 
+must_fail \
+  --set config.tenantTargetDiscoveryV2=true \
+  --set 'config.tenantTargetDiscoveryV2PrincipalTenants[0]=local-tenant'
+
 must_fail --set config.storageSTS.enabled=true
 must_fail --set config.objectStorageBrowser.enabled=true
 must_fail \

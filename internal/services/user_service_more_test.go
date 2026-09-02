@@ -139,6 +139,16 @@ func (m *mockMembershipRepo) ListTenantIDsByUserExact(ctx context.Context, userI
 	}
 	return nil, nil
 }
+func (m *mockMembershipRepo) ListTenantIDsByUserExactBounded(ctx context.Context, userID string, maximum int) ([]string, bool, error) {
+	values, err := m.ListTenantIDsByUserExact(ctx, userID)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(values) > maximum {
+		return nil, true, nil
+	}
+	return values, false, nil
+}
 func (m *mockMembershipRepo) Delete(ctx context.Context, tenantID string, userID string) error {
 	if m.deleteFn != nil {
 		return m.deleteFn(ctx, tenantID, userID)

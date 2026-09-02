@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -184,6 +185,37 @@ func TestMembershipRepoExactReadsFailClosed(t *testing.T) {
 	}
 	if canonicalMembershipTenantID("-bereia") {
 		t.Fatal("non-canonical tenant boundary accepted")
+	}
+}
+
+func TestMembershipRepoExactReverseIndexIsAtomicallyBounded(t *testing.T) {
+	rdb, legacy := newMembershipRepoForTest(t)
+	repo := legacy.(ExactMembershipRepository)
+	ctx := context.Background()
+	values := make([]interface{}, maximumExactMembershipTenantReads)
+	for index := range values {
+		values[index] = fmt.Sprintf("tenant-%03d", index)
+	}
+	if err := rdb.SAdd(ctx, membershipsByUserPrefix+"user-1", values...).Err(); err != nil {
+		t.Fatalf("seed reverse index: %v", err)
+	}
+
+	tenants, exceeded, err := repo.ListTenantIDsByUserExactBounded(ctx, "user-1", maximumExactMembershipTenantReads)
+	if err != nil || exceeded || len(tenants) != maximumExactMembershipTenantReads || tenants[0] != "tenant-000" || tenants[499] != "tenant-499" {
+		t.Fatalf("bounded exact tenants=%d exceeded=%t err=%v", len(tenants), exceeded, err)
+	}
+	if err := rdb.SAdd(ctx, membershipsByUserPrefix+"user-1", "tenant-500").Err(); err != nil {
+		t.Fatalf("grow reverse index: %v", err)
+	}
+	tenants, exceeded, err = repo.ListTenantIDsByUserExactBounded(ctx, "user-1", maximumExactMembershipTenantReads)
+	if err != nil || !exceeded || tenants != nil {
+		t.Fatalf("bounded overflow tenants=%v exceeded=%t err=%v", tenants, exceeded, err)
+	}
+	if _, _, err := repo.ListTenantIDsByUserExactBounded(ctx, "user-1", 0); err != errStoredMembershipContract {
+		t.Fatalf("invalid limit error=%v", err)
+	}
+	if _, _, err := repo.ListTenantIDsByUserExactBounded(ctx, "user-1", maximumExactMembershipTenantReads+1); err != errStoredMembershipContract {
+		t.Fatalf("unsafe limit error=%v", err)
 	}
 }
 

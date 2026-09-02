@@ -83,7 +83,8 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	privateKey := applicationTestPrivateKey(t, 2048)
 	cfg := &config.Config{ApiKey: "api-key-canary", IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin", JwksPrivateKey: privateKey,
-		ExactMembershipReadRoutesV1: true, ExactMembershipReadRoutesV1Tenants: []string{"bereia", "disabled", "invalid-tenant", "missing-tenant", "storage-tenant", "storifly"}}
+		ExactMembershipReadRoutesV1: true, ExactMembershipReadRoutesV1Tenants: []string{"bereia", "disabled", "invalid-tenant", "missing-tenant", "storage-tenant", "storifly"},
+		TenantTargetDiscoveryV2: true, TenantTargetDiscoveryV2PrincipalTenants: []string{"local-tenant"}}
 	list := &exactHTTPList{}
 	storageCalls := 0
 	svc := services.NewExactMembershipReadService(exactHTTPTenants{storageCalls: &storageCalls}, exactHTTPMemberships{storageCalls: &storageCalls}, list)
@@ -91,6 +92,9 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 	setupExactMembershipReadMappings(router, cfg, svc)
 	token := func(claims jwt.MapClaims) string { return "Bearer " + applicationRoleToken(t, privateKey, claims) }
 	platform := token(jwt.MapClaims{"sub": "platform-operator", "scope": "code-admin:tenants:admin", "tid": "home"})
+	dynamicPlatform := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "local-tenant"})
+	dynamicForeign := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "foreign-tenant"})
+	dynamicWithoutProvenance := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "tid": "local-tenant"})
 	localRead := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:read", "tid": "bereia"})
 	localWrite := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:write", "tid": "bereia"})
 	roleOnly := token(jwt.MapClaims{"sub": "operator", "role": "COMPANY_ADMIN", "tid": "bereia"})
@@ -115,6 +119,9 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 		{"local foreign", "/v1/admin/tenants/storifly/memberships", localRead, "api-key-canary", "", 403, ""},
 		{"local outside hides allowlist", "/v1/admin/tenants/outside/memberships", localRead, "api-key-canary", "", 403, ""},
 		{"platform outside", "/v1/admin/tenants/outside/memberships", platform, "api-key-canary", "", 404, ""},
+		{"dynamic target", "/v1/admin/tenants/new-tenant/memberships", dynamicPlatform, "api-key-canary", "", 200, `"tenantId":"new-tenant"`},
+		{"dynamic foreign principal", "/v1/admin/tenants/new-tenant/memberships", dynamicForeign, "api-key-canary", "", 404, ""},
+		{"dynamic missing provenance", "/v1/admin/tenants/new-tenant/memberships", dynamicWithoutProvenance, "api-key-canary", "", 404, ""},
 		{"invalid tenant", "/v1/admin/tenants/Bad/memberships", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"long tenant", "/v1/admin/tenants/" + strings.Repeat("a", 64) + "/memberships", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"invalid user", "/v1/admin/tenants/bereia/memberships/user~bad", platform, "api-key-canary", "", 400, "invalid argument"},

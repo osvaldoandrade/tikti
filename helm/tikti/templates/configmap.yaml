@@ -1,3 +1,4 @@
+{{- if and .Values.config.tenantTargetDiscoveryV2 (not .Values.config.tenantScopedTokenClaimsV1) }}{{ fail "config.tenantTargetDiscoveryV2 requires config.tenantScopedTokenClaimsV1 while the v1 fallback remains active" }}{{- end }}
 {{- if .Values.config.storageSTS.enabled }}
 {{- if not (regexMatch `^[0-9]{12}$` .Values.config.storageSTS.syntheticAccountId) }}{{ fail "config.storageSTS.syntheticAccountId must contain exactly 12 digits" }}{{- end }}
 {{- if not (regexMatch `^https?://[^/?#]+/internal/v1/object-storage:authorize$` .Values.config.storageSTS.authorizerUrl) }}{{ fail "config.storageSTS.authorizerUrl must be the exact internal endpoint" }}{{- end }}
@@ -56,6 +57,8 @@ data:
     jwksKeyId: {{ .Values.config.jwksKeyId | quote }}
     tenantScopedTokenClaimsV1: {{ .Values.config.tenantScopedTokenClaimsV1 }}
     tenantScopedTokenClaimsV1Tenants: {{ .Values.config.tenantScopedTokenClaimsV1Tenants | toJson }}
+    tenantTargetDiscoveryV2: {{ .Values.config.tenantTargetDiscoveryV2 }}
+    tenantTargetDiscoveryV2PrincipalTenants: {{ .Values.config.tenantTargetDiscoveryV2PrincipalTenants | toJson }}
     exactMembershipReadRoutesV1: {{ .Values.config.exactMembershipReadRoutesV1 }}
     exactMembershipReadRoutesV1Tenants: {{ .Values.config.exactMembershipReadRoutesV1Tenants | toJson }}
     membershipV2WriteRoutesV1: {{ .Values.config.membershipV2WriteRoutesV1 }}

@@ -68,6 +68,56 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.TenantScopedTokenClaimsV1 || len(cfg.TenantScopedTokenClaimsV1Tenants) != 0 {
 		t.Fatalf("tenant-scoped token canary must default off: %#v", cfg.TenantScopedTokenClaimsV1Tenants)
 	}
+	if cfg.TenantTargetDiscoveryV2 || len(cfg.TenantTargetDiscoveryV2PrincipalTenants) != 0 {
+		t.Fatalf("dynamic tenant discovery must default off: %#v", cfg.TenantTargetDiscoveryV2PrincipalTenants)
+	}
+}
+
+func TestLoadConfigTenantTargetDiscoveryV2(t *testing.T) {
+	t.Run("environment enables canonical principal cohort", func(t *testing.T) {
+		t.Setenv("TENANT_SCOPED_TOKEN_CLAIMS_V1", "true")
+		t.Setenv("TENANT_SCOPED_TOKEN_CLAIMS_V1_TENANTS", "bereia")
+		t.Setenv("TENANT_TARGET_DISCOVERY_V2", "true")
+		t.Setenv("TENANT_TARGET_DISCOVERY_V2_PRINCIPAL_TENANTS", "local-tenant")
+		cfg, err := LoadConfig(writeTempConfig(t, `{}`))
+		if err != nil || !cfg.TenantTargetDiscoveryV2 || strings.Join(cfg.TenantTargetDiscoveryV2PrincipalTenants, ",") != "local-tenant" {
+			t.Fatalf("dynamic discovery config=%#v err=%v", cfg, err)
+		}
+	})
+	t.Run("yaml enables canonical principal cohort", func(t *testing.T) {
+		cfg, err := LoadConfig(writeTempConfig(t, `
+tenantScopedTokenClaimsV1: true
+tenantScopedTokenClaimsV1Tenants: [bereia]
+tenantTargetDiscoveryV2: true
+tenantTargetDiscoveryV2PrincipalTenants: [local-tenant]
+`))
+		if err != nil || !cfg.TenantTargetDiscoveryV2 || len(cfg.TenantTargetDiscoveryV2PrincipalTenants) != 1 {
+			t.Fatalf("dynamic discovery YAML=%#v err=%v", cfg, err)
+		}
+	})
+	t.Run("v2 requires v1 fallback", func(t *testing.T) {
+		t.Setenv("TENANT_TARGET_DISCOVERY_V2", "true")
+		t.Setenv("TENANT_TARGET_DISCOVERY_V2_PRINCIPAL_TENANTS", "local-tenant")
+		if _, err := LoadConfig(writeTempConfig(t, `{}`)); err == nil || !strings.Contains(err.Error(), "requires tenantScopedTokenClaimsV1") {
+			t.Fatalf("dynamic discovery without fallback error=%v", err)
+		}
+	})
+	for _, test := range []struct {
+		name, flag, principals string
+	}{
+		{name: "invalid boolean", flag: "1", principals: "local-tenant"},
+		{name: "missing principal cohort", flag: "true"},
+		{name: "invalid principal", flag: "true", principals: "Local-Tenant"},
+		{name: "duplicate principal", flag: "true", principals: "local-tenant,local-tenant"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("TENANT_TARGET_DISCOVERY_V2", test.flag)
+			t.Setenv("TENANT_TARGET_DISCOVERY_V2_PRINCIPAL_TENANTS", test.principals)
+			if _, err := LoadConfig(writeTempConfig(t, `{}`)); err == nil {
+				t.Fatal("unsafe dynamic tenant discovery configuration was accepted")
+			}
+		})
+	}
 }
 
 func TestLoadConfigTenantScopedTokenCanary(t *testing.T) {

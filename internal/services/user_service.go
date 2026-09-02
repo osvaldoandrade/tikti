@@ -41,22 +41,25 @@ type UserService interface {
 
 // userService is the concrete UserService backed by the repository and JWT utilities.
 type userService struct {
-	repo                       repository.UserRepository
-	membershipRepo             repository.MembershipRepository
-	exactMembershipRepo        repository.ExactMembershipRepository
-	tenantRepo                 repository.TenantRepository
-	tenantScopedTokenClaimsV1  bool
-	tenantScopedTokenAllowlist map[string]struct{}
-	jwtSecret                  string
-	issuerBaseURL              string
-	defaultAudience            string
-	jwksPrivateKey             string
-	jwksKeyID                  string
-	roleSvc                    RoleService
-	clientSvc                  ClientService
-	rsaOnce                    sync.Once
-	rsaKey                     interface{}
-	rsaErr                     error
+	repo                              repository.UserRepository
+	membershipRepo                    repository.MembershipRepository
+	exactMembershipRepo               repository.ExactMembershipRepository
+	tenantRepo                        repository.TenantRepository
+	tenantScopedTokenClaimsV1         bool
+	tenantScopedTokenAllowlist        map[string]struct{}
+	tenantTargetDiscoveryV2           bool
+	tenantTargetDiscoveryV2Principals map[string]struct{}
+	jwtSecret                         string
+	issuerBaseURL                     string
+	defaultAudience                   string
+	jwksPrivateKey                    string
+	jwksKeyID                         string
+	roleSvc                           RoleService
+	clientSvc                         ClientService
+	tenantDiscoveryMetrics            *TenantDiscoveryMetrics
+	rsaOnce                           sync.Once
+	rsaKey                            interface{}
+	rsaErr                            error
 }
 
 type UserServiceOption func(*userService)
@@ -221,7 +224,17 @@ func (s *userService) Lookup(ctx context.Context, req domain.LookupReq) (*domain
 }
 
 // TokenExchange exchanges an idToken for a scoped RS256 access token.
-func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchangeReq) (*domain.TokenExchangeResp, error) {
+func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchangeReq) (result *domain.TokenExchangeResp, resultErr error) {
+	discoveryMetricMode := requestedTenantDiscoveryMode(req)
+	if discoveryMetricMode != "" && s.tenantDiscoveryMetrics != nil {
+		defer func() {
+			authorizedTargets := 0
+			if result != nil {
+				authorizedTargets = len(result.AuthorizedTenants)
+			}
+			s.tenantDiscoveryMetrics.observeRequest(discoveryMetricMode, resultErr, authorizedTargets)
+		}()
+	}
 	if strings.TrimSpace(req.IdToken) == "" {
 		return nil, domain.ErrInvalidToken
 	}
@@ -285,7 +298,8 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 	u, userErr := s.repo.FindByEmail(ctx, email)
 	strictTarget, protectedTarget := s.tenantScopedTokenTarget(req.TenantID)
-	if (protectedTarget || req.DiscoverTenantTargetsV1) && userErr != nil {
+	discoveryRequested := req.DiscoverTenantTargetsV1 || req.DiscoverTenantTargetsV2
+	if (protectedTarget || discoveryRequested) && userErr != nil {
 		return nil, domain.ErrInvalidToken
 	}
 	if u == nil {
@@ -300,12 +314,18 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if protectedTarget && strictTarget == "" {
 		return nil, domain.ErrInvalidTenant
 	}
-	if req.ScopeCeilingV1 != nil && !req.DiscoverTenantTargetsV1 {
+	if req.ScopeCeilingV1 != nil && !discoveryRequested {
 		return nil, domain.ErrInvalidArgument
 	}
-	discoveryExchange := req.DiscoverTenantTargetsV1 && s.tenantScopedTokenClaimsV1 &&
+	if req.DiscoverTenantTargetsV1 && req.DiscoverTenantTargetsV2 {
+		return nil, domain.ErrInvalidArgument
+	}
+	discoveryExchangeV1 := req.DiscoverTenantTargetsV1 && s.tenantScopedTokenClaimsV1 &&
 		req.Audience == domain.CodeAdminAudienceClientID
-	if req.DiscoverTenantTargetsV1 && !discoveryExchange {
+	discoveryExchangeV2 := req.DiscoverTenantTargetsV2 && s.tenantTargetDiscoveryV2 &&
+		req.Audience == domain.CodeAdminAudienceClientID
+	discoveryExchange := discoveryExchangeV1 || discoveryExchangeV2
+	if discoveryRequested && !discoveryExchange {
 		return nil, domain.ErrInvalidArgument
 	}
 	if discoveryExchange {
@@ -320,9 +340,21 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	var discovery tenantDiscoveryAuthorization
 	var scopes []string
 	if discoveryExchange {
+		dynamicTargets := discoveryExchangeV2
+		if dynamicTargets {
+			home := claimStringValue(claims, "tid")
+			if _, allowed := s.tenantTargetDiscoveryV2Principals[home]; !allowed {
+				if !s.tenantScopedTokenClaimsV1 {
+					return nil, domain.ErrInvalidTenant
+				}
+				dynamicTargets = false
+				discoveryMetricMode = "fallback"
+			}
+		}
 		discovery, err = s.resolveTenantDiscoveryAuthorization(
 			ctx, u, req.TenantID, claimStringValue(claims, "tid"),
 			claimStringValue(claims, "role"), req.ScopeCeilingV1, req.Scopes,
+			dynamicTargets, discoveryMetricMode,
 		)
 		if err != nil {
 			return nil, err

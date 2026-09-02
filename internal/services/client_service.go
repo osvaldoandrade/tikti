@@ -26,9 +26,11 @@ type ClientService interface {
 }
 
 type clientService struct {
-	repo                   repository.ClientRepository
-	managedAudienceEnabled bool
-	managedAudienceTenants map[string]struct{}
+	repo                          repository.ClientRepository
+	managedAudienceEnabled        bool
+	managedAudienceTenants        map[string]struct{}
+	dynamicManagedAudienceEnabled bool
+	dynamicManagedAudienceTenants repository.TenantRepository
 }
 
 type ClientServiceOption func(*clientService)
@@ -51,6 +53,15 @@ func WithManagedAudienceClients(enabled bool, tenants []string) ClientServiceOpt
 		for _, tenantID := range tenants {
 			service.managedAudienceTenants[tenantID] = struct{}{}
 		}
+	}
+}
+
+// WithDynamicManagedAudienceClients permits managed-client reconciliation for
+// exact active tenants while the controller enforces the principal canary.
+func WithDynamicManagedAudienceClients(enabled bool, tenants repository.TenantRepository) ClientServiceOption {
+	return func(service *clientService) {
+		service.dynamicManagedAudienceEnabled = enabled
+		service.dynamicManagedAudienceTenants = tenants
 	}
 }
 
@@ -97,11 +108,20 @@ func (s *clientService) EnsureCodeAdminAudience(
 	tenantID string,
 	req domain.ManagedAudienceClientEnsureReq,
 ) (*domain.ManagedAudienceClientResp, bool, error) {
-	if !s.managedAudienceEnabled || !validRoleTenantID(tenantID) {
+	if (!s.managedAudienceEnabled && !s.dynamicManagedAudienceEnabled) || !validRoleTenantID(tenantID) {
 		return nil, false, domain.ErrInvalidTenant
 	}
 	if _, allowed := s.managedAudienceTenants[tenantID]; !allowed {
-		return nil, false, domain.ErrInvalidTenant
+		if !s.dynamicManagedAudienceEnabled || s.dynamicManagedAudienceTenants == nil {
+			return nil, false, domain.ErrInvalidTenant
+		}
+		tenant, err := s.dynamicManagedAudienceTenants.Get(ctx, tenantID)
+		if err != nil {
+			return nil, false, err
+		}
+		if tenant == nil || tenant.Id != tenantID || tenant.Status != domain.TenantStatusActive {
+			return nil, false, domain.ErrInvalidTenant
+		}
 	}
 	defaultScopes, ok := scopepolicy.CanonicalAudienceScopes(req.DefaultScopes)
 	if !ok {

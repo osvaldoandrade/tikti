@@ -7,8 +7,10 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"slices"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/pkg/config"
@@ -40,6 +42,11 @@ func (c *managedAudienceClientController) Ensure(ctx *gin.Context) {
 			claimString(claims, "sub"), tenantID, domain.CodeAdminAudienceClientID,
 			ctx.GetHeader("X-Request-Id"), outcome)
 	}()
+	if !managedAudienceClientTargetAllowed(c.config, claims, tenantID) {
+		outcome = "denied"
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "resource not found"})
+		return
+	}
 	mediaType, _, err := mime.ParseMediaType(ctx.GetHeader("Content-Type"))
 	if err != nil || mediaType != "application/json" {
 		ctx.JSON(http.StatusUnsupportedMediaType, gin.H{"error": "content type must be application/json"})
@@ -70,6 +77,16 @@ func (c *managedAudienceClientController) Ensure(ctx *gin.Context) {
 		status, outcome = http.StatusCreated, "create"
 	}
 	ctx.JSON(status, response)
+}
+
+func managedAudienceClientTargetAllowed(cfg *config.Config, claims jwt.MapClaims, tenantID string) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.TenantScopedTokenClaimsV1 && slices.Contains(cfg.TenantScopedTokenClaimsV1Tenants, tenantID) {
+		return true
+	}
+	return dynamicPlatformTenantTargetAllowed(cfg, claims)
 }
 
 func decodeManagedAudienceClientEnsure(body io.Reader) (domain.ManagedAudienceClientEnsureReq, error) {

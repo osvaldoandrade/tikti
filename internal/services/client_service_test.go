@@ -231,6 +231,51 @@ func TestClientService_EnsureCodeAdminAudienceFailsClosed(t *testing.T) {
 	}
 }
 
+func TestClientService_EnsureCodeAdminAudienceDiscoversOnlyActiveDynamicTenant(t *testing.T) {
+	var status = domain.TenantStatusActive
+	tenants := &fakeTenantRepo{getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+		if tenantID != "new-tenant" {
+			t.Fatalf("unexpected tenant lookup: %s", tenantID)
+		}
+		return &domain.Tenant{Id: tenantID, Status: status}, nil
+	}}
+	service := NewClientService(
+		&fakeClientRepo{},
+		WithManagedAudienceClients(true, []string{"bereia"}),
+		WithDynamicManagedAudienceClients(true, tenants),
+	)
+	response, created, err := service.EnsureCodeAdminAudience(context.Background(), "new-tenant", domain.ManagedAudienceClientEnsureReq{
+		DefaultScopes: []string{"code-admin:workloads:read"},
+	})
+	if err != nil || !created || response.TenantId != "new-tenant" {
+		t.Fatalf("dynamic ensure: response=%+v created=%v err=%v", response, created, err)
+	}
+	status = domain.TenantStatusDisabled
+	if _, _, err = service.EnsureCodeAdminAudience(context.Background(), "new-tenant", domain.ManagedAudienceClientEnsureReq{
+		DefaultScopes: []string{"code-admin:workloads:read"},
+	}); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("disabled dynamic tenant returned %v", err)
+	}
+	missing := NewClientService(
+		&fakeClientRepo{},
+		WithDynamicManagedAudienceClients(true, &fakeTenantRepo{}),
+	)
+	if _, _, err = missing.EnsureCodeAdminAudience(context.Background(), "new-tenant", domain.ManagedAudienceClientEnsureReq{
+		DefaultScopes: []string{"code-admin:workloads:read"},
+	}); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("missing dynamic tenant returned %v", err)
+	}
+	disabled := NewClientService(
+		&fakeClientRepo{},
+		WithDynamicManagedAudienceClients(false, tenants),
+	)
+	if _, _, err = disabled.EnsureCodeAdminAudience(context.Background(), "new-tenant", domain.ManagedAudienceClientEnsureReq{
+		DefaultScopes: []string{"code-admin:workloads:read"},
+	}); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("disabled dynamic discovery returned %v", err)
+	}
+}
+
 func TestGenerateSecret(t *testing.T) {
 	s := generateSecret(16)
 	if s == "" {

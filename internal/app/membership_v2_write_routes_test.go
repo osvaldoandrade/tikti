@@ -45,7 +45,8 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	key := applicationTestPrivateKey(t, 2048)
 	cfg := &config.Config{ApiKey: "api-key", IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin", JwksPrivateKey: key,
-		MembershipV2WriteRoutesV1: true, MembershipV2WriteRoutesV1Tenants: []string{"bereia", "storifly"}}
+		MembershipV2WriteRoutesV1: true, MembershipV2WriteRoutesV1Tenants: []string{"bereia", "storifly"},
+		TenantTargetDiscoveryV2: true, TenantTargetDiscoveryV2PrincipalTenants: []string{"local-tenant"}}
 	service := &membershipV2HTTPService{}
 	var audit bytes.Buffer
 	previous := log.Writer()
@@ -55,6 +56,8 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 	setupMembershipV2WriteMappings(router, cfg, service)
 	token := func(claims jwt.MapClaims) string { return "Bearer " + applicationRoleToken(t, key, claims) }
 	platform := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "home"})
+	dynamicPlatform := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "local-tenant"})
+	dynamicForeign := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "foreign-tenant"})
 	noSubject := token(jwt.MapClaims{"scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "home"})
 	adminWithoutProvenance := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), "tid": "home"})
 	companyAdmin := token(jwt.MapClaims{"sub": "company-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleCompanyAdmin), "tid": "bereia"})
@@ -79,6 +82,8 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 		{"company admin foreign target", "/v1/admin/tenants/storifly/memberships/user-1", companyAdmin, "api-key", validBody, "application/json", 403, 0},
 		{"company admin forged provenance", "/v1/admin/tenants/storifly/memberships/user-1", companyAdminForgedProvenance, "api-key", validBody, "application/json", 403, 0},
 		{"unallowlisted", "/v1/admin/tenants/outside/memberships/user-1", platform, "api-key", validBody, "application/json", 404, 0},
+		{"dynamic target", "/v1/admin/tenants/new-tenant/memberships/user-1", dynamicPlatform, "api-key", validBody, "application/json", 201, 1},
+		{"dynamic foreign principal", "/v1/admin/tenants/new-tenant/memberships/user-1", dynamicForeign, "api-key", validBody, "application/json", 404, 0},
 		{"bad tenant", "/v1/admin/tenants/Bereia/memberships/user-1", platform, "api-key", validBody, "application/json", 400, 0},
 		{"dot", "/v1/admin/tenants/bereia/memberships/.", platform, "api-key", validBody, "application/json", 400, 0},
 		{"dot dot", "/v1/admin/tenants/bereia/memberships/..", platform, "api-key", validBody, "application/json", 400, 0},

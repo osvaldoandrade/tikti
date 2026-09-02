@@ -10,6 +10,8 @@ jwksPrivateKey: ${JWKS_PRIVATE_KEY}
 jwksKeyId: ${JWKS_KEY_ID}
 tenantScopedTokenClaimsV1: false
 tenantScopedTokenClaimsV1Tenants: []
+tenantTargetDiscoveryV2: false
+tenantTargetDiscoveryV2PrincipalTenants: []
 exactMembershipReadRoutesV1: false
 exactMembershipReadRoutesV1Tenants: []
 membershipV2WriteRoutesV1: false
