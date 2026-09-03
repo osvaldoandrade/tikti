@@ -115,11 +115,13 @@ func (r *membershipV2WriteController) authorize(c *gin.Context, tenantID, userID
 		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
 		return nil, false
 	}
-	if claimString(claims, "sub") == "" || !hasPlatformTenantAdminProvenance(claims) {
+	platform := hasPlatformTenantAdminProvenance(claims)
+	local := dynamicLocalTenantTargetAllowed(r.cfg, claims, tenantID, tenantIdentityWriteScope)
+	if claimString(claims, "sub") == "" || !platform && !local {
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient tenant administration scope"})
 		return nil, false
 	}
-	if !slices.Contains(r.allowed, tenantID) && !dynamicPlatformTenantTargetAllowed(r.cfg, claims) {
+	if !local && !slices.Contains(r.allowed, tenantID) && !dynamicPlatformTenantTargetAllowed(r.cfg, claims) {
 		c.Status(http.StatusNotFound)
 		return nil, false
 	}

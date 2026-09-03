@@ -95,6 +95,8 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 	dynamicPlatform := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "local-tenant"})
 	dynamicForeign := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "foreign-tenant"})
 	dynamicWithoutProvenance := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "tid": "local-tenant"})
+	dynamicLocalRead := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:read", "tid": "new-tenant"})
+	dynamicLocalForeign := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:read", "tid": "storifly"})
 	localRead := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:read", "tid": "bereia"})
 	localWrite := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:write", "tid": "bereia"})
 	roleOnly := token(jwt.MapClaims{"sub": "operator", "role": "COMPANY_ADMIN", "tid": "bereia"})
@@ -120,6 +122,8 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 		{"local outside hides allowlist", "/v1/admin/tenants/outside/memberships", localRead, "api-key-canary", "", 403, ""},
 		{"platform outside", "/v1/admin/tenants/outside/memberships", platform, "api-key-canary", "", 404, ""},
 		{"dynamic target", "/v1/admin/tenants/new-tenant/memberships", dynamicPlatform, "api-key-canary", "", 200, `"tenantId":"new-tenant"`},
+		{"dynamic local target", "/v1/admin/tenants/new-tenant/memberships", dynamicLocalRead, "api-key-canary", "", 200, `"tenantId":"new-tenant"`},
+		{"dynamic local foreign", "/v1/admin/tenants/new-tenant/memberships", dynamicLocalForeign, "api-key-canary", "", 403, ""},
 		{"dynamic foreign principal", "/v1/admin/tenants/new-tenant/memberships", dynamicForeign, "api-key-canary", "", 404, ""},
 		{"dynamic missing provenance", "/v1/admin/tenants/new-tenant/memberships", dynamicWithoutProvenance, "api-key-canary", "", 404, ""},
 		{"invalid tenant", "/v1/admin/tenants/Bad/memberships", platform, "api-key-canary", "", 400, "invalid argument"},
@@ -213,6 +217,32 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 		if !strings.Contains(logged, expected) {
 			t.Fatalf("audit missing %q: %s", expected, logged)
 		}
+	}
+}
+
+func TestExactMembershipDynamicLocalTargetRequiresDiscoveryV2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	privateKey := applicationTestPrivateKey(t, 2048)
+	cfg := &config.Config{
+		ApiKey: "api-key-canary", IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin",
+		JwksPrivateKey: privateKey, ExactMembershipReadRoutesV1: true,
+		ExactMembershipReadRoutesV1Tenants: []string{"bereia"},
+	}
+	list := &exactHTTPList{}
+	router := gin.New()
+	setupExactMembershipReadMappings(router, cfg, services.NewExactMembershipReadService(
+		exactHTTPTenants{}, exactHTTPMemberships{}, list,
+	))
+	token := applicationRoleToken(t, privateKey, jwt.MapClaims{
+		"sub": "local-operator", "scope": "code-admin:identity:read", "tid": "new-tenant",
+	})
+	req := httptest.NewRequest(http.MethodGet, "/v1/admin/tenants/new-tenant/memberships", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-API-Key", "api-key-canary")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || len(list.calls) != 0 {
+		t.Fatalf("response=%d calls=%v body=%s", rec.Code, list.calls, rec.Body.String())
 	}
 }
 

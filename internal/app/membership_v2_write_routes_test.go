@@ -63,6 +63,9 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 	companyAdmin := token(jwt.MapClaims{"sub": "company-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleCompanyAdmin), "tid": "bereia"})
 	companyAdminForgedProvenance := token(jwt.MapClaims{"sub": "company-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleCompanyAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "bereia"})
 	local := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:write", "tid": "bereia"})
+	dynamicLocal := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:write", "tid": "new-tenant"})
+	dynamicLocalForeign := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:write", "tid": "storifly"})
+	dynamicLocalReadOnly := token(jwt.MapClaims{"sub": "local-operator", "scope": "code-admin:identity:read", "tid": "new-tenant"})
 	roleOnly := token(jwt.MapClaims{"sub": "role-operator", "role": "ADMIN", "tid": "bereia"})
 	hs, _ := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{"sub": "operator", "scope": "code-admin:tenants:admin", "exp": time.Now().Add(time.Hour).Unix()}).SignedString([]byte("legacy"))
 	validBody := `{"roles":["reader-secret-canary"]}`
@@ -76,7 +79,10 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 		{"no bearer", "/v1/admin/tenants/bereia/memberships/user-1", "", "api-key", validBody, "application/json", 401, 0},
 		{"no subject", "/v1/admin/tenants/bereia/memberships/user-1", noSubject, "api-key", validBody, "application/json", 403, 0},
 		{"HS denied", "/v1/admin/tenants/bereia/memberships/user-1", "Bearer " + hs, "api-key", validBody, "application/json", 401, 0},
-		{"local denied", "/v1/admin/tenants/bereia/memberships/user-1", local, "api-key", validBody, "application/json", 403, 0},
+		{"local same tenant", "/v1/admin/tenants/bereia/memberships/user-1", local, "api-key", validBody, "application/json", 201, 1},
+		{"dynamic local target", "/v1/admin/tenants/new-tenant/memberships/user-1", dynamicLocal, "api-key", validBody, "application/json", 201, 1},
+		{"dynamic local foreign", "/v1/admin/tenants/new-tenant/memberships/user-1", dynamicLocalForeign, "api-key", validBody, "application/json", 403, 0},
+		{"dynamic local read only", "/v1/admin/tenants/new-tenant/memberships/user-1", dynamicLocalReadOnly, "api-key", validBody, "application/json", 403, 0},
 		{"role advisory", "/v1/admin/tenants/bereia/memberships/user-1", roleOnly, "api-key", validBody, "application/json", 403, 0},
 		{"admin without provenance", "/v1/admin/tenants/storifly/memberships/user-1", adminWithoutProvenance, "api-key", validBody, "application/json", 403, 0},
 		{"company admin foreign target", "/v1/admin/tenants/storifly/memberships/user-1", companyAdmin, "api-key", validBody, "application/json", 403, 0},
@@ -139,6 +145,31 @@ func TestMembershipV2WriteRouteContract(t *testing.T) {
 		if !strings.Contains(logged, expected) {
 			t.Fatalf("audit missing %q: %s", expected, logged)
 		}
+	}
+}
+
+func TestMembershipV2WriteLocalAuthorizationRequiresDiscoveryV2(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	key := applicationTestPrivateKey(t, 2048)
+	cfg := &config.Config{
+		ApiKey: "api-key", IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin",
+		JwksPrivateKey: key, MembershipV2WriteRoutesV1: true,
+		MembershipV2WriteRoutesV1Tenants: []string{"bereia"},
+	}
+	service := &membershipV2HTTPService{}
+	router := gin.New()
+	setupMembershipV2WriteMappings(router, cfg, service)
+	token := applicationRoleToken(t, key, jwt.MapClaims{
+		"sub": "local-operator", "scope": "code-admin:identity:write", "tid": "bereia",
+	})
+	req := httptest.NewRequest(http.MethodPut, "/v1/admin/tenants/bereia/memberships/user-1", strings.NewReader(`{"roles":["reader"]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-API-Key", "api-key")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || service.calls != 0 {
+		t.Fatalf("response=%d calls=%d body=%s", rec.Code, service.calls, rec.Body.String())
 	}
 }
 

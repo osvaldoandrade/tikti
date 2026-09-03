@@ -131,3 +131,15 @@ func dynamicPlatformTenantTargetAllowed(cfg *config.Config, claims jwt.MapClaims
 		slices.Contains(cfg.TenantTargetDiscoveryV2PrincipalTenants, claimString(claims, "tid")) &&
 		hasPlatformTenantAdminProvenance(claims)
 }
+
+func dynamicLocalTenantTargetAllowed(cfg *config.Config, claims jwt.MapClaims, tenantID string, scopes ...string) bool {
+	if cfg == nil || !cfg.TenantTargetDiscoveryV2 || claimString(claims, "tid") != tenantID {
+		return false
+	}
+	for _, scope := range scopes {
+		if hasClaimScope(claims, scope) {
+			return true
+		}
+	}
+	return false
+}
