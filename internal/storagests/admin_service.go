@@ -17,6 +17,7 @@ const (
 	adminReadScope  = "code-admin:storage:read"
 	adminWriteScope = "code-admin:storage:write"
 	adminPresignTTL = 60
+	allTenantCohort = "*"
 )
 
 type AdminService struct {
@@ -66,17 +67,21 @@ func NewAdminServiceWithDelete(
 	}
 	cohort := make(map[string]struct{}, len(cohortTenants))
 	for _, tenantID := range cohortTenants {
-		if !validDNSLabel(tenantID) {
+		if tenantID != allTenantCohort && !validDNSLabel(tenantID) {
 			return nil, ErrInvalidDependencyResponse
 		}
 		cohort[tenantID] = struct{}{}
 	}
+	if _, allTenants := cohort[allTenantCohort]; allTenants && len(cohort) != 1 {
+		return nil, ErrInvalidDependencyResponse
+	}
 	deleteCohort := make(map[string]struct{}, len(deleteCohortTenants))
+	_, allTenants := cohort[allTenantCohort]
 	for _, tenantID := range deleteCohortTenants {
 		if !validDNSLabel(tenantID) {
 			return nil, ErrInvalidDependencyResponse
 		}
-		if _, enabled := cohort[tenantID]; !enabled {
+		if _, enabled := cohort[tenantID]; !enabled && !allTenants {
 			return nil, ErrInvalidDependencyResponse
 		}
 		deleteCohort[tenantID] = struct{}{}
@@ -207,7 +212,7 @@ func (s *AdminService) authorize(
 		len(accessToken) < 16 || len(accessToken) > 16<<10 {
 		return AdminApproval{}, Credentials{}, adminPublicError(http.StatusBadRequest, CodeInvalidParameterValue, "invalid_request", "The object storage request is invalid.")
 	}
-	if _, enabled := s.cohort[tenantID]; !enabled {
+	if !s.tenantEnabled(tenantID) {
 		return AdminApproval{}, Credentials{}, adminPublicError(http.StatusNotFound, CodeAccessDenied, "not_found", "The bucket was not found.")
 	}
 	select {
@@ -271,6 +276,15 @@ func (s *AdminService) authorize(
 		return AdminApproval{}, Credentials{}, adminPublicError(http.StatusServiceUnavailable, CodeServiceUnavailable, "provider_unavailable", "Object storage is temporarily unavailable.")
 	}
 	return approval, credentials, nil
+}
+
+func (s *AdminService) tenantEnabled(tenantID string) bool {
+	if s == nil {
+		return false
+	}
+	_, allTenants := s.cohort[allTenantCohort]
+	_, namedTenant := s.cohort[tenantID]
+	return allTenants || namedTenant
 }
 
 func validAdminAuthorizationDecision(decision AdminAuthorizationDecision, _ AdminOperation) bool {

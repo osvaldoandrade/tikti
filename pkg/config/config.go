@@ -651,7 +651,7 @@ func defaultObjectStorageBrowserConfig() ObjectStorageBrowserConfig {
 func validateObjectStorageBrowser(c *Config) error {
 	browser := &c.ObjectStorageBrowser
 	browser.AdminAuthorizerURL = strings.TrimSpace(browser.AdminAuthorizerURL)
-	tenants, err := canonicalNamedTenantAllowlist("objectStorageBrowser.cohortTenants", browser.CohortTenants)
+	tenants, err := canonicalStorageBrowserCohort("objectStorageBrowser.cohortTenants", browser.CohortTenants)
 	if err != nil {
 		return err
 	}
@@ -690,13 +690,26 @@ func validateObjectStorageBrowser(c *Config) error {
 		for _, tenantID := range browser.CohortTenants {
 			cohort[tenantID] = struct{}{}
 		}
+		_, allTenants := cohort["*"]
 		for _, tenantID := range browser.DeleteCohortTenants {
-			if _, enabled := cohort[tenantID]; !enabled {
+			if _, enabled := cohort[tenantID]; !enabled && !allTenants {
 				return fmt.Errorf("objectStorageBrowser.deleteCohortTenants must be a subset of cohortTenants")
 			}
 		}
 	}
 	return nil
+}
+
+func canonicalStorageBrowserCohort(name string, values []string) ([]string, error) {
+	if len(values) == 1 && strings.TrimSpace(values[0]) == "*" {
+		return []string{"*"}, nil
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) == "*" {
+			return nil, fmt.Errorf("%s wildcard must be exclusive", name)
+		}
+	}
+	return canonicalNamedTenantAllowlist(name, values)
 }
 
 func validClusterRef(value string) bool {

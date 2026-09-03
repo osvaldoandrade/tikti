@@ -25,15 +25,16 @@
 {{- if ne (int .Values.config.objectStorageBrowser.maximumPresignTtlSeconds) 60 }}{{ fail "config.objectStorageBrowser.maximumPresignTtlSeconds must equal 60" }}{{- end }}
 {{- if or (eq (len .Values.config.objectStorageBrowser.cohortTenants) 0) (gt (len .Values.config.objectStorageBrowser.cohortTenants) 100) }}{{ fail "config.objectStorageBrowser.cohortTenants must contain 1 to 100 tenants" }}{{- end }}
 {{- if ne (len (uniq .Values.config.objectStorageBrowser.cohortTenants)) (len .Values.config.objectStorageBrowser.cohortTenants) }}{{ fail "config.objectStorageBrowser.cohortTenants must contain unique tenants" }}{{- end }}
+{{- if and (has "*" .Values.config.objectStorageBrowser.cohortTenants) (ne (len .Values.config.objectStorageBrowser.cohortTenants) 1) }}{{ fail "config.objectStorageBrowser.cohortTenants wildcard must be exclusive" }}{{- end }}
 {{- range .Values.config.objectStorageBrowser.cohortTenants }}
-{{- if or (gt (len .) 63) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` .)) }}{{ fail "config.objectStorageBrowser.cohortTenants must contain canonical tenant IDs" }}{{- end }}
+{{- if and (ne . "*") (or (gt (len .) 63) (not (regexMatch `^[a-z0-9]([-a-z0-9]*[a-z0-9])?$` .))) }}{{ fail "config.objectStorageBrowser.cohortTenants must contain canonical tenant IDs" }}{{- end }}
 {{- end }}
 {{- if ne .Values.config.defaultAudience "code-admin-api" }}{{ fail "config.objectStorageBrowser requires defaultAudience code-admin-api" }}{{- end }}
 {{- if .Values.config.objectStorageBrowser.deleteEnabled }}
 {{- if or (eq (len .Values.config.objectStorageBrowser.deleteCohortTenants) 0) (gt (len .Values.config.objectStorageBrowser.deleteCohortTenants) 100) }}{{ fail "config.objectStorageBrowser.deleteCohortTenants must contain 1 to 100 tenants" }}{{- end }}
 {{- if ne (len (uniq .Values.config.objectStorageBrowser.deleteCohortTenants)) (len .Values.config.objectStorageBrowser.deleteCohortTenants) }}{{ fail "config.objectStorageBrowser.deleteCohortTenants must contain unique tenants" }}{{- end }}
 {{- range .Values.config.objectStorageBrowser.deleteCohortTenants }}
-{{- if not (has . $.Values.config.objectStorageBrowser.cohortTenants) }}{{ fail "config.objectStorageBrowser.deleteCohortTenants must be a subset of cohortTenants" }}{{- end }}
+{{- if and (not (has "*" $.Values.config.objectStorageBrowser.cohortTenants)) (not (has . $.Values.config.objectStorageBrowser.cohortTenants)) }}{{ fail "config.objectStorageBrowser.deleteCohortTenants must be a subset of cohortTenants" }}{{- end }}
 {{- end }}
 {{- end }}
 {{- end }}

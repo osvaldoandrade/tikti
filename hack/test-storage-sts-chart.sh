@@ -139,13 +139,14 @@ browser_delete_enabled=$(helm template storage-sts "$chart" \
   --set config.workloadIdentity.jwksUrl=https://cluster.example.com/jwks \
   --set config.objectStorageBrowser.enabled=true \
   --set config.objectStorageBrowser.adminAuthorizerUrl=https://api.example.com/internal/v1/object-storage/authorize-admin \
-  --set 'config.objectStorageBrowser.cohortTenants[0]=bereia' \
+  --set-string 'config.objectStorageBrowser.cohortTenants[0]=*' \
   --set config.objectStorageBrowser.deleteEnabled=true \
-  --set 'config.objectStorageBrowser.deleteCohortTenants[0]=bereia')
+  --set 'config.objectStorageBrowser.deleteCohortTenants[0]=local-tenant')
 browser_delete_config=$(yq ea '[select(.kind == "ConfigMap") | .data."tikti.yaml"] | .[0]' - <<<"$browser_delete_enabled")
 for contract in \
+  'cohortTenants: ["*"]' \
   'deleteEnabled: true' \
-  'deleteCohortTenants: ["bereia"]'; do
+  'deleteCohortTenants: ["local-tenant"]'; do
   if ! rg -Fq "$contract" <<<"$browser_delete_config"; then
     echo "enabled object deletion config is missing: $contract" >&2
     exit 1

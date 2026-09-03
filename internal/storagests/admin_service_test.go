@@ -258,6 +258,56 @@ func TestAdminServiceHidesCrossTenantRequestsInsideEnabledCohort(t *testing.T) {
 	}
 }
 
+func TestAdminServiceExplicitAllTenantCohortStillBindsSignedTenant(t *testing.T) {
+	t.Parallel()
+	authorizer := &adminTestAuthorizer{result: adminAllowDecision(ReadOnlyAccess)}
+	issuer := &adminCredentialIssuer{}
+	operator := &adminObjectOperator{}
+	service, err := NewAdminServiceWithDelete(
+		adminTokenVerifier{claims: jwt.MapClaims{
+			"sub": "user-1", "tid": "storifly", "scope": "code-admin:storage:read",
+		}},
+		adminTestSigner{}, authorizer, issuer, operator,
+		"https://tikti.example.com", "code-admin-api",
+		[]string{"*"}, []string{"local-tenant"}, 4,
+	)
+	if err != nil {
+		t.Fatalf("construct all-tenant browser: %v", err)
+	}
+	_, publicErr := service.List(context.Background(), AdminListRequest{
+		TenantID: "storifly", BucketID: "invoices", PageSize: 100,
+	}, "opaque-access-token-value", "request-storifly")
+	if publicErr != nil || authorizer.request.TenantID != "storifly" {
+		t.Fatalf("storifly list error=%#v request=%#v", publicErr, authorizer.request)
+	}
+	publicErr = service.Delete(context.Background(), AdminDeleteRequest{
+		TenantID: "storifly", BucketID: "invoices", Key: "a.txt", ETag: `"etag"`,
+	}, "opaque-access-token-value", "request-storifly-delete")
+	if publicErr == nil || publicErr.HTTPStatus != http.StatusNotFound {
+		t.Fatalf("all-tenant cohort expanded delete=%#v", publicErr)
+	}
+
+	localAuthorizer := &adminTestAuthorizer{result: adminAllowDecision(ReadWriteAccess)}
+	localOperator := &adminObjectOperator{}
+	localService, err := NewAdminServiceWithDelete(
+		adminTokenVerifier{claims: jwt.MapClaims{
+			"sub": "user-1", "tid": "local-tenant", "scope": "code-admin:storage:write",
+		}},
+		adminTestSigner{}, localAuthorizer, &adminCredentialIssuer{}, localOperator,
+		"https://tikti.example.com", "code-admin-api",
+		[]string{"*"}, []string{"local-tenant"}, 4,
+	)
+	if err != nil {
+		t.Fatalf("construct local delete canary: %v", err)
+	}
+	publicErr = localService.Delete(context.Background(), AdminDeleteRequest{
+		TenantID: "local-tenant", BucketID: "invoices", Key: "a.txt", ETag: `"etag"`,
+	}, "opaque-access-token-value", "request-local-delete")
+	if publicErr != nil || localAuthorizer.request.TenantID != "local-tenant" || localOperator.key != "a.txt" {
+		t.Fatalf("local delete error=%#v request=%#v operator=%#v", publicErr, localAuthorizer.request, localOperator)
+	}
+}
+
 func toJSON(t *testing.T, value any) string {
 	t.Helper()
 	raw, err := json.Marshal(value)
