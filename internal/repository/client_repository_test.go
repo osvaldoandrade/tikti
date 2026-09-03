@@ -227,6 +227,97 @@ func TestClientRepo_EnsureManagedAudienceReconcilesOwnedDefinition(t *testing.T)
 	}
 }
 
+func TestClientRepo_EnsureManagedAudienceAdoptsCompatibleLegacyDefinition(t *testing.T) {
+	rdb, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	legacy := &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: "storifly",
+		Type: domain.ClientTypeService, Status: domain.ClientStatusActive,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     []string{"code-admin:storage:read"},
+	}
+	legacyPayload, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy client: %v", err)
+	}
+	if err := rdb.HSet(
+		ctx,
+		clientsKey("storifly"),
+		domain.CodeAdminAudienceClientID,
+		legacyPayload,
+	).Err(); err != nil {
+		t.Fatalf("seed legacy client: %v", err)
+	}
+	desired := managedAudienceFixture(
+		"storifly",
+		"code-admin:identity:write",
+		"code-admin:storage:read",
+		"code-admin:tenants:admin",
+	)
+
+	stored, created, err := repo.EnsureManagedAudience(ctx, "storifly", desired)
+	if err != nil || created {
+		t.Fatalf("adopt compatible legacy client: created=%v err=%v", created, err)
+	}
+	if !sameManagedAudienceClient(stored, desired) {
+		t.Fatalf("adopted client=%+v, want %+v", stored, desired)
+	}
+	want, err := json.Marshal(desired)
+	if err != nil {
+		t.Fatalf("marshal desired client: %v", err)
+	}
+	for _, key := range []string{clientsKey("storifly"), managedClientsKey("storifly")} {
+		if got := rdb.HGet(ctx, key, domain.CodeAdminAudienceClientID).Val(); got != string(want) {
+			t.Fatalf("%s contains %q, want %q", key, got, want)
+		}
+	}
+}
+
+func TestClientRepo_EnsureManagedAudienceRejectsUnsafeLegacyDefinitions(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*domain.Client)
+	}{
+		{name: "secret bearing", mutate: func(client *domain.Client) { client.SecretHash = "hash" }},
+		{name: "wrong client id", mutate: func(client *domain.Client) { client.Id = "other" }},
+		{name: "wrong tenant", mutate: func(client *domain.Client) { client.TenantId = "bereia" }},
+		{name: "public client", mutate: func(client *domain.Client) { client.Type = domain.ClientTypePublic }},
+		{name: "disabled client", mutate: func(client *domain.Client) { client.Status = "DISABLED" }},
+		{name: "wrong grant", mutate: func(client *domain.Client) { client.AllowedGrantTypes = []string{"client_credentials"} }},
+		{name: "owned without marker", mutate: func(client *domain.Client) { client.ManagedBy = domain.CodeAdminAudienceClientManager }},
+		{name: "scope outside ceiling", mutate: func(client *domain.Client) { client.DefaultScopes = []string{"code-admin:storage:write"} }},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			rdb, repo := newClientRepoForTest(t)
+			ctx := context.Background()
+			legacy := &domain.Client{
+				Id: domain.CodeAdminAudienceClientID, TenantId: "storifly",
+				Type: domain.ClientTypeService, Status: domain.ClientStatusActive,
+				AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+				DefaultScopes:     []string{"code-admin:storage:read"},
+			}
+			test.mutate(legacy)
+			payload, err := json.Marshal(legacy)
+			if err != nil {
+				t.Fatalf("marshal legacy client: %v", err)
+			}
+			if err := rdb.HSet(ctx, clientsKey("storifly"), domain.CodeAdminAudienceClientID, payload).Err(); err != nil {
+				t.Fatalf("seed legacy client: %v", err)
+			}
+			desired := managedAudienceFixture("storifly", "code-admin:storage:read")
+			if _, _, err := repo.EnsureManagedAudience(ctx, "storifly", desired); !errors.Is(err, domain.ErrManagedClientConflict) {
+				t.Fatalf("unsafe legacy definition error=%v, want managed client conflict", err)
+			}
+			if rdb.HExists(ctx, managedClientsKey("storifly"), domain.CodeAdminAudienceClientID).Val() {
+				t.Fatal("unsafe legacy client was adopted")
+			}
+		})
+	}
+}
+
 func TestClientRepo_EnsureManagedAudienceRejectsUnownedDefinition(t *testing.T) {
 	rdb, repo := newClientRepoForTest(t)
 	ctx := context.Background()
@@ -239,14 +330,14 @@ func TestClientRepo_EnsureManagedAudienceRejectsUnownedDefinition(t *testing.T) 
 	)); err != nil || created {
 		t.Fatalf("replay: created=%v err=%v", created, err)
 	}
-	legacy := `{"clientId":"code-admin-api","tenantId":"storifly","type":"SERVICE","allowedGrantTypes":["token_exchange"],"defaultScopes":["code-admin:workloads:read"],"status":"ACTIVE"}`
+	legacy := `{"clientId":"code-admin-api","tenantId":"storifly","type":"SERVICE","allowedGrantTypes":["token_exchange"],"defaultScopes":["code-admin:workloads:write"],"status":"ACTIVE"}`
 	if err := rdb.HSet(ctx, clientsKey("storifly"), domain.CodeAdminAudienceClientID, legacy).Err(); err != nil {
 		t.Fatalf("seed legacy client: %v", err)
 	}
 	if _, _, err := repo.EnsureManagedAudience(ctx, "storifly", managedAudienceFixture(
 		"storifly", "code-admin:workloads:read",
 	)); !errors.Is(err, domain.ErrManagedClientConflict) {
-		t.Fatalf("expected legacy shadow conflict, got %v", err)
+		t.Fatalf("expected out-of-ceiling legacy shadow conflict, got %v", err)
 	}
 	if rdb.HExists(ctx, managedClientsKey("storifly"), domain.CodeAdminAudienceClientID).Val() {
 		t.Fatal("legacy client was adopted")

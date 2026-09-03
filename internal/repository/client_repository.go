@@ -57,6 +57,14 @@ if value ~= ARGV[2] or marker ~= ARGV[2] then return {"changed", value} end
 redis.call("HSET", KEYS[1], ARGV[1], ARGV[3])
 redis.call("HSET", KEYS[2], ARGV[1], ARGV[3])
 return {"updated", ARGV[3]}`)
+	managedClientAdoptScript = redis.NewScript(`
+local value = redis.call("HGET", KEYS[1], ARGV[1])
+local marker = redis.call("HGET", KEYS[2], ARGV[1])
+if not value or marker then return {"changed", value or ""} end
+if value ~= ARGV[2] then return {"changed", value} end
+redis.call("HSET", KEYS[1], ARGV[1], ARGV[3])
+redis.call("HSET", KEYS[2], ARGV[1], ARGV[3])
+return {"adopted", ARGV[3]}`)
 	managedClientGetScript = redis.NewScript(`
 local value = redis.call("HGET", KEYS[1], ARGV[1])
 local marker = redis.call("HGET", KEYS[2], ARGV[1])
@@ -122,7 +130,34 @@ func (r *clientRepo) EnsureManagedAudience(
 			return nil, false, errStoredManagedClientContract
 		}
 		if values[0] == "shadow" {
-			return nil, false, domain.ErrManagedClientConflict
+			legacy, ok := decodeLegacyManagedAudienceClient(tenantID, values[1])
+			if !ok || !adoptableLegacyManagedAudienceClient(legacy, client) {
+				return nil, false, domain.ErrManagedClientConflict
+			}
+			legacyPayload, marshalErr := json.Marshal(legacy)
+			if marshalErr != nil || values[1] != string(legacyPayload) {
+				return nil, false, domain.ErrManagedClientConflict
+			}
+			adopted, adoptErr := managedClientAdoptScript.Eval(
+				ctx, r.client, keys, client.Id, values[1], payload,
+			).StringSlice()
+			if errors.Is(adoptErr, context.Canceled) || errors.Is(adoptErr, context.DeadlineExceeded) {
+				return nil, false, adoptErr
+			}
+			if adoptErr != nil || len(adopted) != 2 {
+				return nil, false, errStoredManagedClientContract
+			}
+			if adopted[0] == "changed" {
+				continue
+			}
+			if adopted[0] != "adopted" || adopted[1] != string(payload) {
+				return nil, false, errStoredManagedClientContract
+			}
+			stored, ok := decodeManagedAudienceClient(tenantID, adopted[1])
+			if !ok || !sameManagedAudienceClient(stored, client) {
+				return nil, false, errStoredManagedClientContract
+			}
+			return stored, false, nil
 		}
 		if values[0] == "corrupt" || values[0] != "created" && values[0] != "existing" {
 			return nil, false, errStoredManagedClientContract
@@ -266,6 +301,33 @@ func decodeManagedAudienceClient(tenantID, value string) (*domain.Client, bool) 
 		return nil, false
 	}
 	return &client, true
+}
+
+func decodeLegacyManagedAudienceClient(tenantID, value string) (*domain.Client, bool) {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.DisallowUnknownFields()
+	var client domain.Client
+	if decoder.Decode(&client) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		client.Id != domain.CodeAdminAudienceClientID || client.TenantId != tenantID ||
+		client.SecretHash != "" || client.Type != domain.ClientTypeService ||
+		client.Status != domain.ClientStatusActive || client.ManagedBy != "" ||
+		!slices.Equal(client.AllowedGrantTypes, []string{string(domain.GrantTypeTokenExchange)}) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes) {
+		return nil, false
+	}
+	return &client, true
+}
+
+func adoptableLegacyManagedAudienceClient(legacy, desired *domain.Client) bool {
+	if legacy == nil || desired == nil || legacy.Id != desired.Id || legacy.TenantId != desired.TenantId {
+		return false
+	}
+	for _, scope := range legacy.DefaultScopes {
+		if !slices.Contains(desired.DefaultScopes, scope) {
+			return false
+		}
+	}
+	return true
 }
 
 func validManagedAudienceClient(tenantID string, client *domain.Client) bool {
