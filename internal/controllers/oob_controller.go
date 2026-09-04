@@ -11,6 +11,8 @@ import (
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
+const oobDeliveryContractHeader = "X-Tikti-OOB-Delivery"
+
 // oobSendController issues out-of-band codes for email verification or password recovery.
 type oobSendController struct {
 	userSvc services.UserService
@@ -23,7 +25,8 @@ type oobResetController struct {
 	cfg     *config.Config
 }
 
-// NewOobSendController builds the controller that sends OOB codes via the service.
+// NewOobSendController builds the compatibility controller that generates OOB
+// codes for an external delivery orchestrator.
 func NewOobSendController(svc services.UserService, cfg *config.Config) *oobSendController {
 	return &oobSendController{userSvc: svc, cfg: cfg}
 }
@@ -33,7 +36,9 @@ func NewOobResetController(svc services.UserService, cfg *config.Config) *oobRes
 	return &oobResetController{userSvc: svc, cfg: cfg}
 }
 
-// Handle validates send requests, forwards them to the service and returns the generated code.
+// Handle validates generation requests and returns the generated code. Tikti
+// does not currently dispatch email, so the response explicitly advertises
+// the external-delivery compatibility contract and must never be cached.
 func (ctrl *oobSendController) Handle(c *gin.Context) {
 	var req domain.SendOobReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -55,7 +60,14 @@ func (ctrl *oobSendController) Handle(c *gin.Context) {
 		}
 		return
 	}
+	markExternalOOBDelivery(c)
 	c.JSON(http.StatusOK, result)
+}
+
+func markExternalOOBDelivery(c *gin.Context) {
+	c.Header("Cache-Control", "no-store")
+	c.Header("Pragma", "no-cache")
+	c.Header(oobDeliveryContractHeader, "external-required")
 }
 
 // Handle validates reset payloads, delegates the reset and emits a toolkit-compatible response.

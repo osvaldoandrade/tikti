@@ -475,7 +475,11 @@ func tenantCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if id == "" {
 				return errors.New("tenant id required")
 			}
-			resp, err := doJSON(http.MethodGet, prof.BaseURL+"/v1/tenants/id/"+id+"?key="+prof.ApiKey, prof.IdToken, nil)
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/id/"+id, token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}
@@ -501,8 +505,15 @@ func membershipCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant == "" {
 				tenant = prof.TenantId
 			}
+			if tenant == "" {
+				return errors.New("tenant id required")
+			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{"email": email, "roles": splitCSV(roles)}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/users?key="+prof.ApiKey, prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/users", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -527,11 +538,15 @@ func membershipCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant == "" {
 				return errors.New("tenant id required")
 			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			if email == "" {
 				email = prompt("Email", "", false)
 			}
 			body := map[string]any{"email": email}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/users/remove?key="+prof.ApiKey, prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/users/remove", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -584,7 +599,11 @@ func roleCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant == "" {
 				return errors.New("tenant id required")
 			}
-			resp, err := doJSON(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/roles?key="+prof.ApiKey, prof.IdToken, nil)
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/roles", token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}
@@ -643,7 +662,11 @@ func clientCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant == "" {
 				return errors.New("tenant id required")
 			}
-			resp, err := doJSON(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/clients?key="+prof.ApiKey, prof.IdToken, nil)
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/clients", token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}
@@ -666,7 +689,11 @@ func clientCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant == "" || clientID == "" {
 				return errors.New("tenant and client id required")
 			}
-			resp, err := doJSON(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/clients/"+clientID+"?key="+prof.ApiKey, prof.IdToken, nil)
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/clients/"+clientID, token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}
@@ -693,14 +720,13 @@ func revokeCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if email == "" {
 				email = prompt("Email", "", false)
 			}
-			body := map[string]any{"email": email}
-			if tenant != "" {
-				body["tenantId"] = tenant
+			tenant = strings.TrimSpace(tenant)
+			scope = strings.ToLower(strings.TrimSpace(scope))
+			if tenant != "" || scope != "" && scope != "global" {
+				return &cliError{msg: "only global revocation is supported; tenant-scoped revocation is unavailable", exit: 1}
 			}
-			if scope != "" {
-				body["scope"] = scope
-			}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/revoke?key="+prof.ApiKey, prof.IdToken, body)
+			body := map[string]any{"email": email, "scope": "global"}
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/revoke", prof.IdToken, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -899,6 +925,10 @@ func saveConfig(path string, cfg *configFile) error {
 }
 
 func doJSON(method string, url string, token string, body any) (map[string]any, error) {
+	return doJSONWithAPIKey(method, url, token, "", body)
+}
+
+func doJSONWithAPIKey(method string, url string, token string, apiKey string, body any) (map[string]any, error) {
 	var buf io.Reader
 	if body != nil {
 		b, _ := json.Marshal(body)
@@ -914,6 +944,9 @@ func doJSON(method string, url string, token string, body any) (map[string]any, 
 		} else {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
+	}
+	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
+		req.Header.Set("X-API-Key", apiKey)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -937,6 +970,16 @@ func doJSON(method string, url string, token string, body any) (map[string]any, 
 	var out map[string]any
 	_ = json.Unmarshal(b, &out)
 	return out, nil
+}
+
+func tenantAdministrationAccessToken(profile *profileEntry) (string, error) {
+	if profile == nil || strings.TrimSpace(profile.AccessToken) == "" {
+		return "", &cliError{
+			msg:  "scoped access token missing; exchange an access token for the target tenant before tenant administration",
+			exit: 2,
+		}
+	}
+	return strings.TrimSpace(profile.AccessToken), nil
 }
 
 func splitCSV(s string) []string {

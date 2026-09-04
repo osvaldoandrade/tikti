@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -30,6 +31,8 @@ type revokeReq struct {
 	TenantId string `json:"tenantId,omitempty"`
 	Scope    string `json:"scope,omitempty"`
 }
+
+const globalRevocationOnlyMessage = "only global token revocation is supported; omit tenantId and use scope=global"
 
 func (u *userAdminController) SetStatus(c *gin.Context) {
 	if !requireAdmin(c, u.cfg) {
@@ -67,8 +70,17 @@ func (u *userAdminController) Revoke(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+	tenantID := strings.TrimSpace(req.TenantId)
+	scope := strings.ToLower(strings.TrimSpace(req.Scope))
+	if tenantID != "" || scope != "" && scope != "global" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": globalRevocationOnlyMessage})
+		return
+	}
+	if scope == "" {
+		scope = "global"
+	}
 	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {
-		return u.svc.RevokeTokens(ctx, req.Email, req.TenantId, req.Scope)
+		return u.svc.RevokeTokens(ctx, req.Email, "", scope)
 	})
 	result := <-ch
 	if err, ok := result.(error); ok {

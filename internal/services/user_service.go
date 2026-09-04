@@ -688,13 +688,10 @@ func (s *userService) RevokeTokens(ctx context.Context, email string, tenantID s
 	if scope == "" {
 		scope = "global"
 	}
-	switch scope {
-	case "global":
-	case "tenant":
-		if tenantID == "" {
-			return nil, domain.ErrInvalidArgument
-		}
-	default:
+	// TokenVersion is stored on the global user record. Until a separately
+	// versioned tenant-session model exists, accepting tenantId/scope=tenant
+	// would silently perform a global revocation and misrepresent the result.
+	if scope != "global" || tenantID != "" {
 		return nil, domain.ErrInvalidArgument
 	}
 
@@ -702,8 +699,6 @@ func (s *userService) RevokeTokens(ctx context.Context, email string, tenantID s
 	if err != nil {
 		return nil, err
 	}
-	_ = tenantID
-	_ = scope
 	return &domain.RevokeResp{
 		LocalId:      u.Id,
 		Email:        u.Email,

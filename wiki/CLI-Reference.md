@@ -116,6 +116,12 @@ tikti-cli role create --tenant tenant-1 --name CODEQ_ADMIN \
    --permissions codeq:admin,codeq:claim,codeq:result
 ```
 
+Tenant, role and client reads, plus membership commands, require the profile's
+scoped RS256 `accessToken`, send the API key only in `X-API-Key`, and never
+append it to the URL. If no access token is stored, the CLI stops locally and
+instructs the operator to exchange one for the target tenant. The server remains
+authoritative for audience, scope, and exact `tid` matching.
+
 The CLI validates that role names and permissions are non-empty strings but does not enforce policy semantics client-side. The server remains authoritative.
 
 ## Access revocation commands
@@ -128,16 +134,20 @@ Suspending a user or removing a membership prevents future token exchange. This 
 
 ### Token-version revocation
 
-To invalidate tokens before expiry, Tikti supports a token version mechanism. A `tokenVersion` field is stored on the user and on the membership. Tokens include `ver` and are rejected if `ver` does not match the stored version.
+To invalidate tokens before expiry, Tikti supports a global token version mechanism. A `tokenVersion` field is stored on the user. Tokens include `ver` and are rejected if `ver` does not match the stored version.
 
-The CLI command `revoke tokens` increments the token version for a user or tenant membership:
+The CLI command `revoke tokens` increments the global token version for a user:
 
 ```bash
 tikti-cli revoke tokens --email user@company.com
-tikti-cli revoke tokens --tenant tenant-1 --email user@company.com
 ```
 
-This requires a dedicated endpoint (`POST /v1/accounts/revoke` or `POST /v1/tenants/{tenantId}/memberships/{userId}/revoke`). The server returns the new token version and the revocation timestamp. This operation is O(1) because it updates a single record in Redis.
+This calls `POST /v1/accounts/revoke` with `scope=global`. The retained
+`--tenant` and `--scope` flags do not claim a capability that the storage model
+does not have: `--tenant`, `--scope tenant`, and any non-global scope fail
+locally without an HTTP request. The server returns the new global token version
+and revocation timestamp. This operation is O(1) because it updates one user
+record in Redis.
 
 ### JTI blacklist
 

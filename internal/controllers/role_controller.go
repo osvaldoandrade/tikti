@@ -232,10 +232,10 @@ func writeRolePutError(c *gin.Context, err error) {
 }
 
 func (r *roleController) List(c *gin.Context) {
-	if !requireAdmin(c, r.cfg) {
+	tenantID := c.Param("tenantId")
+	if !requireLegacyCodeAdminTenantRead(c, r.cfg, tenantID) {
 		return
 	}
-	tenantID := c.Param("tenantId")
 	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {
 		return r.svc.List(ctx, tenantID)
 	})

@@ -111,4 +111,11 @@ The integration treats token exchange as an authorization boundary. Failure mode
 
 ## OOB email delivery (out of scope)
 
-OOB email delivery is orchestrated outside of codeQ. The workflow engine (for example, Cadence) calls Tikti to generate and persist an OOB code (`POST /v1/tenants/{tenantId}/oob/send?key=API_KEY`), then calls the Notifications Service to send the email containing the code. This keeps Tikti focused on identity and token policy and keeps email delivery concerns outside the identity boundary.
+OOB email delivery is orchestrated outside of codeQ. Tikti currently generates
+and persists the code but has no email or queue dispatcher. A trusted server-side
+workflow calls `POST /v1/tenants/{tenantId}/oob/send`, supplies the API key in
+`X-API-Key` and a strict RS256 Bearer carrying `code-admin:identity:write` with
+signed `tid` equal to the route tenant (or provenance-bound platform-admin
+authority), observes `X-Tikti-OOB-Delivery: external-required`, and then calls
+the Notifications Service with the returned code. The code-bearing response is
+`no-store` compatibility behavior and must never traverse a browser or logs.

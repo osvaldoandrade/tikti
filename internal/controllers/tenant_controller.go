@@ -149,10 +149,10 @@ func decodeTenantCreate(body io.Reader) (domain.TenantCreateReq, error) {
 }
 
 func (t *tenantController) Get(c *gin.Context) {
-	if !requireAdmin(c, t.cfg) {
+	id := c.Param("id")
+	if !requireLegacyCodeAdminTenantRead(c, t.cfg, id) {
 		return
 	}
-	id := c.Param("id")
 	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {
 		return t.svc.Get(ctx, id)
 	})
@@ -172,7 +172,7 @@ func (t *tenantController) Get(c *gin.Context) {
 }
 
 func (t *tenantController) List(c *gin.Context) {
-	if !requireAdmin(c, t.cfg) {
+	if !requireLegacyCodeAdminPlatformRead(c, t.cfg) {
 		return
 	}
 	pageSize := int64(50)

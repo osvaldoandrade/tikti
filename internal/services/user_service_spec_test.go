@@ -274,7 +274,7 @@ func TestUserServiceSpec_RevokeTokens_ResponseContract(t *testing.T) {
 	}
 
 	svc := NewUserService(repo, nil, nil, nil, "secret", "https://api.storifly.ai", "tikti", makePEMKey(t), "kid").(*userService)
-	resp, err := svc.RevokeTokens(context.Background(), "  ops@company.com  ", "tenant-1", "tenant")
+	resp, err := svc.RevokeTokens(context.Background(), "  ops@company.com  ", "", "global")
 	if err != nil {
 		t.Fatalf("expected revoke success, got %v", err)
 	}
@@ -304,6 +304,12 @@ func TestUserServiceSpec_RevokeTokens_ScopeValidationContract(t *testing.T) {
 	}
 	if _, err := svc.RevokeTokens(context.Background(), "ops@company.com", "", "tenant"); err != domain.ErrInvalidArgument {
 		t.Fatalf("expected ErrInvalidArgument when tenant scope misses tenantId, got %v", err)
+	}
+	if _, err := svc.RevokeTokens(context.Background(), "ops@company.com", "tenant-1", "tenant"); err != domain.ErrInvalidArgument {
+		t.Fatalf("expected ErrInvalidArgument because tenant revocation is unsupported, got %v", err)
+	}
+	if _, err := svc.RevokeTokens(context.Background(), "ops@company.com", "tenant-1", "global"); err != domain.ErrInvalidArgument {
+		t.Fatalf("expected ErrInvalidArgument because global revocation cannot accept tenantId, got %v", err)
 	}
 	if calls != 0 {
 		t.Fatalf("repo should not be called on invalid revoke requests, got %d calls", calls)

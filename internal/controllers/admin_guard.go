@@ -94,6 +94,70 @@ func requireTenantIAMRead(c *gin.Context, cfg *config.Config, tenantID string) (
 	return claims, true
 }
 
+// requireTenantIdentityRead authorizes compatibility reads without falling
+// back to the advisory role carried by legacy identity tokens. A tenant-local
+// access token is confined to its signed tid. Cross-tenant administration
+// requires Tikti's provenance-bound platform privilege.
+func requireTenantIdentityRead(c *gin.Context, cfg *config.Config, tenantID string) bool {
+	return requireTenantIdentityAuthority(c, cfg, tenantID, false)
+}
+
+// Legacy Code Admin reads retain their established missing-authentication
+// response while moving token verification and tenant authorization to the
+// strict privileged path.
+func requireLegacyCodeAdminTenantRead(c *gin.Context, cfg *config.Config, tenantID string) bool {
+	if !legacyCodeAdminAuthenticationPresent(c) {
+		return false
+	}
+	return requireTenantIdentityRead(c, cfg, tenantID)
+}
+
+func requireLegacyCodeAdminPlatformRead(c *gin.Context, cfg *config.Config) bool {
+	if !legacyCodeAdminAuthenticationPresent(c) {
+		return false
+	}
+	_, ok := requirePlatformTenantAdmin(c, cfg)
+	return ok
+}
+
+func legacyCodeAdminAuthenticationPresent(c *gin.Context) bool {
+	if strings.TrimSpace(c.GetHeader("Authorization")) != "" {
+		return true
+	}
+	c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authentication"})
+	return false
+}
+
+func requireTenantMembershipRead(c *gin.Context, cfg *config.Config, tenantID string) bool {
+	return requireTenantIdentityRead(c, cfg, tenantID)
+}
+
+func requireTenantMembershipWrite(c *gin.Context, cfg *config.Config, tenantID string) bool {
+	return requireTenantIdentityAuthority(c, cfg, tenantID, true)
+}
+
+func requireTenantIdentityAuthority(c *gin.Context, cfg *config.Config, tenantID string, write bool) bool {
+	claims, ok := privilegedBearerClaims(c, cfg)
+	if !ok {
+		return false
+	}
+	if !canonicalMembershipTenantPath(tenantID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
+		return false
+	}
+	localScope := hasClaimScope(claims, tenantIdentityWriteScope)
+	if !write {
+		localScope = localScope || hasClaimScope(claims, tenantIdentityReadScope)
+	}
+	platform := hasPlatformTenantAdminProvenance(claims)
+	local := localScope && claimString(claims, "tid") == tenantID
+	if claimString(claims, "sub") == "" || !platform && !local {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient tenant administration scope"})
+		return false
+	}
+	return true
+}
+
 func privilegedBearerClaims(c *gin.Context, cfg *config.Config) (jwt.MapClaims, bool) {
 	parts := strings.Fields(c.GetHeader("Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {

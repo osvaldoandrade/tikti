@@ -192,14 +192,16 @@ type SendOobReq struct {
 	Email       string `json:"email"`
 }
 
-// SendOobResp conveys the generated code and metadata for clients to process.
+// SendOobResp is the temporary code-bearing compatibility response consumed by
+// a trusted external delivery orchestrator. It is not proof that delivery ran.
 type SendOobResp struct {
 	Kind    string `json:"kind"`
 	Email   string `json:"email"`
 	OobCode string `json:"oobCode"`
 }
 
-// SendOobTenantResp returns an out-of-band code for workflows that orchestrate delivery externally.
+// SendOobTenantResp returns an out-of-band code only for workflows that
+// orchestrate delivery externally; Tikti does not dispatch it.
 type SendOobTenantResp struct {
 	Kind        string `json:"kind"`
 	Email       string `json:"email"`

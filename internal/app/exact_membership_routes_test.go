@@ -152,7 +152,7 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 		{"page nondecimal", "/v1/admin/tenants/bereia/memberships?pageSize=+1", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"page empty", "/v1/admin/tenants/bereia/memberships?pageSize=", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"page duplicate", "/v1/admin/tenants/bereia/memberships?pageSize=1&pageSize=2", platform, "api-key-canary", "", 400, "invalid argument"},
-		{"malformed query", "/v1/admin/tenants/bereia/memberships?pageSize=1;bad=2", platform, "api-key-canary", "", 400, "invalid argument"},
+		{"malformed query", "/v1/admin/tenants/bereia/memberships?pageSize=1;bad=2", platform, "api-key-canary", "", 401, "Invalid or missing API key"},
 		{"query cursor", "/v1/admin/tenants/bereia/memberships?pageToken=query-canary", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"unknown query", "/v1/admin/tenants/bereia/memberships?unknown=query-canary", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"exact query", "/v1/admin/tenants/bereia/memberships/same-user?cursor=query-canary", platform, "api-key-canary", "", 400, "invalid argument"},

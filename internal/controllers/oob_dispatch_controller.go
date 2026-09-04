@@ -10,7 +10,8 @@ import (
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
-// oobDispatchController generates OOB codes and enqueues delivery jobs in codeQ.
+// oobDispatchController generates tenant-scoped OOB codes for an external
+// orchestrator. Tikti has no in-process email or queue dispatcher.
 type oobDispatchController struct {
 	userSvc services.UserService
 }
@@ -44,5 +45,6 @@ func (ctrl *oobDispatchController) Handle(c *gin.Context) {
 		}
 		return
 	}
+	markExternalOOBDelivery(c)
 	c.JSON(http.StatusOK, result)
 }

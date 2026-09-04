@@ -3,6 +3,7 @@ package utils
 import (
 	"crypto/subtle"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -38,7 +39,9 @@ func RequiredApiKeyHeader(expected string) gin.HandlerFunc {
 	expected = strings.TrimSpace(expected)
 	return func(c *gin.Context) {
 		provided := strings.TrimSpace(c.GetHeader("X-API-Key"))
-		if expected == "" || !constantTimeEqual(provided, expected) {
+		query, queryErr := url.ParseQuery(c.Request.URL.RawQuery)
+		_, queryKeyPresent := query["key"]
+		if expected == "" || queryErr != nil || queryKeyPresent || !constantTimeEqual(provided, expected) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or missing API key"})
 			c.Abort()
 			return

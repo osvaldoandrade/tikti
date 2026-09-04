@@ -81,18 +81,26 @@ func TestRequiredApiKeyHeaderFailsClosed(t *testing.T) {
 		name     string
 		expected string
 		provided string
+		target   string
 		want     int
 	}{
-		{name: "empty configuration", expected: "", provided: "anything", want: http.StatusUnauthorized},
-		{name: "missing header", expected: "secret", want: http.StatusUnauthorized},
-		{name: "wrong header", expected: "secret", provided: "other", want: http.StatusUnauthorized},
-		{name: "valid header", expected: "secret", provided: "secret", want: http.StatusNoContent},
+		{name: "empty configuration", expected: "", provided: "anything", target: "/workloads/bindings", want: http.StatusUnauthorized},
+		{name: "missing header", expected: "secret", target: "/workloads/bindings", want: http.StatusUnauthorized},
+		{name: "wrong header", expected: "secret", provided: "other", target: "/workloads/bindings", want: http.StatusUnauthorized},
+		{name: "valid header", expected: "secret", provided: "secret", target: "/workloads/bindings", want: http.StatusNoContent},
+		{name: "valid header cannot accompany query key", expected: "secret", provided: "secret", target: "/workloads/bindings?key=secret", want: http.StatusUnauthorized},
+		{name: "malformed semicolon query cannot hide key", expected: "secret", provided: "secret", target: "/workloads/bindings?key=secret;ignored=1", want: http.StatusUnauthorized},
+		{name: "bad escape query fails closed", expected: "secret", provided: "secret", target: "/workloads/bindings?key=%ZZ", want: http.StatusUnauthorized},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := gin.New()
 			router.Use(RequiredApiKeyHeader(test.expected))
-			router.POST("/workloads/bindings", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-			req := httptest.NewRequest(http.MethodPost, "/workloads/bindings?key=secret", nil)
+			handlerCalls := 0
+			router.POST("/workloads/bindings", func(c *gin.Context) {
+				handlerCalls++
+				c.Status(http.StatusNoContent)
+			})
+			req := httptest.NewRequest(http.MethodPost, test.target, nil)
 			if test.provided != "" {
 				req.Header.Set("X-API-Key", test.provided)
 			}
@@ -100,6 +108,13 @@ func TestRequiredApiKeyHeaderFailsClosed(t *testing.T) {
 			router.ServeHTTP(recorder, req)
 			if recorder.Code != test.want {
 				t.Fatalf("status = %d, want %d", recorder.Code, test.want)
+			}
+			wantCalls := 0
+			if test.want == http.StatusNoContent {
+				wantCalls = 1
+			}
+			if handlerCalls != wantCalls {
+				t.Fatalf("handler calls = %d, want %d", handlerCalls, wantCalls)
 			}
 		})
 	}

@@ -710,7 +710,7 @@ func TestUserService_StatusRevokeOobAndReset(t *testing.T) {
 	repo.incrementTokenVersionFn = func(ctx context.Context, email string) (int, *domain.User, error) {
 		return 3, &domain.User{Id: "u1", Email: email}, nil
 	}
-	rev, err := svc.RevokeTokens(context.Background(), "u@x.com", "t1", "tenant")
+	rev, err := svc.RevokeTokens(context.Background(), "u@x.com", "", "global")
 	if err != nil || rev.TokenVersion != 3 {
 		t.Fatalf("unexpected revoke response: %+v err=%v", rev, err)
 	}

@@ -298,8 +298,8 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 		return &domain.SendOobResp{OobCode: "c1"}, nil
 	}
 	rec = performJSON(t, r, http.MethodPost, "/send-oob", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("send-oob ok: expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Tikti-OOB-Delivery") != "external-required" {
+		t.Fatalf("send-oob compatibility contract unexpected: %d headers=%v", rec.Code, rec.Header())
 	}
 
 	rec = performJSON(t, r, http.MethodPost, "/reset-oob", nil, "")
@@ -396,7 +396,7 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 		return &domain.SendOobTenantResp{OobCode: "x"}, nil
 	}
 	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/oob/send", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("oob-dispatch ok: expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Tikti-OOB-Delivery") != "external-required" {
+		t.Fatalf("oob-dispatch compatibility contract unexpected: %d headers=%v", rec.Code, rec.Header())
 	}
 }

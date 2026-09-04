@@ -22,7 +22,8 @@ func NewMembershipController(svc services.MembershipService, cfg *config.Config)
 }
 
 func (m *membershipController) List(c *gin.Context) {
-	if !requireAdmin(c, m.cfg) {
+	tenantID := c.Param("tenantId")
+	if !requireTenantMembershipRead(c, m.cfg, tenantID) {
 		return
 	}
 	pageSize := int64(50)
@@ -43,7 +44,7 @@ func (m *membershipController) List(c *gin.Context) {
 		}
 		cursor = parsed
 	}
-	result, err := m.svc.List(c.Request.Context(), c.Param("tenantId"), cursor, pageSize)
+	result, err := m.svc.List(c.Request.Context(), tenantID, cursor, pageSize)
 	if err != nil {
 		switch err {
 		case domain.ErrInvalidTenant, domain.ErrInvalidArgument:
@@ -57,10 +58,10 @@ func (m *membershipController) List(c *gin.Context) {
 }
 
 func (m *membershipController) Create(c *gin.Context) {
-	if !requireAdmin(c, m.cfg) {
+	tenantID := c.Param("tenantId")
+	if !requireTenantMembershipWrite(c, m.cfg, tenantID) {
 		return
 	}
-	tenantID := c.Param("tenantId")
 	var req domain.MembershipCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
@@ -85,10 +86,10 @@ func (m *membershipController) Create(c *gin.Context) {
 }
 
 func (m *membershipController) Remove(c *gin.Context) {
-	if !requireAdmin(c, m.cfg) {
+	tenantID := c.Param("tenantId")
+	if !requireTenantMembershipWrite(c, m.cfg, tenantID) {
 		return
 	}
-	tenantID := c.Param("tenantId")
 	var req domain.MembershipRemoveReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})

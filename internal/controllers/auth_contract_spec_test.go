@@ -37,7 +37,6 @@ func TestAuthContractSpec_SignIn_ResponseShape(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-
 	resp := decodeJSONBody[domain.SignInResp](t, rec)
 	if resp.IdToken == "" || resp.Email == "" || resp.LocalId == "" || resp.ExpiresIn != 3600 {
 		t.Fatalf("invalid signIn response contract: %+v", resp)
@@ -99,6 +98,9 @@ func TestAuthContractSpec_SendOob_ResponseShape(t *testing.T) {
 	}, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Pragma") != "no-cache" || rec.Header().Get("X-Tikti-OOB-Delivery") != "external-required" {
+		t.Fatalf("sendOob response must identify external delivery and disable caching: %v", rec.Header())
 	}
 	resp := decodeJSONBody[domain.SendOobResp](t, rec)
 	if resp.Kind != "identitytoolkit#GetOobConfirmationCodeResponse" || resp.Email != "user@company.com" || resp.OobCode == "" {

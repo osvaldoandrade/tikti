@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
@@ -90,7 +92,7 @@ func TestUserAdminController_Handle(t *testing.T) {
 	}
 }
 
-func TestUserAdminController_Revoke_ForwardsTenantAndScope(t *testing.T) {
+func TestUserAdminController_RevokeRejectsUnsupportedTenantScopeBeforeService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg := &config.Config{JwtSecret: "s1"}
 	svc := &fakeUserService{}
@@ -112,23 +114,37 @@ func TestUserAdminController_Revoke_ForwardsTenantAndScope(t *testing.T) {
 		return &domain.RevokeResp{Email: email, TokenVersion: 1}, nil
 	}
 
-	rec := performJSON(t, r, http.MethodPost, "/revoke", map[string]any{
-		"email":    "u@x.com",
-		"tenantId": "tenant-1",
-		"scope":    "tenant",
-	}, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	for _, body := range []map[string]any{
+		{"email": "u@x.com", "tenantId": "tenant-1", "scope": "tenant"},
+		{"email": "u@x.com", "tenantId": "tenant-1", "scope": "global"},
+		{"email": "u@x.com", "scope": "tenant"},
+	} {
+		rec := performJSON(t, r, http.MethodPost, "/revoke", body, admin)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "only global token revocation is supported") {
+			t.Fatalf("unsupported tenant revocation response = %d %s", rec.Code, rec.Body.String())
+		}
+		if captured.email != "" || captured.tenantID != "" || captured.scope != "" {
+			t.Fatalf("service called for unsupported tenant revocation: %+v", captured)
+		}
 	}
-	if captured.email != "u@x.com" || captured.tenantID != "tenant-1" || captured.scope != "tenant" {
+
+	rec := performJSON(t, r, http.MethodPost, "/revoke", map[string]any{"email": "u@x.com", "scope": "global"}, admin)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for global revocation, got %d", rec.Code)
+	}
+	if captured.email != "u@x.com" || captured.tenantID != "" || captured.scope != "global" {
 		t.Fatalf("revoke payload forwarding mismatch: %+v", captured)
 	}
 }
 
 func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	cfg := &config.Config{JwtSecret: "s1"}
-	admin := "Bearer " + adminToken(t, cfg.JwtSecret, "ADMIN")
+	cfg, key := roleAccessConfig(t)
+	cfg.JwtSecret = "s1"
+	admin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+		"sub": "platform-operator", "scope": platformTenantAdminScope, "tid": "home",
+		"role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
 
 	tenantSvc := &fakeTenantService{}
 	memberSvc := &fakeMembershipService{}

@@ -49,10 +49,10 @@ func (c *clientController) Create(ctx *gin.Context) {
 }
 
 func (c *clientController) Get(ctx *gin.Context) {
-	if !requireAdmin(ctx, c.cfg) {
+	tenantID := ctx.Param("tenantId")
+	if !requireLegacyCodeAdminTenantRead(ctx, c.cfg, tenantID) {
 		return
 	}
-	tenantID := ctx.Param("tenantId")
 	clientID := ctx.Param("clientId")
 	ch := runCommandAsync(func(cctx context.Context) (interface{}, error) {
 		return c.svc.Get(cctx, tenantID, clientID)
@@ -73,10 +73,10 @@ func (c *clientController) Get(ctx *gin.Context) {
 }
 
 func (c *clientController) List(ctx *gin.Context) {
-	if !requireAdmin(ctx, c.cfg) {
+	tenantID := ctx.Param("tenantId")
+	if !requireLegacyCodeAdminTenantRead(ctx, c.cfg, tenantID) {
 		return
 	}
-	tenantID := ctx.Param("tenantId")
 	ch := runCommandAsync(func(cctx context.Context) (interface{}, error) {
 		return c.svc.List(cctx, tenantID)
 	})
