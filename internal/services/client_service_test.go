@@ -69,11 +69,11 @@ func TestClientService_Create(t *testing.T) {
 	}})
 	if _, err := svc.Create(context.Background(), "t1", domain.ClientCreateReq{
 		ClientId: "c1", DefaultScopes: []string{"code-admin:secrets:read"},
-	}); err != domain.ErrInvalidArgument {
-		t.Fatalf("expected dormant scope to fail closed, got %v", err)
+	}); err != nil {
+		t.Fatalf("expected runtime-backed tenant scope to be accepted, got %v", err)
 	}
-	if createCalled {
-		t.Fatal("repository was called for a dormant default scope")
+	if !createCalled {
+		t.Fatal("repository was not called for a runtime-backed tenant scope")
 	}
 
 	repoErr := errors.New("repo-fail")

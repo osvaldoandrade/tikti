@@ -13,7 +13,7 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		t.Fatalf("compiled policy: %v", err)
 	}
 	digest := sha256.Sum256(manifestJSON)
-	if PolicyVersion != "2026-09-04.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
+	if PolicyVersion != "2026-09-04.2" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
 		t.Fatalf("unexpected policy identity: %s %x", PolicyVersion, digest)
 	}
 	tests := []struct {
@@ -22,6 +22,8 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 	}{
 		{scope: "code-admin:services:read", want: true},
 		{scope: "code-admin:identity:write", want: true},
+		{scope: "code-admin:secrets:read", want: true},
+		{scope: "code-admin:secrets:write", want: true},
 		{scope: "codeq:claim", want: true},
 		{scope: "bereia:read", want: true},
 		{scope: "code-admin:tenants:admin"},
@@ -29,8 +31,6 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		{scope: "code-admin:clusters:read"},
 		{scope: "code-admin:repositories:read"},
 		{scope: "code-admin:identity:read"},
-		{scope: "code-admin:secrets:read"},
-		{scope: "code-admin:secrets:write"},
 		{scope: "code-admin:owners:delegate"},
 		{scope: "code-admin:unknown:read"},
 	}
@@ -75,12 +75,12 @@ func TestAudienceScopesUseOnlyExistingReservedNames(t *testing.T) {
 	if _, ok := CanonicalAudienceScopes([]string{"code-admin:invented:read"}); ok {
 		t.Fatal("accepted an unknown reserved scope")
 	}
-	for _, dormant := range []string{"code-admin:secrets:read", "code-admin:secrets:write"} {
-		if _, ok := CanonicalAudienceScopes([]string{dormant}); ok {
-			t.Fatalf("accepted dormant tenant scope %q for an audience", dormant)
+	for _, enabled := range []string{"code-admin:secrets:read", "code-admin:secrets:write"} {
+		if scopes, ok := CanonicalAudienceScopes([]string{enabled}); !ok || !reflect.DeepEqual(scopes, []string{enabled}) {
+			t.Fatalf("rejected runtime-backed tenant scope %q for an audience", enabled)
 		}
-		if RequiresHomeAuthority(dormant) {
-			t.Fatalf("classified dormant tenant scope %q as home authority", dormant)
+		if RequiresHomeAuthority(enabled) || !TenantRoleAssignable(enabled) {
+			t.Fatalf("misclassified runtime-backed tenant scope %q", enabled)
 		}
 	}
 	if !RequiresHomeAuthority("code-admin:clusters:read") || RequiresHomeAuthority("code-admin:workloads:read") ||
