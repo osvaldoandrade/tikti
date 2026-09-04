@@ -21,10 +21,10 @@ func NewClientController(svc services.ClientService, cfg *config.Config) *client
 }
 
 func (c *clientController) Create(ctx *gin.Context) {
-	if !requireAdmin(ctx, c.cfg) {
+	tenantID := ctx.Param("tenantId")
+	if !requireTenantIdentityAuthority(ctx, c.cfg, tenantID, true) {
 		return
 	}
-	tenantID := ctx.Param("tenantId")
 	var req domain.ClientCreateReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})

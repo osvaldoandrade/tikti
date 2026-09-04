@@ -19,7 +19,7 @@ itself does not dispatch email or enqueue a notification job.
 
 1. User enters an email address and triggers sign-in in the client application.
 2. The frontend submits the request to its trusted application backend.
-3. The backend calls `POST /v1/accounts/sendOobCode?key=API_KEY` with the email and request type.
+3. The backend calls `POST /v1/accounts/sendOobCode` with `X-API-Key: API_KEY`, the email, and request type.
 4. Tikti ensures the user identity exists (creates one if missing), generates an OOB code, stores OOB state, and returns the compatibility response with `X-Tikti-OOB-Delivery: external-required` and `Cache-Control: no-store`.
 5. The backend passes the code directly to its notification worker, which sends the email through the configured provider.
 6. User receives the code by email.
@@ -40,7 +40,7 @@ sequenceDiagram
 
     U->>F: Enter email and click authenticate
     F->>B: Request email sign-in
-    B->>T: POST /v1/accounts/sendOobCode?key=API_KEY
+    B->>T: POST /v1/accounts/sendOobCode (X-API-Key)
     T->>T: Ensure user exists / generate OOB / persist state
     T-->>B: oobCode + external-required + no-store
     B->>W: Submit notification with OOB code

@@ -102,7 +102,7 @@ func (r *exactMembershipReadController) authorize(c *gin.Context, tenantID, user
 		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
 		return claims, false
 	}
-	platform := hasClaimScope(claims, platformTenantAdminScope)
+	platform := hasPlatformTenantAdminProvenance(claims)
 	local := claimString(claims, "tid") == tenantID &&
 		(hasClaimScope(claims, tenantIdentityReadScope) || hasClaimScope(claims, tenantIdentityWriteScope))
 	if claimString(claims, "sub") == "" || !platform && !local {

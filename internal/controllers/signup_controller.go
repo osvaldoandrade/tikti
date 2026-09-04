@@ -3,12 +3,10 @@ package controllers
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/osvaldoandrade/tikti/internal/services"
-	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
@@ -29,27 +27,12 @@ func NewSignUpController(svc services.UserService, cfg *config.Config) *signUpCo
 
 // Handle authenticates the caller, enforces admin-only access and forwards the request to the service.
 func (ctrl *signUpController) Handle(c *gin.Context) {
+	if _, ok := requirePlatformTenantAdmin(c, ctrl.cfg); !ok {
+		return
+	}
 	var req domain.SignUpReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	idToken := c.GetHeader("Authorization")
-	if idToken == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authentication"})
-		return
-	}
-	if strings.HasPrefix(strings.ToLower(idToken), "bearer ") {
-		idToken = strings.TrimSpace(idToken[7:])
-	}
-	claims, err := utils.ParseToken(idToken, ctrl.cfg.JwtSecret)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-		return
-	}
-	role, _ := claims["role"].(string)
-	if role != "ADMIN" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only admins can create users"})
 		return
 	}
 	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {

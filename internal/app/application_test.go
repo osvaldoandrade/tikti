@@ -67,7 +67,7 @@ func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
 		{name: "query rejected", method: http.MethodPut, key: "secret", target: "/v1/tenants/bereia?key=secret", want: "Invalid or missing API key"},
 		{name: "empty key rejected", method: http.MethodPut, header: "secret", target: "/v1/tenants/bereia", want: "Invalid or missing API key"},
 		{name: "header passes middleware", method: http.MethodPut, key: "secret", header: "secret", target: "/v1/tenants/bereia", want: "missing or invalid bearer token"},
-		{name: "legacy POST query", method: http.MethodPost, key: "secret", target: "/v1/tenants?key=secret", want: "missing authentication"},
+		{name: "legacy POST query", method: http.MethodPost, key: "secret", target: "/v1/tenants?key=secret", want: "Invalid or missing API key"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := gin.New()
@@ -82,6 +82,39 @@ func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
 		})
 	}
 	SetupMappings(gin.New(), &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+}
+
+func TestProtectedRoutesRejectQueryAPIKeyBeforeControllers(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	SetupMappings(router, &config.Config{ApiKey: "secret"}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+
+	for _, path := range []string{
+		"/v1/accounts/signUp",
+		"/v1/accounts/signInWithPassword",
+		"/v1/accounts/lookup",
+		"/v1/accounts/token/exchange",
+		"/v1/accounts/status",
+		"/v1/accounts/revoke",
+		"/v1/accounts/validate",
+		"/v1/accounts/update",
+		"/v1/accounts/delete",
+		"/v1/accounts/sendOobCode",
+		"/v1/accounts/resetPassword",
+		"/v1/tenants",
+		"/v1/tenants/bereia/roles",
+		"/v1/tenants/bereia/clients",
+	} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, path+"?key=secret", strings.NewReader(`[`))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, request)
+			if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "Invalid or missing API key") {
+				t.Fatalf("query credential reached %s controller: %d %s", path, response.Code, response.Body.String())
+			}
+		})
+	}
 }
 
 type applicationWorkloadAccountService struct{}
@@ -165,7 +198,10 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 		router.ServeHTTP(rec, req)
 		return rec
 	}
-	platform := "Bearer " + token("code-admin:tenants:admin", "home", "same-user")
+	platform := "Bearer " + applicationRoleToken(t, privateKey, jwt.MapClaims{
+		"scope": "code-admin:tenants:admin", "tid": "home", "sub": "same-user", "role": string(domain.RoleAdmin),
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
 	bereia := "Bearer " + token("code-admin:identity:write", "bereia", "same-user")
 	bereiaRead := "Bearer " + token("code-admin:identity:read", "bereia", "same-user")
 	storifly := "Bearer " + token("code-admin:identity:write", "storifly", "same-user")
@@ -186,7 +222,7 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 		{name: "legacy POST query", method: http.MethodPost, target: "/v1/tenants/bereia/roles?key=secret", want: http.StatusUnauthorized},
 	}
 	for _, test := range tests {
-		if rec := request(test.method, test.target, test.auth, test.key); rec.Code != test.want || test.name == "legacy POST query" && !strings.Contains(rec.Body.String(), "missing authentication") {
+		if rec := request(test.method, test.target, test.auth, test.key); rec.Code != test.want || test.name == "legacy POST query" && !strings.Contains(rec.Body.String(), "Invalid or missing API key") {
 			t.Fatalf("%s: response=%d %s", test.name, rec.Code, rec.Body.String())
 		}
 	}

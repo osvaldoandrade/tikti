@@ -155,7 +155,12 @@ Tikti issues two token types. The idToken is signed with HS256 using the `jwtSec
 
 The access token is signed with RS256 using the private key specified by `jwksPrivateKey`. Clients obtain it by calling `/token/exchange` with a valid idToken. The access token carries `iss`, `aud`, `scope`, `tid`, `eventTypes`, and `ver` claims. Relying parties verify access tokens offline by fetching the public key from `/.well-known/jwks.json`.
 
-Protected admin routes require the API key as a query parameter: `?key=API_KEY`.
+Protected routes accept the service API key only in `X-API-Key`. A `key` query
+parameter is rejected, even when the correct header is also present, so the
+credential cannot leak through URLs, browser history, proxy telemetry, or access
+logs. Administrative mutations additionally require the scoped RS256 bearer
+described by the endpoint contract; legacy HS256 identity tokens are not
+administrative authority.
 
 ## SAML 2.0 Federation
 
@@ -185,11 +190,11 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/accounts/signUp` | POST | Register a new user account |
+| `/accounts/signUp` | POST | Register a new user account (`X-API-Key` and platform-admin RS256 bearer required) |
 | `/accounts/signIn` | POST | Authenticate and receive an HS256 idToken |
-| `/accounts/signInWithPassword?key=...` | POST | Admin-initiated password authentication |
-| `/accounts/lookup?key=...` | POST | Look up an account by email |
-| `/accounts/token/exchange?key=...` | POST | Exchange an HS256 idToken for an RS256 access token |
+| `/accounts/signInWithPassword` | POST | Password authentication (`X-API-Key`) |
+| `/accounts/lookup` | POST | Look up an account (`X-API-Key`) |
+| `/accounts/token/exchange` | POST | Exchange an HS256 idToken for an RS256 access token (`X-API-Key`) |
 | `/workloads/token/exchange` | POST | Exchange a projected Kubernetes ServiceAccount JWT for a tenant-bound provider token |
 | `/workloads/bindings` | POST | Create or replace a workload-to-tenant authorization binding (`X-API-Key`) |
 | `/workloads/bindings/revoke` | POST | Revoke a workload binding (`X-API-Key`) |
@@ -199,25 +204,25 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/tenants?key=...` | POST | Create a tenant |
+| `/tenants` | POST | Create a tenant (`X-API-Key` and platform-admin RS256 bearer required) |
 | `/tenants/:tenantId` | PUT | Create a deterministic tenant without overwrite (service API key and platform-admin access token required) |
-| `/tenants/:id?key=...` | GET | Retrieve a tenant |
-| `/tenants/:tenantId/users?key=...` | POST | Add a user to a tenant |
-| `/tenants/:tenantId/roles?key=...` | POST | Create a role within a tenant |
+| `/tenants/:id` | GET | Retrieve a tenant (`X-API-Key` and scoped RS256 bearer required) |
+| `/tenants/:tenantId/users` | POST | Add a user to a tenant (`X-API-Key` and exact-tenant/platform RS256 bearer required) |
+| `/tenants/:tenantId/roles` | POST | Create a role within a tenant (`X-API-Key` and exact-tenant/platform RS256 bearer required) |
 | `/admin/tenants/:tenantId/roles/:roleName` | PUT | Create-if-absent tenant role using `X-API-Key` and a scoped RS256 bearer |
 | `/admin/tenants/:tenantId/roles/:roleName` | GET | Read one exact tenant role using `X-API-Key` and a scoped RS256 bearer |
 | `/admin/tenants/:tenantId/roles` | GET | List tenant roles by name using `X-API-Key` and a scoped RS256 bearer |
-| `/tenants/:tenantId/roles?key=...` | GET | List roles within a tenant |
-| `/tenants/:tenantId/clients?key=...` | POST | Register a client for a tenant |
-| `/tenants/:tenantId/clients?key=...` | GET | List clients for a tenant |
+| `/tenants/:tenantId/roles` | GET | List roles within a tenant (`X-API-Key` and scoped RS256 bearer required) |
+| `/tenants/:tenantId/clients` | POST | Register a client for a tenant (`X-API-Key` and exact-tenant/platform RS256 bearer required) |
+| `/tenants/:tenantId/clients` | GET | List clients for a tenant (`X-API-Key` and scoped RS256 bearer required) |
 
 ### Admin
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/accounts/status?key=...` | POST | Set account status (enable/disable) |
-| `/accounts/revoke?key=...` | POST | Revoke an account's tokens |
-| `/accounts/validate?key=...` | POST | Validate an account's credentials |
+| `/accounts/status` | POST | Set account status (`X-API-Key` and platform-admin RS256 bearer required) |
+| `/accounts/revoke` | POST | Revoke an account's tokens (`X-API-Key` and platform-admin RS256 bearer required) |
+| `/accounts/validate` | POST | Validate an account's credentials (`X-API-Key` and platform-admin RS256 bearer required) |
 
 ### SAML
 

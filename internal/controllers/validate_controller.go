@@ -25,7 +25,7 @@ type validateReq struct {
 }
 
 func (v *validateController) Handle(c *gin.Context) {
-	if !requireAdmin(c, v.cfg) {
+	if _, ok := requirePlatformTenantAdmin(c, v.cfg); !ok {
 		return
 	}
 	var req validateReq

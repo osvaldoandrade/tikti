@@ -20,10 +20,10 @@ const certOverlapDuration = 24 * time.Hour
 
 func samlIdpUpdateCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	var (
-		tid         string
-		metadataURL string
+		tid          string
+		metadataURL  string
 		metadataFile string
-		attrMapFile string
+		attrMapFile  string
 	)
 
 	cmd := &cobra.Command{
@@ -47,12 +47,17 @@ If the new metadata fails to parse the existing record is left untouched.`,
 			if err != nil {
 				return err
 			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 
 			// ── Step 1: Fetch the existing IdP record ──
-			existingResp, err := doJSON(
+			existingResp, err := doJSONWithAPIKey(
 				http.MethodGet,
-				prof.BaseURL+"/v1/saml/idp/"+tid+"?key="+prof.ApiKey,
-				prof.IdToken,
+				prof.BaseURL+"/v1/admin/tenants/"+tid+"/saml/idp",
+				token,
+				prof.ApiKey,
 				nil,
 			)
 			if err != nil {
@@ -115,22 +120,23 @@ If the new metadata fails to parse the existing record is left untouched.`,
 			}
 
 			body := map[string]any{
-				"tenantId":        tid,
-				"entityId":        newRec.EntityID,
-				"ssoUrl":          newRec.SSOURL,
-				"sloUrl":          newRec.SLOURL,
-				"signingCerts":    sigB64,
-				"encryptionCerts": encB64,
-				"nameIdFormat":    newRec.NameIDFormat,
-				"attributeMap":    newRec.AttributeMap,
-				"lastFetched":     newRec.LastFetched.Format(time.RFC3339),
+				"tenantId":         tid,
+				"entityId":         newRec.EntityID,
+				"ssoUrl":           newRec.SSOURL,
+				"sloUrl":           newRec.SLOURL,
+				"signingCerts":     sigB64,
+				"encryptionCerts":  encB64,
+				"nameIdFormat":     newRec.NameIDFormat,
+				"attributeMap":     newRec.AttributeMap,
+				"lastFetched":      newRec.LastFetched.Format(time.RFC3339),
 				"certOverlapUntil": time.Now().Add(certOverlapDuration).Format(time.RFC3339),
 			}
 
-			resp, err := doJSON(
+			resp, err := doJSONWithAPIKey(
 				http.MethodPut,
-				prof.BaseURL+"/v1/saml/idp/"+tid+"?key="+prof.ApiKey,
-				prof.IdToken,
+				prof.BaseURL+"/v1/admin/tenants/"+tid+"/saml/idp",
+				token,
+				prof.ApiKey,
 				body,
 			)
 			if err != nil {

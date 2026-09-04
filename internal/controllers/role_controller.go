@@ -28,10 +28,10 @@ func NewRoleController(svc services.RoleService, cfg *config.Config) *roleContro
 }
 
 func (r *roleController) Create(c *gin.Context) {
-	if !requireAdmin(c, r.cfg) {
+	tenantID := c.Param("tenantId")
+	if !requireTenantIdentityAuthority(c, r.cfg, tenantID, true) {
 		return
 	}
-	tenantID := c.Param("tenantId")
 	var req domain.RoleCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})

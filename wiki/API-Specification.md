@@ -22,9 +22,9 @@ The `error` field is mandatory. Clients that predate the `code` and `details` fi
 
 ### Authentication
 
-Protected endpoints require an API key as a query parameter (`?key=API_KEY`). The server stores API keys hashed and compares them in constant time.
+Protected endpoints accept the service API key only in `X-API-Key` and compare it in constant time. A `key` query parameter is rejected even when the correct header is present, preventing credentials from entering URLs, browser history, proxy telemetry, and access logs.
 
-Admin endpoints require a token whose claims include `role=ADMIN` or a policy-equivalent role. The server reads this token from the `Authorization` header or from the `idToken` field in the request body, depending on the endpoint.
+Administrative endpoints read a strict RS256 access token from `Authorization: Bearer ...` and validate the configured issuer and Code Admin audience. Platform authority requires `code-admin:tenants:admin`, persisted `ADMIN` role, and `tikti_platform_privilege=platform-admin`; tenant-local authority requires an identity read/write scope and exact signed `tid` according to the operation. Raw tokens, HS256 identity tokens, role-only claims, and scope-only platform claims are rejected.
 
 ## Identity endpoints
 
@@ -60,13 +60,13 @@ Error cases:
 | 401 | Credentials are invalid. |
 | 400 | Request body is malformed. |
 
-### POST /v1/accounts/signInWithPassword?key=API_KEY
+### POST /v1/accounts/signInWithPassword
 
 Behaves identically to `/signIn` but requires an API key. This endpoint exists to match the Firebase API surface and to enforce API key usage in server-to-server calls.
 
 ### POST /v1/accounts/signUp
 
-Creates a user. The caller must supply an admin token in the `Authorization` header. The server validates the token issuer and expiration. For compatibility the server accepts both a raw JWT string and `Bearer <jwt>` format.
+Creates a user. The caller must supply `X-API-Key` and a provenance-bound platform-admin RS256 access token in the `Authorization` header. Only `Bearer <jwt>` is accepted, and authority is validated before the request body or user service is processed.
 
 Request:
 
@@ -90,7 +90,7 @@ Response 200:
 
 `email` must be globally unique. `role` defaults to `COMPANY_EMPLOYEE` when omitted.
 
-### POST /v1/accounts/lookup?key=API_KEY
+### POST /v1/accounts/lookup
 
 Resolves an idToken to user identity metadata. codeQ producers call this endpoint to validate tokens. The token is provided in the request body.
 
@@ -120,7 +120,7 @@ Response 200:
 
 The response includes `role` when the user has one. When multi-tenant mode is active, `tenantId` is present. Downstream services use these two fields to enforce admin operations and tenant scoping without issuing further calls.
 
-### POST /v1/accounts/update?key=API_KEY
+### POST /v1/accounts/update
 
 Updates email or password (or both) for the authenticated user. The idToken in the payload identifies the caller.
 
@@ -140,7 +140,7 @@ Response 200:
 {"localId":"uuid","email":"new@company.com"}
 ```
 
-### POST /v1/accounts/delete?key=API_KEY
+### POST /v1/accounts/delete
 
 Deletes the authenticated user. The idToken in the request identifies the user.
 
@@ -152,7 +152,7 @@ Request:
 
 Response 200: empty JSON object.
 
-### POST /v1/accounts/sendOobCode?key=API_KEY
+### POST /v1/accounts/sendOobCode
 
 Generates an out-of-band code for password reset or email sign-in. The `requestType` field binds the code to a consumption endpoint. The server persists this type alongside the code and rejects codes presented to the wrong endpoint.
 
@@ -270,7 +270,7 @@ Error cases:
 | 404 | `PASSWORD_RESET` and the user does not exist. |
 | 500 | Server cannot persist the OOB code. |
 
-### POST /v1/accounts/resetPassword?key=API_KEY
+### POST /v1/accounts/resetPassword
 
 Resets a password using an out-of-band code. The code must have been issued with `requestType=PASSWORD_RESET`.
 
@@ -289,7 +289,7 @@ Response 200: empty JSON object.
 
 Admin endpoints for user status and token revocation operate on arbitrary users, unlike `delete` which operates on the caller. These endpoints require an admin token.
 
-### POST /v1/accounts/status?key=API_KEY
+### POST /v1/accounts/status
 
 Sets user status. Valid values are `ACTIVE`, `INACTIVE`, and `SUSPENDED`. A suspended user cannot sign in and cannot exchange tokens.
 
@@ -314,7 +314,7 @@ Response 200:
 
 The server logs the actor, the tenant context when applicable, and the status transition.
 
-### POST /v1/accounts/revoke?key=API_KEY
+### POST /v1/accounts/revoke
 
 Revokes tokens for a user by incrementing the stored token version. Tokens carry a `ver` claim; the server rejects tokens whose `ver` does not match the stored version.
 
@@ -347,7 +347,7 @@ a future versioned storage, token-claim, and validation contract.
 
 ## Token exchange
 
-### POST /v1/accounts/token/exchange?key=API_KEY
+### POST /v1/accounts/token/exchange
 
 Exchanges an identity token for an RS256 access token. codeQ workers use this endpoint to obtain tokens carrying scopes and event types.
 

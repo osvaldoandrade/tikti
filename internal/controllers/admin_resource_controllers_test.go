@@ -11,20 +11,23 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 func TestUserAdminController_Handle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	cfg := &config.Config{JwtSecret: "s1"}
+	cfg, key := roleAccessConfig(t)
+	cfg.JwtSecret = "s1"
 	svc := &fakeUserService{}
 	ctrl := NewUserAdminController(svc, cfg)
 	r := gin.New()
 	r.POST("/status", ctrl.SetStatus)
 	r.POST("/revoke", ctrl.Revoke)
 
-	admin := "Bearer " + adminToken(t, cfg.JwtSecret, "ADMIN")
+	admin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope, "tid": "home",
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
 
 	rec := performJSON(t, r, http.MethodPost, "/status", nil, admin)
 	if rec.Code != http.StatusBadRequest {
@@ -95,13 +98,17 @@ func TestUserAdminController_Handle(t *testing.T) {
 
 func TestUserAdminController_RevokeRejectsUnsupportedTenantScopeBeforeService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	cfg := &config.Config{JwtSecret: "s1"}
+	cfg, key := roleAccessConfig(t)
+	cfg.JwtSecret = "s1"
 	svc := &fakeUserService{}
 	ctrl := NewUserAdminController(svc, cfg)
 	r := gin.New()
 	r.POST("/revoke", ctrl.Revoke)
 
-	admin := "Bearer " + adminToken(t, cfg.JwtSecret, "ADMIN")
+	admin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope, "tid": "home",
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
 
 	captured := struct {
 		email    string
@@ -153,6 +160,95 @@ func TestUserAdminController_RevokeRejectsUnsupportedTenantScopeBeforeService(t 
 	}
 	if captured.email != "u@x.com" || captured.tenantID != "" || captured.scope != "global" {
 		t.Fatalf("revoke payload forwarding mismatch: %+v", captured)
+	}
+}
+
+func TestLegacyAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg, key := roleAccessConfig(t)
+	cfg.JwtSecret = "legacy-secret"
+	calls := map[string]int{}
+	userSvc := &fakeUserService{
+		signUpFn: func(context.Context, domain.SignUpReq) (*domain.SignUpResp, error) {
+			calls["signup"]++
+			return &domain.SignUpResp{LocalId: "user-1", Email: "u@example.com"}, nil
+		},
+		setStatusFn: func(context.Context, string, string) (*domain.StatusResp, error) {
+			calls["status"]++
+			return &domain.StatusResp{LocalId: "user-1", Email: "u@example.com", Status: "ACTIVE"}, nil
+		},
+		revokeTokensFn: func(context.Context, string, string, string) (*domain.RevokeResp, error) {
+			calls["revoke"]++
+			return &domain.RevokeResp{LocalId: "user-1", Email: "u@example.com", TokenVersion: 2}, nil
+		},
+		validateAccessTokenFn: func(context.Context, string, string, string) (jwt.MapClaims, error) {
+			calls["validate"]++
+			return jwt.MapClaims{"sub": "user-1"}, nil
+		},
+	}
+	tenantSvc := &fakeTenantService{createFn: func(context.Context, domain.TenantCreateReq) (*domain.TenantResp, error) {
+		calls["tenant"]++
+		return &domain.TenantResp{Id: "new-tenant"}, nil
+	}}
+	roleSvc := &fakeRoleService{createFn: func(context.Context, string, domain.RoleCreateReq) (*domain.RoleResp, error) {
+		calls["role"]++
+		return &domain.RoleResp{Name: "reader"}, nil
+	}}
+	clientSvc := &fakeClientService{createFn: func(context.Context, string, domain.ClientCreateReq) (*domain.ClientResp, error) {
+		calls["client"]++
+		return &domain.ClientResp{ClientId: "client-1"}, nil
+	}}
+
+	router := gin.New()
+	router.POST("/signup", NewSignUpController(userSvc, cfg).Handle)
+	adminUser := NewUserAdminController(userSvc, cfg)
+	router.POST("/status", adminUser.SetStatus)
+	router.POST("/revoke", adminUser.Revoke)
+	router.POST("/validate", NewValidateController(userSvc, cfg).Handle)
+	router.POST("/tenants", NewTenantController(tenantSvc, cfg).Create)
+	router.POST("/tenants/:tenantId/roles", NewRoleController(roleSvc, cfg).Create)
+	router.POST("/tenants/:tenantId/clients", NewClientController(clientSvc, cfg).Create)
+
+	bearer := func(claims jwt.MapClaims) string {
+		return "Bearer " + signRoleAccessToken(t, key, claims)
+	}
+	localAdmin := bearer(jwt.MapClaims{
+		"sub": "tenant-admin", "role": string(domain.RoleAdmin), "scope": tenantIdentityWriteScope, "tid": "bereia",
+	})
+	foreignAdmin := bearer(jwt.MapClaims{
+		"sub": "tenant-admin", "role": string(domain.RoleAdmin), "scope": tenantIdentityWriteScope, "tid": "storifly",
+	})
+	platformWithoutProvenance := bearer(jwt.MapClaims{
+		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope, "tid": "home",
+	})
+	platformToken := strings.TrimPrefix(bearer(jwt.MapClaims{
+		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope, "tid": "home",
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	}), "Bearer ")
+	legacyAdmin := "Bearer " + adminToken(t, cfg.JwtSecret, "ADMIN")
+
+	tests := []struct {
+		name, path, authorization, call string
+		body                            any
+		want                            int
+	}{
+		{name: "signup tenant admin", path: "/signup", authorization: localAdmin, call: "signup", body: domain.SignUpReq{Email: "u@example.com", Password: "password"}, want: http.StatusForbidden},
+		{name: "status legacy HS256", path: "/status", authorization: legacyAdmin, call: "status", body: map[string]any{"email": "u@example.com", "status": "ACTIVE"}, want: http.StatusUnauthorized},
+		{name: "status raw platform token", path: "/status", authorization: platformToken, call: "status", body: map[string]any{"email": "u@example.com", "status": "ACTIVE"}, want: http.StatusUnauthorized},
+		{name: "revoke tenant admin", path: "/revoke", authorization: localAdmin, call: "revoke", body: map[string]any{"email": "u@example.com", "scope": "global"}, want: http.StatusForbidden},
+		{name: "validate platform without provenance", path: "/validate", authorization: platformWithoutProvenance, call: "validate", body: map[string]any{"token": "candidate", "audience": "workload"}, want: http.StatusForbidden},
+		{name: "tenant create tenant admin", path: "/tenants", authorization: localAdmin, call: "tenant", body: domain.TenantCreateReq{Name: "New", Slug: "new-tenant"}, want: http.StatusForbidden},
+		{name: "role create foreign tenant", path: "/tenants/bereia/roles", authorization: foreignAdmin, call: "role", body: domain.RoleCreateReq{Name: "reader", Permissions: []string{"read"}}, want: http.StatusForbidden},
+		{name: "client create foreign tenant", path: "/tenants/bereia/clients", authorization: foreignAdmin, call: "client", body: domain.ClientCreateReq{ClientId: "client-1"}, want: http.StatusForbidden},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before := calls[test.call]
+			response := performJSON(t, router, http.MethodPost, test.path, test.body, test.authorization)
+			if response.Code != test.want || calls[test.call] != before {
+				t.Fatalf("status=%d want=%d serviceCalls=%d want=%d body=%s", response.Code, test.want, calls[test.call], before, response.Body.String())
+			}
+		})
 	}
 }
 

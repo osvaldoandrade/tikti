@@ -15,7 +15,8 @@ The lookup call uses the API key, and the idToken is supplied in the request bod
 Request:
 
 ```http
-POST /v1/accounts/lookup?key=API_KEY
+POST /v1/accounts/lookup
+X-API-Key: API_KEY
 Content-Type: application/json
 
 {"idToken":"<idToken>"}
@@ -95,12 +96,14 @@ The following example illustrates a CLI workflow:
 
 ```bash
 # 1) User logs in
-curl -sS -X POST "https://api.storifly.ai/v1/accounts/signInWithPassword?key=API_KEY" \
+curl -sS -X POST "https://api.storifly.ai/v1/accounts/signInWithPassword" \
+  -H "X-API-Key: API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"email":"admin@codecompany.com.br","password":"mypassword2"}'
 
 # 2) Exchange idToken for worker token
-curl -sS -X POST "https://api.storifly.ai/v1/accounts/token/exchange?key=API_KEY" \
+curl -sS -X POST "https://api.storifly.ai/v1/accounts/token/exchange" \
+  -H "X-API-Key: API_KEY" \
   -H "Content-Type: application/json" \
   -d '{"idToken":"<idToken>","audience":"codeq-worker","scopes":["codeq:claim"],"eventTypes":["render_video"],"ttlSeconds":3600,"subject":"worker-1","tenantId":"tenant-1"}'
 ```

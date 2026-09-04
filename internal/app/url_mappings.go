@@ -17,7 +17,7 @@ import (
 func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService, workloadAccountService services.WorkloadAccountBFFService, samlStore saml.Store, samlMetrics *saml.Metrics) {
 	v1 := engine.Group("/v1")
 
-	v1.POST("/accounts/signUp", controllers.NewSignUpController(userService, cfg).Handle)
+	v1.POST("/accounts/signUp", utils.RequiredApiKeyHeader(cfg.ApiKey), controllers.NewSignUpController(userService, cfg).Handle)
 	signInCtrl := controllers.NewSignInController(userService, cfg)
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
 	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
@@ -73,7 +73,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	legacyCodeAdminReads.GET("/tenants/:tenantId/clients/:clientId", clientCtrl.Get)
 
 	protected := v1.Group("/")
-	protected.Use(utils.ApiKey(cfg.ApiKey))
+	protected.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
 	{
 		protected.POST("/accounts/signInWithPassword", signInCtrl.Handle)
 		protected.POST("/accounts/lookup", controllers.NewLookupController(userService, cfg).Handle)

@@ -170,7 +170,7 @@ func authCmd(profileName *string, outputJSON *bool) *cobra.Command {
 				password = prompt("Password", "", true)
 			}
 			body := map[string]any{"email": email, "password": password, "returnSecureToken": true}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/signInWithPassword?key="+prof.ApiKey, "", body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/signInWithPassword", "", prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -253,7 +253,7 @@ func tokenCmd(profileName *string, outputJSON *bool) *cobra.Command {
 				"subject":    subject,
 				"tenantId":   tenant,
 			}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/token/exchange?key="+prof.ApiKey, "", req)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/token/exchange", "", prof.ApiKey, req)
 			if err != nil {
 				return err
 			}
@@ -326,7 +326,7 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 				return errors.New("idToken missing")
 			}
 			body := map[string]any{"idToken": token}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/lookup?key="+prof.ApiKey, "", body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/lookup", "", prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -349,8 +349,12 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if password == "" {
 				password = prompt("Password", "", true)
 			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{"email": email, "password": password, "role": role}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/signUp", prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/signUp", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -382,7 +386,7 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 				return errors.New("idToken missing")
 			}
 			body := map[string]any{"idToken": token}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/delete?key="+prof.ApiKey, "", body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/delete", "", prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -404,8 +408,12 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if email == "" {
 				email = prompt("Email", "", false)
 			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{"email": email, "status": "SUSPENDED"}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/status?key="+prof.ApiKey, prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/status", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -423,8 +431,12 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if email == "" {
 				email = prompt("Email", "", false)
 			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{"email": email, "status": "ACTIVE"}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/accounts/status?key="+prof.ApiKey, prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/status", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -449,8 +461,12 @@ func tenantCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{"name": name, "slug": slug}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/tenants?key="+prof.ApiKey, prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -573,8 +589,15 @@ func roleCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant == "" {
 				tenant = prof.TenantId
 			}
+			if tenant == "" {
+				return errors.New("tenant id required")
+			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{"name": name, "permissions": splitCSV(perms)}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/roles?key="+prof.ApiKey, prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/roles", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -629,13 +652,20 @@ func clientCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant == "" {
 				tenant = prof.TenantId
 			}
+			if tenant == "" {
+				return errors.New("tenant id required")
+			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{
 				"clientId":          clientID,
 				"type":              ctype,
 				"allowedGrantTypes": splitCSV(grants),
 				"defaultScopes":     splitCSV(scopes),
 			}
-			resp, err := doJSON(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/clients?key="+prof.ApiKey, prof.IdToken, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/clients", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -725,8 +755,12 @@ func revokeCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if tenant != "" || scope != "" && scope != "global" {
 				return &cliError{msg: "only global revocation is supported; tenant-scoped revocation is unavailable", exit: 1}
 			}
+			token, err := tenantAdministrationAccessToken(prof)
+			if err != nil {
+				return err
+			}
 			body := map[string]any{"email": email, "scope": "global"}
-			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/revoke", prof.IdToken, prof.ApiKey, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/revoke", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}

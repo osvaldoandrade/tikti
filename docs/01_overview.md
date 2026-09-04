@@ -14,7 +14,7 @@ The service must be multi‑tenant. A tenant is an authorization boundary; a use
 
 SAML 2.0 federation extends the authentication surface without altering the authorization model. A tenant may bind to an external Identity Provider; users who authenticate through that IdP receive the same HS256 idToken that the password path issues. Token exchange, `tid` enforcement, and scope evaluation proceed identically regardless of the authentication method. The SAML path adds an `amr: saml` claim to the idToken so that relying parties can distinguish the authentication method when required, but this claim does not change authorization decisions.
 
-The service must remain compatible with existing clients that only understand identity tokens. This means `signIn` and `signInWithPassword` continue to return the same payload shape, `lookup` continues to accept the same payload, and the API key mechanism using `?key=` remains valid for protected endpoints. New fields added to responses must be additive and must not change the meaning of existing fields. Existing tokens signed with HS256 remain valid until their expiration; new access tokens and worker tokens are RS256 signed and verified through JWKS.
+The service must remain compatible with existing clients that only understand identity tokens. This means `signIn` and `signInWithPassword` continue to return the same payload shape and `lookup` continues to accept the same payload. Protected endpoints accept the service API key only in `X-API-Key`; query-string API keys are rejected to keep credentials out of URLs and request logs. New fields added to responses must be additive and must not change the meaning of existing fields. Existing HS256 tokens remain valid for identity and self-service flows until expiration, but administrative authority requires a scoped RS256 access token. New access tokens and worker tokens are RS256 signed and verified through JWKS.
 
 ## Definitions
 
@@ -43,7 +43,8 @@ The compatibility contract is strict: an existing integration that uses `signInW
 The following example shows a sign‑in call that returns an identity token, followed by a lookup call that includes role and tenant data. These examples are illustrative and are not exhaustive; full payloads are defined in `04_api_spec.md`.
 
 ```http
-POST /v1/accounts/signInWithPassword?key=API_KEY
+POST /v1/accounts/signInWithPassword
+X-API-Key: API_KEY
 Content-Type: application/json
 
 {"email":"admin@codecompany.com.br","password":"mypassword2","returnSecureToken":true}
@@ -59,7 +60,8 @@ Content-Type: application/json
 ```
 
 ```http
-POST /v1/accounts/lookup?key=API_KEY
+POST /v1/accounts/lookup
+X-API-Key: API_KEY
 Content-Type: application/json
 
 {"idToken":"<hs256-jwt>"}

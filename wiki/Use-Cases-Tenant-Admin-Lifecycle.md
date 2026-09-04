@@ -47,7 +47,7 @@ sequenceDiagram
         T-->>A: Membership removed
     end
     opt Suspend or activate user
-        A->>T: POST /v1/accounts/status?key=API_KEY
+        A->>T: POST /v1/accounts/status (X-API-Key + platform RS256 bearer)
         T-->>A: Status updated
     end
 ```

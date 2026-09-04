@@ -14,7 +14,7 @@ The caller holds a valid idToken. The caller has a membership and the required p
 
 ## Main flow
 
-1. Caller requests `POST /v1/accounts/token/exchange?key=API_KEY`.
+1. Caller requests `POST /v1/accounts/token/exchange` with `X-API-Key: API_KEY`.
 2. The request includes a target `aud`, requested scopes, tenant context, and an optional `eventTypes` claim.
 3. Tikti validates the idToken, tenant membership, and scope policy.
 4. Tikti issues an RS256 access token with claims: `iss`, `aud`, `scope`, `tid`, `exp`, `iat`, and optional `eventTypes`.
@@ -30,7 +30,7 @@ sequenceDiagram
     participant J as Tikti JWKS
     participant Q as codeQ API
 
-    C->>T: POST /v1/accounts/token/exchange?key=API_KEY
+    C->>T: POST /v1/accounts/token/exchange (X-API-Key)
     T->>T: Validate idToken, membership, scopes, audience
     T-->>C: RS256 access token (aud/scope/tid/eventTypes)
     C->>Q: Request with Bearer access token

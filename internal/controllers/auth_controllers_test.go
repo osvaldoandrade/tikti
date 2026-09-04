@@ -16,15 +16,16 @@ import (
 
 func TestSignUpController_Handle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	cfg := &config.Config{JwtSecret: "s1"}
+	cfg, key := roleAccessConfig(t)
+	cfg.JwtSecret = "s1"
 	svc := &fakeUserService{}
 	ctrl := NewSignUpController(svc, cfg)
 	r := gin.New()
 	r.POST("/signup", ctrl.Handle)
 
 	rec := performJSON(t, r, http.MethodPost, "/signup", nil, "")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 
 	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, "")
@@ -37,8 +38,10 @@ func TestSignUpController_Handle(t *testing.T) {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
 
-	nonAdmin := adminToken(t, cfg.JwtSecret, "USER")
-	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, "Bearer "+nonAdmin)
+	nonAdmin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+		"sub": "tenant-admin", "role": string(domain.RoleAdmin), "scope": tenantIdentityWriteScope, "tid": "bereia",
+	})
+	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, nonAdmin)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
@@ -46,8 +49,11 @@ func TestSignUpController_Handle(t *testing.T) {
 	svc.signUpFn = func(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error) {
 		return nil, errors.New("boom")
 	}
-	admin := adminToken(t, cfg.JwtSecret, "ADMIN")
-	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, "Bearer "+admin)
+	admin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope, "tid": "home",
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
+	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
@@ -223,7 +229,8 @@ func TestUpdateDeleteListControllers_Handle(t *testing.T) {
 
 func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	cfg := &config.Config{JwtSecret: "s1", IssuerBaseURL: "https://issuer"}
+	cfg, key := roleAccessConfig(t)
+	cfg.JwtSecret = "s1"
 	svc := &fakeUserService{}
 
 	jwksCtrl := NewJWKSController(svc)
@@ -256,7 +263,10 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("validate missing auth: expected 401, got %d", rec.Code)
 	}
-	admin := "Bearer " + adminToken(t, cfg.JwtSecret, "ADMIN")
+	admin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope, "tid": "home",
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
 	rec = performJSON(t, r, http.MethodPost, "/validate", nil, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("validate bad req: expected 400, got %d", rec.Code)

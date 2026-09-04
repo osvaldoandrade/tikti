@@ -15,10 +15,10 @@ The user exists with an active account status. A password hash is stored for the
 ## Main flow
 
 1. User submits email and password in the client application.
-2. Client calls `POST /v1/accounts/signInWithPassword?key=API_KEY`.
+2. Client calls `POST /v1/accounts/signInWithPassword` with `X-API-Key: API_KEY`.
 3. Tikti validates the credentials and account status.
 4. Tikti returns an idToken and the authentication payload.
-5. Client may call `POST /v1/accounts/lookup?key=API_KEY` to resolve identity metadata.
+5. Client may call `POST /v1/accounts/lookup` with `X-API-Key: API_KEY` to resolve identity metadata.
 
 ### Sequence diagram
 
@@ -29,11 +29,11 @@ sequenceDiagram
     participant T as Tikti API
 
     U->>F: Enter email/password and submit
-    F->>T: POST /v1/accounts/signInWithPassword?key=API_KEY
+    F->>T: POST /v1/accounts/signInWithPassword (X-API-Key)
     T->>T: Validate credentials and account status
     T-->>F: idToken + auth payload
     opt Resolve profile metadata
-        F->>T: POST /v1/accounts/lookup?key=API_KEY
+        F->>T: POST /v1/accounts/lookup (X-API-Key)
         T-->>F: Identity metadata
     end
     F-->>U: Authenticated session

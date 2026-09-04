@@ -40,7 +40,7 @@ const globalRevocationOnlyMessage = "only global token revocation is supported; 
 const revokeBodyLimit = 16 << 10
 
 func (u *userAdminController) SetStatus(c *gin.Context) {
-	if !requireAdmin(c, u.cfg) {
+	if _, ok := requirePlatformTenantAdmin(c, u.cfg); !ok {
 		return
 	}
 	var req statusReq
@@ -67,7 +67,7 @@ func (u *userAdminController) SetStatus(c *gin.Context) {
 }
 
 func (u *userAdminController) Revoke(c *gin.Context) {
-	if !requireAdmin(c, u.cfg) {
+	if _, ok := requirePlatformTenantAdmin(c, u.cfg); !ok {
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, revokeBodyLimit)

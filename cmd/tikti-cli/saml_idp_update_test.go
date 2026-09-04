@@ -234,7 +234,7 @@ func TestSamlIdpUpdate_RollbackOnParseFailure(t *testing.T) {
 	// Override loadProfile to return a profile pointing to the test server.
 	origLoadProfile := loadProfileFunc
 	loadProfileFunc = func(_ string) (*profileEntry, error) {
-		return &profileEntry{BaseURL: srv.URL, ApiKey: "test-key"}, nil
+		return &profileEntry{BaseURL: srv.URL, ApiKey: "test-key", AccessToken: "scoped-access-token"}, nil
 	}
 	defer func() { loadProfileFunc = origLoadProfile }()
 
@@ -292,7 +292,7 @@ func TestSamlIdpUpdate_SuccessPreservesCerts(t *testing.T) {
 
 	origLoadProfile := loadProfileFunc
 	loadProfileFunc = func(_ string) (*profileEntry, error) {
-		return &profileEntry{BaseURL: srv.URL, ApiKey: "test-key"}, nil
+		return &profileEntry{BaseURL: srv.URL, ApiKey: "test-key", AccessToken: "scoped-access-token"}, nil
 	}
 	defer func() { loadProfileFunc = origLoadProfile }()
 

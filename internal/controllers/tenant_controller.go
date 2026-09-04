@@ -29,7 +29,7 @@ func NewTenantController(svc services.TenantService, cfg *config.Config) *tenant
 }
 
 func (t *tenantController) Create(c *gin.Context) {
-	if !requireAdmin(c, t.cfg) {
+	if _, ok := requirePlatformTenantAdmin(c, t.cfg); !ok {
 		return
 	}
 	var req domain.TenantCreateReq

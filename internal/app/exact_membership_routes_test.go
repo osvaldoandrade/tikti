@@ -91,7 +91,13 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 	router := gin.New()
 	setupExactMembershipReadMappings(router, cfg, svc)
 	token := func(claims jwt.MapClaims) string { return "Bearer " + applicationRoleToken(t, privateKey, claims) }
-	platform := token(jwt.MapClaims{"sub": "platform-operator", "scope": "code-admin:tenants:admin", "tid": "home"})
+	platform := token(jwt.MapClaims{
+		"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "tid": "home", "role": string(domain.RoleAdmin),
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
+	platformWithoutProvenance := token(jwt.MapClaims{
+		"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "tid": "home",
+	})
 	dynamicPlatform := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "local-tenant"})
 	dynamicForeign := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin, "tid": "foreign-tenant"})
 	dynamicWithoutProvenance := token(jwt.MapClaims{"sub": "platform-operator", "scope": domain.PlatformTenantAdminScope, "tid": "local-tenant"})
@@ -118,6 +124,7 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 		{"query key", "/v1/admin/tenants/bereia/memberships?key=api-key-canary", platform, "", "", 401, ""},
 		{"HS denied", "/v1/admin/tenants/bereia/memberships", "Bearer " + hs, "api-key-canary", "", 401, ""},
 		{"role advisory", "/v1/admin/tenants/bereia/memberships", roleOnly, "api-key-canary", "", 403, ""},
+		{"platform scope without provenance", "/v1/admin/tenants/bereia/memberships", platformWithoutProvenance, "api-key-canary", "", 403, ""},
 		{"local foreign", "/v1/admin/tenants/storifly/memberships", localRead, "api-key-canary", "", 403, ""},
 		{"local outside hides allowlist", "/v1/admin/tenants/outside/memberships", localRead, "api-key-canary", "", 403, ""},
 		{"platform outside", "/v1/admin/tenants/outside/memberships", platform, "api-key-canary", "", 404, ""},
@@ -125,7 +132,7 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 		{"dynamic local target", "/v1/admin/tenants/new-tenant/memberships", dynamicLocalRead, "api-key-canary", "", 200, `"tenantId":"new-tenant"`},
 		{"dynamic local foreign", "/v1/admin/tenants/new-tenant/memberships", dynamicLocalForeign, "api-key-canary", "", 403, ""},
 		{"dynamic foreign principal", "/v1/admin/tenants/new-tenant/memberships", dynamicForeign, "api-key-canary", "", 404, ""},
-		{"dynamic missing provenance", "/v1/admin/tenants/new-tenant/memberships", dynamicWithoutProvenance, "api-key-canary", "", 404, ""},
+		{"dynamic missing provenance", "/v1/admin/tenants/new-tenant/memberships", dynamicWithoutProvenance, "api-key-canary", "", 403, ""},
 		{"invalid tenant", "/v1/admin/tenants/Bad/memberships", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"long tenant", "/v1/admin/tenants/" + strings.Repeat("a", 64) + "/memberships", platform, "api-key-canary", "", 400, "invalid argument"},
 		{"invalid user", "/v1/admin/tenants/bereia/memberships/user~bad", platform, "api-key-canary", "", 400, "invalid argument"},
@@ -160,6 +167,7 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			beforeStorageCalls, beforeListCalls := storageCalls, len(list.calls)
 			req := httptest.NewRequest(http.MethodGet, test.target, nil)
 			req.Header.Set("Authorization", test.auth)
 			req.Header.Set("X-API-Key", test.key)
@@ -171,6 +179,9 @@ func TestExactMembershipRoutesContract(t *testing.T) {
 			router.ServeHTTP(rec, req)
 			if rec.Code != test.want || rec.Header().Get("X-Tikti-Contract") != "exact-memberships-v1" || test.body != "" && !strings.Contains(rec.Body.String(), test.body) || strings.Contains(rec.Body.String(), errExactHTTPStorageCanary.Error()) {
 				t.Fatalf("response = %d headers=%v body=%s", rec.Code, rec.Header(), rec.Body.String())
+			}
+			if test.name == "platform scope without provenance" && (storageCalls != beforeStorageCalls || len(list.calls) != beforeListCalls) {
+				t.Fatalf("unauthorized request reached service: storage calls %d -> %d, list calls %d -> %d", beforeStorageCalls, storageCalls, beforeListCalls, len(list.calls))
 			}
 		})
 	}

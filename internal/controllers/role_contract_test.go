@@ -26,7 +26,8 @@ import (
 func TestRoleControllerPutStrictContract(t *testing.T) {
 	cfg, key := roleAccessConfig(t)
 	auth := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
-		"sub": "operator", "scope": platformTenantAdminScope, "tid": "other",
+		"sub": "operator", "scope": platformTenantAdminScope, "tid": "other", "role": string(domain.RoleAdmin),
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
 	})
 	bearer := func(claims jwt.MapClaims) string { return "Bearer " + signRoleAccessToken(t, key, claims) }
 	var nextErr error
@@ -96,7 +97,10 @@ func TestRoleControllerPutStrictContract(t *testing.T) {
 func TestRoleControllerReadAuthorizationAndErrors(t *testing.T) {
 	cfg, key := roleAccessConfig(t)
 	bearer := func(claims jwt.MapClaims) string { return "Bearer " + signRoleAccessToken(t, key, claims) }
-	platform := bearer(jwt.MapClaims{"sub": "platform-operator", "scope": platformTenantAdminScope, "tid": "home"})
+	platform := bearer(jwt.MapClaims{
+		"sub": "platform-operator", "scope": platformTenantAdminScope, "tid": "home", "role": string(domain.RoleAdmin),
+		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
 	localRead := bearer(jwt.MapClaims{"sub": "tenant-operator", "scope": tenantIdentityReadScope, "tid": "bereia"})
 	localWrite := bearer(jwt.MapClaims{"sub": "tenant-operator", "scope": tenantIdentityWriteScope, "tid": "bereia"})
 	storageCanary := errors.New("redis-password=must-not-leak")
