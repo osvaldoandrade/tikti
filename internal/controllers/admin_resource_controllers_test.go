@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -125,6 +126,24 @@ func TestUserAdminController_RevokeRejectsUnsupportedTenantScopeBeforeService(t 
 		}
 		if captured.email != "" || captured.tenantID != "" || captured.scope != "" {
 			t.Fatalf("service called for unsupported tenant revocation: %+v", captured)
+		}
+	}
+
+	for _, body := range []string{
+		`{"email":"u@x.com","tenant_id":"tenant-1"}`,
+		`{"email":"u@x.com","tenantId":"tenant-1","tenantId":""}`,
+		`{"email":"u@x.com"}{"scope":"global"}`,
+	} {
+		req := httptest.NewRequest(http.MethodPost, "/revoke", strings.NewReader(body))
+		req.Header.Set("Authorization", admin)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("ambiguous global revocation payload %s: expected 400, got %d %s", body, rec.Code, rec.Body.String())
+		}
+		if captured.email != "" || captured.tenantID != "" || captured.scope != "" {
+			t.Fatalf("service called for ambiguous global revocation payload %s: %+v", body, captured)
 		}
 	}
 
