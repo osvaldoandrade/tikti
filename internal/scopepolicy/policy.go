@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	PolicyVersion  = "2026-08-10.1"
-	ManifestSHA256 = "93cdb76942b6aa7ce445ac5b4ab3f58980216afde0c6f31fb63a286835d99cd7"
+	PolicyVersion  = "2026-09-04.1"
+	ManifestSHA256 = "9767e336800bb3ef00fd55d38971665962b5b65d1c64e396de2dba5927b56d7d"
 	reservedPrefix = "code-admin:"
 )
 

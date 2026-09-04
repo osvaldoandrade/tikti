@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026-08-10.1",
+  "policyVersion": "2026-09-04.1",
   "scopes": [
     {
       "scope": "code-admin:audit:read",
@@ -184,12 +184,14 @@
     {
       "scope": "code-admin:secrets:read",
       "boundary": "tenant",
-      "tenantAssignable": true
+      "tenantAssignable": false,
+      "reason": "Dormant until the complete tenant secret runtime owner exists."
     },
     {
       "scope": "code-admin:secrets:write",
       "boundary": "tenant",
-      "tenantAssignable": true
+      "tenantAssignable": false,
+      "reason": "Dormant until the complete tenant secret runtime owner exists."
     },
     {
       "scope": "code-admin:services:read",

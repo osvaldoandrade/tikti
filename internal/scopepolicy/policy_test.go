@@ -13,7 +13,7 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		t.Fatalf("compiled policy: %v", err)
 	}
 	digest := sha256.Sum256(manifestJSON)
-	if PolicyVersion != "2026-08-10.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
+	if PolicyVersion != "2026-09-04.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
 		t.Fatalf("unexpected policy identity: %s %x", PolicyVersion, digest)
 	}
 	tests := []struct {
@@ -29,6 +29,8 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		{scope: "code-admin:clusters:read"},
 		{scope: "code-admin:repositories:read"},
 		{scope: "code-admin:identity:read"},
+		{scope: "code-admin:secrets:read"},
+		{scope: "code-admin:secrets:write"},
 		{scope: "code-admin:owners:delegate"},
 		{scope: "code-admin:unknown:read"},
 	}

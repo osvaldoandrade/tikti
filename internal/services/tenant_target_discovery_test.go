@@ -36,7 +36,6 @@ var productionBootstrapHomeScopes = []string{
 	"code-admin:queues:read", "code-admin:queues:write",
 	"code-admin:repositories:read", "code-admin:repositories:write", "code-admin:repositories:admin",
 	"code-admin:storage:read", "code-admin:storage:write",
-	"code-admin:secrets:read", "code-admin:secrets:write",
 	"code-admin:clusters:read", "code-admin:clusters:admin",
 	"code-admin:platform:read", "code-admin:platform:admin",
 	"code-admin:tenants:read", "code-admin:tenants:admin",
