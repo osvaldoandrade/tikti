@@ -147,6 +147,58 @@ func TestBootstrapRejectsWeakPassword(t *testing.T) {
 	}
 }
 
+func TestBootstrapRejectsDormantAudienceScope(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+	}
+	cfg := settings{
+		tenantID: "local", tenantName: "Local", email: "admin@example.com",
+		password: "long-enough-password", audience: "api", scopes: []string{"code-admin:secrets:read"},
+	}
+	if err := bootstrap(context.Background(), data, cfg); err == nil {
+		t.Fatal("bootstrap accepted a dormant reserved scope")
+	}
+	if tenant, err := data.tenants.Get(context.Background(), cfg.tenantID); err != nil || tenant != nil {
+		t.Fatalf("invalid bootstrap wrote tenant=%#v err=%v", tenant, err)
+	}
+	if audience, err := data.clients.Get(context.Background(), cfg.tenantID, cfg.audience); err != nil || audience != nil {
+		t.Fatalf("invalid bootstrap wrote audience=%#v err=%v", audience, err)
+	}
+}
+
+func TestBootstrapCanonicalizesAudienceScopes(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+	}
+	cfg := settings{
+		tenantID: "local-tenant", tenantName: "Local Tenant", email: "admin@local.test",
+		password: "initial-password-123", audience: "code-admin-api",
+		scopes: []string{" code-admin:services:read ", "code-admin:clusters:read", "code-admin:services:read"},
+	}
+	if err := bootstrap(context.Background(), data, cfg); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"code-admin:clusters:read", "code-admin:services:read"}
+	role, err := data.roles.Get(context.Background(), cfg.tenantID, "ADMIN")
+	if err != nil || role == nil || !reflect.DeepEqual(role.Permissions, want) {
+		t.Fatalf("role scopes=%#v err=%v", role, err)
+	}
+	audience, err := data.clients.Get(context.Background(), cfg.tenantID, cfg.audience)
+	if err != nil || audience == nil || !reflect.DeepEqual(audience.DefaultScopes, want) {
+		t.Fatalf("audience scopes=%#v err=%v", audience, err)
+	}
+}
+
 func TestBootstrapReconcilesWorkloadAccountBFFDependencies(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

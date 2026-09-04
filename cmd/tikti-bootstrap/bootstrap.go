@@ -47,6 +47,11 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 	if err := validateSettings(cfg); err != nil {
 		return err
 	}
+	canonicalScopes, ok := scopepolicy.CanonicalAudienceScopes(cfg.scopes)
+	if !ok {
+		return fmt.Errorf("bootstrap scopes are invalid")
+	}
+	cfg.scopes = canonicalScopes
 	tenant, err := data.tenants.Get(ctx, cfg.tenantID)
 	if err != nil {
 		return fmt.Errorf("get tenant: %w", err)
@@ -200,10 +205,8 @@ func validateSettings(cfg settings) error {
 	if strings.TrimSpace(cfg.audience) == "" || len(cfg.scopes) == 0 {
 		return fmt.Errorf("bootstrap audience and scopes are required")
 	}
-	for _, scope := range cfg.scopes {
-		if strings.TrimSpace(scope) == "" {
-			return fmt.Errorf("bootstrap scopes must not contain empty values")
-		}
+	if _, ok := scopepolicy.CanonicalAudienceScopes(cfg.scopes); !ok {
+		return fmt.Errorf("bootstrap scopes are invalid")
 	}
 	if cfg.workloadSubject != "" {
 		if _, valid := domain.ParseWorkloadSubject(cfg.workloadSubject); !valid {

@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
@@ -418,6 +419,13 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			return nil, domain.ErrUnauthorizedScope
 		}
 	}
+	if len(scopes) > 0 {
+		canonicalScopes, ok := scopepolicy.CanonicalAudienceScopes(scopes)
+		if !ok {
+			return nil, domain.ErrUnauthorizedScope
+		}
+		scopes = canonicalScopes
+	}
 
 	eventTypes := normalizeList(req.EventTypes)
 	if req.Audience == "codeq-worker" && len(eventTypes) == 0 {
@@ -728,6 +736,13 @@ func (s *userService) getRSAPrivateKey() (interface{}, error) {
 func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *domain.User, scopes []string) bool {
 	if u == nil {
 		return false
+	}
+	if len(scopes) > 0 {
+		canonicalScopes, ok := scopepolicy.CanonicalAudienceScopes(scopes)
+		if !ok {
+			return false
+		}
+		scopes = canonicalScopes
 	}
 	if u.Role == domain.RoleAdmin {
 		return true

@@ -72,6 +72,14 @@ func (s *clientService) Create(ctx context.Context, tenantID string, req domain.
 	if strings.TrimSpace(req.ClientId) == "" {
 		return nil, domain.ErrInvalidArgument
 	}
+	var defaultScopes []string
+	if len(req.DefaultScopes) > 0 {
+		var ok bool
+		defaultScopes, ok = scopepolicy.CanonicalAudienceScopes(req.DefaultScopes)
+		if !ok {
+			return nil, domain.ErrInvalidArgument
+		}
+	}
 	clientType := domain.ClientTypeService
 	if req.Type != "" {
 		clientType = domain.ClientType(strings.ToUpper(req.Type))
@@ -87,7 +95,7 @@ func (s *clientService) Create(ctx context.Context, tenantID string, req domain.
 		SecretHash:        string(hash),
 		Type:              clientType,
 		AllowedGrantTypes: normalizeList(req.AllowedGrantTypes),
-		DefaultScopes:     normalizeList(req.DefaultScopes),
+		DefaultScopes:     defaultScopes,
 		Status:            "ACTIVE",
 	}
 	if err := s.repo.Create(ctx, tenantID, client); err != nil {

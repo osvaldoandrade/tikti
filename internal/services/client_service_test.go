@@ -62,6 +62,19 @@ func TestClientService_Create(t *testing.T) {
 	if _, err := svc.Create(context.Background(), "t1", domain.ClientCreateReq{ClientId: ""}); err != domain.ErrInvalidArgument {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
+	createCalled := false
+	svc = NewClientService(&fakeClientRepo{createFn: func(context.Context, string, *domain.Client) error {
+		createCalled = true
+		return nil
+	}})
+	if _, err := svc.Create(context.Background(), "t1", domain.ClientCreateReq{
+		ClientId: "c1", DefaultScopes: []string{"code-admin:secrets:read"},
+	}); err != domain.ErrInvalidArgument {
+		t.Fatalf("expected dormant scope to fail closed, got %v", err)
+	}
+	if createCalled {
+		t.Fatal("repository was called for a dormant default scope")
+	}
 
 	repoErr := errors.New("repo-fail")
 	svc = NewClientService(&fakeClientRepo{createFn: func(ctx context.Context, tenantID string, client *domain.Client) error {
@@ -81,7 +94,7 @@ func TestClientService_Create(t *testing.T) {
 		if !reflect.DeepEqual(client.AllowedGrantTypes, []string{"b", "a", "a"}) {
 			t.Fatalf("unexpected grant types: %v", client.AllowedGrantTypes)
 		}
-		if !reflect.DeepEqual(client.DefaultScopes, []string{"s2", "s1", "s1"}) {
+		if !reflect.DeepEqual(client.DefaultScopes, []string{"s1", "s2"}) {
 			t.Fatalf("unexpected scopes: %v", client.DefaultScopes)
 		}
 		return nil

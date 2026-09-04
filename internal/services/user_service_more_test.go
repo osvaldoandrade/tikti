@@ -464,6 +464,29 @@ func TestUserService_TokenExchangeAndAccessValidation(t *testing.T) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 
+	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
+		return &domain.User{Id: "u1", Email: email, Status: domain.UserStatusActive, CompanyId: &tenant, Role: domain.RoleAdmin}, nil
+	}
+	clientSvc.getClientFn = func(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
+		return &domain.Client{Id: clientID, Status: "ACTIVE", DefaultScopes: []string{"code-admin:secrets:read"}}, nil
+	}
+	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idTok, Audience: "legacy-client", TenantID: "t1",
+	}); err != domain.ErrUnauthorizedScope {
+		t.Fatalf("expected dormant stored scope to fail closed, got %v", err)
+	}
+	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idTok, Audience: "legacy-client", TenantID: "t1", Scopes: []string{"code-admin:secrets:read"},
+	}); err != domain.ErrUnauthorizedScope {
+		t.Fatalf("expected dormant requested scope to fail closed, got %v", err)
+	}
+	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
+		return &domain.User{Id: "u1", Email: email, Status: domain.UserStatusActive, CompanyId: &tenant, Role: domain.RoleCompanyEmployee}, nil
+	}
+	clientSvc.getClientFn = func(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
+		return &domain.Client{Id: clientID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
+	}
+
 	badKeySvc := NewUserService(repo, membership, roleSvc, clientSvc, "secret", "https://issuer", "tikti", "bad-pem", "kid").(*userService)
 	if _, err := badKeySvc.TokenExchange(context.Background(), domain.TokenExchangeReq{
 		IdToken: idTok, Audience: "a", TenantID: "t1", Scopes: []string{"codeq:claim"},
@@ -619,12 +642,21 @@ func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 	if ok := svc.scopesAllowed(context.Background(), "t1", adminUser, []string{"x"}); !ok {
 		t.Fatalf("admin should be allowed")
 	}
+	if ok := svc.scopesAllowed(context.Background(), "t1", adminUser, []string{"code-admin:secrets:read"}); ok {
+		t.Fatalf("admin received a dormant reserved scope")
+	}
+	if ok := svc.scopesAllowed(context.Background(), "t1", adminUser, []string{"code-admin:invented:read"}); ok {
+		t.Fatalf("admin received an unknown reserved scope")
+	}
 	companyAdmin := &domain.User{Role: domain.RoleCompanyAdmin}
 	if ok := svc.scopesAllowed(context.Background(), "t1", companyAdmin, []string{domain.PlatformTenantAdminScope}); ok {
 		t.Fatalf("company admin received a global tenant administration scope")
 	}
 	if ok := svc.scopesAllowed(context.Background(), "t1", companyAdmin, []string{"legacy:company-admin"}); !ok {
 		t.Fatalf("unrelated legacy company-admin scope should remain compatible")
+	}
+	if ok := svc.scopesAllowed(context.Background(), "t1", companyAdmin, []string{"code-admin:secrets:write"}); ok {
+		t.Fatalf("company admin received a dormant reserved scope")
 	}
 	emp := &domain.User{Id: "u1", Role: domain.RoleCompanyEmployee}
 	if ok := svc.scopesAllowed(context.Background(), "t1", emp, []string{"codeq:claim"}); !ok {
