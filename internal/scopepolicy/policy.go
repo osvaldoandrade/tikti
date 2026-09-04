@@ -99,7 +99,11 @@ func CanonicalAudienceScopes(values []string) ([]string, bool) {
 			return nil, false
 		}
 		if strings.HasPrefix(value, reservedPrefix) {
-			if _, known := policyScopes[value]; !known {
+			entry, known := policyScopes[value]
+			// A tenant-bound reserved scope that cannot be assigned by a tenant
+			// role is dormant/internal. It must not enter a managed audience and
+			// become issuable through home authority.
+			if !known || entry.Boundary == "tenant" && !entry.TenantAssignable {
 				return nil, false
 			}
 		}
@@ -143,7 +147,7 @@ func RequiresHomeAuthority(value string) bool {
 		return false
 	}
 	entry, known := policyScopes[value]
-	return known && (!entry.TenantAssignable || entry.Boundary != "tenant")
+	return known && entry.Boundary != "tenant"
 }
 
 func loadPolicy() {

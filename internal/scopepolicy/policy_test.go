@@ -75,6 +75,14 @@ func TestAudienceScopesUseOnlyExistingReservedNames(t *testing.T) {
 	if _, ok := CanonicalAudienceScopes([]string{"code-admin:invented:read"}); ok {
 		t.Fatal("accepted an unknown reserved scope")
 	}
+	for _, dormant := range []string{"code-admin:secrets:read", "code-admin:secrets:write"} {
+		if _, ok := CanonicalAudienceScopes([]string{dormant}); ok {
+			t.Fatalf("accepted dormant tenant scope %q for an audience", dormant)
+		}
+		if RequiresHomeAuthority(dormant) {
+			t.Fatalf("classified dormant tenant scope %q as home authority", dormant)
+		}
+	}
 	if !RequiresHomeAuthority("code-admin:clusters:read") || RequiresHomeAuthority("code-admin:workloads:read") ||
 		!RequiresHomeAuthority("console:clusters:read") || !TenantRoleAssignable("code-admin:workloads:read") ||
 		TenantRoleAssignable("code-admin:clusters:read") || TenantRoleAssignable("console:clusters:read") {
