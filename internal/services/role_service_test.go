@@ -83,6 +83,20 @@ func TestRoleService_Create(t *testing.T) {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
 
+	createCalls := 0
+	svc = NewRoleService(&fakeRoleRepo{createFn: func(context.Context, string, *domain.Role) error {
+		createCalls++
+		return nil
+	}})
+	if _, err := svc.Create(context.Background(), "t1", domain.RoleCreateReq{
+		Name: "forged-platform-admin", Permissions: []string{domain.PlatformTenantAdminScope},
+	}); err != domain.ErrInvalidArgument {
+		t.Fatalf("legacy create accepted non-tenant-assignable permission: %v", err)
+	}
+	if createCalls != 0 {
+		t.Fatalf("legacy create persisted forbidden role %d time(s)", createCalls)
+	}
+
 	repoErr := errors.New("repo-fail")
 	svc = NewRoleService(&fakeRoleRepo{createFn: func(ctx context.Context, tenantID string, role *domain.Role) error {
 		return repoErr
@@ -168,6 +182,13 @@ func TestRoleService_ResolvePermissions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(perms, []string{"p1", "p2", "p3"}) {
 		t.Fatalf("unexpected perms: %v", perms)
+	}
+
+	svc = NewRoleService(&fakeRoleRepo{getFn: func(context.Context, string, string) (*domain.Role, error) {
+		return &domain.Role{Name: "forged", Permissions: []string{domain.PlatformTenantAdminScope}}, nil
+	}})
+	if permissions, err := svc.ResolvePermissions(context.Background(), "t1", []string{"forged"}); err != domain.ErrInvalidArgument || permissions != nil {
+		t.Fatalf("stored forbidden role resolved permissions=%v err=%v", permissions, err)
 	}
 }
 

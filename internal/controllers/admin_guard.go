@@ -158,7 +158,6 @@ func hasPlatformTenantAdminProvenance(claims jwt.MapClaims) bool {
 
 func dynamicPlatformTenantTargetAllowed(cfg *config.Config, claims jwt.MapClaims) bool {
 	return cfg != nil && cfg.TenantTargetDiscoveryV2 &&
-		slices.Contains(cfg.TenantTargetDiscoveryV2PrincipalTenants, claimString(claims, "tid")) &&
 		hasPlatformTenantAdminProvenance(claims)
 }
 

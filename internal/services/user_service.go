@@ -217,7 +217,7 @@ func (s *userService) Lookup(ctx context.Context, req domain.LookupReq) (*domain
 		Users: []domain.UserInfo{{
 			LocalId: u.Id,
 			Email:   u.Email,
-			Role:    string(u.Role),
+			Role:    string(effectiveUserRole(u)),
 			Status:  string(u.Status),
 			Tenant:  s.resolveTenantID(ctx, u),
 		}},
@@ -342,16 +342,6 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	var scopes []string
 	if discoveryExchange {
 		dynamicTargets := discoveryExchangeV2
-		if dynamicTargets {
-			home := claimStringValue(claims, "tid")
-			if _, allowed := s.tenantTargetDiscoveryV2Principals[home]; !allowed {
-				if !s.tenantScopedTokenClaimsV1 {
-					return nil, domain.ErrInvalidTenant
-				}
-				dynamicTargets = false
-				discoveryMetricMode = "fallback"
-			}
-		}
 		discovery, err = s.resolveTenantDiscoveryAuthorization(
 			ctx, u, req.TenantID, claimStringValue(claims, "tid"),
 			claimStringValue(claims, "role"), req.ScopeCeilingV1, req.Scopes,
@@ -451,12 +441,13 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 
 	scopeString := strings.Join(scopes, " ")
+	role := effectiveUserRole(u)
 	claimsOut := jwt.MapClaims{
 		"iss":   s.issuerBaseURL,
 		"aud":   req.Audience,
 		"sub":   subject,
 		"email": u.Email,
-		"role":  string(u.Role),
+		"role":  string(role),
 		"tid":   tenantID,
 		"ver":   u.TokenVersion,
 		"iat":   time.Now().Unix(),
@@ -467,7 +458,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		delete(claimsOut, "role")
 		claimsOut["roles"] = tenantRoles
 	}
-	if strictTarget == "" && u.Role == domain.RoleAdmin && containsString(scopes, domain.PlatformTenantAdminScope) {
+	if strictTarget == "" && role == domain.RoleAdmin && containsString(scopes, domain.PlatformTenantAdminScope) {
 		claimsOut[domain.PlatformPrivilegeClaim] = domain.PlatformPrivilegeAdmin
 	}
 	if scopeString != "" {
@@ -744,13 +735,14 @@ func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *dom
 		}
 		scopes = canonicalScopes
 	}
-	if u.Role == domain.RoleAdmin {
+	role := effectiveUserRole(u)
+	if role == domain.RoleAdmin {
 		return true
 	}
-	if u.Role == domain.RoleCompanyAdmin {
+	if role == domain.RoleCompanyAdmin {
 		return !containsString(scopes, domain.PlatformTenantAdminScope)
 	}
-	roles := []string{string(u.Role)}
+	roles := []string{string(role)}
 	if s.membershipRepo != nil {
 		if m, _ := s.membershipRepo.Get(ctx, tenantID, u.Id); m != nil {
 			roles = append(roles, m.Roles...)
@@ -981,54 +973,61 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 	if e != nil {
 		return nil, e
 	}
-	if reqType == "PASSWORD_RESET" {
-		if u == nil || u.Status == domain.UserStatusSuspended {
+	if u == nil {
+		if reqType == "PASSWORD_RESET" {
 			return nil, domain.ErrNotFound
 		}
-	} else {
+
 		// EMAIL_SIGNIN: allow onboarding by creating the user record when missing.
-		if u == nil {
-			role := domain.RoleCompanyEmployee
-			rawPassword := uuid.NewString()
-			hash, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
-			if err != nil {
-				return nil, err
-			}
-			u = &domain.User{
-				Id:        uuid.NewString(),
-				Email:     email,
-				Password:  string(hash),
-				Role:      role,
-				Status:    domain.UserStatusActive,
-				CompanyId: &tenantID,
-				CreatedAt: time.Now(),
-			}
-			if err := s.repo.CreateUser(ctx, u); err != nil {
-				return nil, err
-			}
-			if s.membershipRepo != nil {
-				_ = s.membershipRepo.Create(ctx, &domain.Membership{
-					Id:        uuid.NewString(),
-					TenantId:  tenantID,
-					UserId:    u.Id,
-					Roles:     []string{string(role)},
-					CreatedAt: time.Now(),
-				})
-			}
+		role := domain.RoleCompanyEmployee
+		rawPassword := uuid.NewString()
+		hash, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
+		if err != nil {
+			return nil, err
 		}
-		if u.Status == domain.UserStatusSuspended {
-			return nil, domain.ErrInvalidCreds
+		u = &domain.User{
+			Id:        uuid.NewString(),
+			Email:     email,
+			Password:  string(hash),
+			Role:      role,
+			Status:    domain.UserStatusActive,
+			CompanyId: &tenantID,
+			CreatedAt: time.Now(),
 		}
-		// If multi-tenant membership is enabled, require the user to be scoped to this tenant.
+		if err := s.repo.CreateUser(ctx, u); err != nil {
+			return nil, err
+		}
 		if s.membershipRepo != nil {
-			if m, _ := s.membershipRepo.Get(ctx, tenantID, u.Id); m == nil {
-				if u.CompanyId == nil || *u.CompanyId != tenantID {
-					return nil, domain.ErrInvalidTenant
-				}
-			}
-		} else if u.CompanyId != nil && *u.CompanyId != "" && *u.CompanyId != tenantID {
+			_ = s.membershipRepo.Create(ctx, &domain.Membership{
+				Id:        uuid.NewString(),
+				TenantId:  tenantID,
+				UserId:    u.Id,
+				Roles:     []string{string(role)},
+				CreatedAt: time.Now(),
+			})
+		}
+	}
+
+	if u.Status == domain.UserStatusSuspended {
+		if reqType == "PASSWORD_RESET" {
+			return nil, domain.ErrNotFound
+		}
+		return nil, domain.ErrInvalidCreds
+	}
+
+	// Every tenant-scoped OOB operation, including PASSWORD_RESET, must be
+	// authorized by an exact membership or the user's exact legacy company.
+	// This check deliberately happens before the OOB code is generated or saved.
+	if s.membershipRepo != nil {
+		membership, err := s.membershipRepo.Get(ctx, tenantID, u.Id)
+		if err != nil {
+			return nil, err
+		}
+		if membership == nil && (u.CompanyId == nil || *u.CompanyId != tenantID) {
 			return nil, domain.ErrInvalidTenant
 		}
+	} else if u.CompanyId == nil || *u.CompanyId != tenantID {
+		return nil, domain.ErrInvalidTenant
 	}
 
 	code := uuid.NewString()
@@ -1082,7 +1081,7 @@ func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, e
 		"sub":    u.Id,
 		"userId": u.Id,
 		"email":  u.Email,
-		"role":   u.Role,
+		"role":   effectiveUserRole(u),
 		"iss":    s.issuerBaseURL,
 		"aud":    s.defaultAudience,
 		"ver":    u.TokenVersion,
@@ -1103,6 +1102,16 @@ func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, e
 		return "", 0, err
 	}
 	return signed, 3600, nil
+}
+
+func effectiveUserRole(user *domain.User) domain.UserRole {
+	if user != nil && user.AuthSource == domain.AuthSourceSAML && user.Role == domain.RoleAdmin {
+		return domain.RoleCompanyAdmin
+	}
+	if user == nil {
+		return ""
+	}
+	return user.Role
 }
 
 // IssueIDTokenWithAMR is the exported wrapper around issueIDToken that

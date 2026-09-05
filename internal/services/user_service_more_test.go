@@ -854,6 +854,42 @@ func TestUserService_StatusRevokeOobAndReset(t *testing.T) {
 	}
 }
 
+func TestSendOobForTenantRejectsForeignPasswordResetBeforeSavingCode(t *testing.T) {
+	foreignTenant := "foreign-tenant"
+	saveCalls := 0
+	repo := &mockUserRepo{
+		findByEmailFn: func(context.Context, string) (*domain.User, error) {
+			return &domain.User{
+				Id:        "foreign-user",
+				Email:     "foreign@example.com",
+				Status:    domain.UserStatusActive,
+				CompanyId: &foreignTenant,
+			}, nil
+		},
+		saveOobCodeFn: func(context.Context, string, string, string) error {
+			saveCalls++
+			return nil
+		},
+	}
+	memberships := &mockMembershipRepo{
+		getFn: func(context.Context, string, string) (*domain.Membership, error) {
+			return nil, nil
+		},
+	}
+	service := NewUserService(repo, memberships, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
+
+	_, err := service.SendOobForTenant(context.Background(), "requested-tenant", domain.SendOobReq{
+		RequestType: "PASSWORD_RESET",
+		Email:       "foreign@example.com",
+	})
+	if err != domain.ErrInvalidTenant {
+		t.Fatalf("expected ErrInvalidTenant, got %v", err)
+	}
+	if saveCalls != 0 {
+		t.Fatalf("SaveOobCode calls=%d, want 0", saveCalls)
+	}
+}
+
 func TestUserService_IssueIDTokenAndGetRSAPrivateKey(t *testing.T) {
 	repo := &mockUserRepo{}
 	svc := NewUserService(repo, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)

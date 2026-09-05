@@ -117,7 +117,7 @@ func TestTenantTargetDiscoveryV2_DiscoversNewExactMembershipForCanaryPrincipal(t
 	}
 }
 
-func TestTenantTargetDiscoveryV2_PreservesLegacyDiscoveryOutsidePrincipalCohort(t *testing.T) {
+func TestTenantTargetDiscoveryV2_DiscoversForAnyProvenanceBoundAdminHome(t *testing.T) {
 	home := "bereia"
 	user := &domain.User{
 		Id: "user-1", Email: "user@example.com", Status: domain.UserStatusActive,
@@ -128,10 +128,20 @@ func TestTenantTargetDiscoveryV2_PreservesLegacyDiscoveryOutsidePrincipalCohort(
 	}}
 	service := NewUserService(
 		&mockUserRepo{findByEmailFn: func(context.Context, string) (*domain.User, error) { return user, nil }},
-		&mockMembershipRepo{listExactFn: func(context.Context, string) ([]string, error) {
-			return []string{"new-tenant"}, nil
-		}},
-		&mockRoleService{}, discoveryClientService(t, false),
+		&mockMembershipRepo{
+			listExactFn: func(context.Context, string) ([]string, error) {
+				return []string{"new-tenant"}, nil
+			},
+			getExactFn: func(_ context.Context, tenantID, userID string) (*domain.Membership, error) {
+				return &domain.Membership{TenantId: tenantID, UserId: userID, Roles: []string{tenantID + "-read"}}, nil
+			},
+		},
+		&mockRoleService{getByNameFn: func(_ context.Context, tenantID, roleName string) (*domain.RoleResp, error) {
+			if roleName != tenantID+"-read" {
+				t.Fatalf("unexpected role read: tenant=%s role=%s", tenantID, roleName)
+			}
+			return &domain.RoleResp{Name: roleName, Permissions: []string{"code-admin:workloads:read"}}, nil
+		}}, discoveryClientService(t, false),
 		"secret", "https://issuer", "tikti", makePEMKey(t), "kid",
 		WithTenantScopedTokenClaimsV1(true, []string{"bereia", "local-tenant"}, tenants),
 		WithTenantTargetDiscoveryV2(true, []string{"local-tenant"}, tenants),
@@ -144,19 +154,19 @@ func TestTenantTargetDiscoveryV2_PreservesLegacyDiscoveryOutsidePrincipalCohort(
 
 	response, err := service.TokenExchange(context.Background(), request)
 	if err != nil {
-		t.Fatalf("legacy discovery with dynamic canary enabled: %v", err)
+		t.Fatalf("dynamic discovery outside the former principal cohort: %v", err)
 	}
 	if response.PrincipalTenantID != home ||
-		!slices.Equal(response.AuthorizedTenants, []string{"bereia"}) ||
+		!slices.Equal(response.AuthorizedTenants, []string{"bereia", "new-tenant"}) ||
 		!slices.Equal(response.Scopes, managedAudienceScopes) {
-		t.Fatalf("unexpected legacy authority: %+v", response)
+		t.Fatalf("unexpected dynamic authority: %+v", response)
 	}
-	if value := tenantDiscoveryCounterValue(t, service.tenantDiscoveryMetrics.requests, "fallback", "success", "allowed"); value != 1 {
-		t.Fatalf("fallback request metric=%v", value)
+	if value := tenantDiscoveryCounterValue(t, service.tenantDiscoveryMetrics.requests, "v2", "success", "allowed"); value != 1 {
+		t.Fatalf("v2 request metric=%v", value)
 	}
 }
 
-func TestTenantTargetDiscoveryV2_FallbackPreservesV1MembershipRoleLimit(t *testing.T) {
+func TestTenantTargetDiscoveryV2_EnforcesRoleLimitWithoutHomeAllowlist(t *testing.T) {
 	home := "bereia"
 	target := "local-tenant"
 	user := &domain.User{
@@ -192,8 +202,8 @@ func TestTenantTargetDiscoveryV2_FallbackPreservesV1MembershipRoleLimit(t *testi
 	request.DiscoverTenantTargetsV2 = true
 
 	response, err := service.TokenExchange(context.Background(), request)
-	if err != nil || response == nil || roleReads != 101 {
-		t.Fatalf("fallback response=%+v reads=%d err=%v", response, roleReads, err)
+	if !errors.Is(err, domain.ErrInvalidTenant) || response != nil || roleReads != 0 {
+		t.Fatalf("dynamic role-limit response=%+v reads=%d err=%v", response, roleReads, err)
 	}
 }
 

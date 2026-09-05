@@ -39,7 +39,10 @@ func (s *roleService) Create(ctx context.Context, tenantID string, req domain.Ro
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, domain.ErrInvalidArgument
 	}
-	perms := normalizePermissions(req.Permissions)
+	perms, valid := canonicalLegacyRolePermissions(req.Permissions)
+	if !valid {
+		return nil, domain.ErrInvalidArgument
+	}
 	role := &domain.Role{
 		Name:        req.Name,
 		Scope:       domain.RoleScopeTenant,
@@ -172,10 +175,11 @@ func (s *roleService) ResolvePermissions(ctx context.Context, tenantID string, r
 		if role == nil {
 			continue
 		}
-		for _, p := range role.Permissions {
-			if p == "" {
-				continue
-			}
+		permissions, valid := canonicalLegacyRolePermissions(role.Permissions)
+		if !valid {
+			return nil, domain.ErrInvalidArgument
+		}
+		for _, p := range permissions {
 			perms[p] = struct{}{}
 		}
 	}
@@ -185,6 +189,14 @@ func (s *roleService) ResolvePermissions(ctx context.Context, tenantID string, r
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func canonicalLegacyRolePermissions(values []string) ([]string, bool) {
+	normalized := normalizePermissions(values)
+	if len(normalized) == 0 {
+		return normalized, true
+	}
+	return scopepolicy.CanonicalPermissions(normalized)
 }
 
 func normalizePermissions(in []string) []string {

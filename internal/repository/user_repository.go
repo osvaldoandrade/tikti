@@ -32,12 +32,12 @@ type redisRepo struct {
 }
 
 const (
-	usersHashV2             = "users_v2"
-	legacyUsersHash         = "users"
-	userByEmailKeyNS        = "userByEmail:"
-	legacyOobHash           = "oobs"
-	oobKeyPrefix            = "oob:"
-	samlSubjectKeyNS        = "samlSubject:"
+	usersHashV2      = "users_v2"
+	legacyUsersHash  = "users"
+	userByEmailKeyNS = "userByEmail:"
+	legacyOobHash    = "oobs"
+	oobKeyPrefix     = "oob:"
+	samlSubjectKeyNS = "samlSubject:"
 )
 
 // NewRedisRepo instantiates a repository using the provided Redis client.
@@ -344,9 +344,10 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	}
 	if existing != nil {
 		existing.Email = email
-		if len(roles) > 0 {
-			existing.Role = domain.UserRole(roles[0])
-		}
+		existing.Role = tenantScopedSAMLRole(roles)
+		existing.AuthSource = domain.AuthSourceSAML
+		existing.ExternalSubject = externalSubject
+		existing.CompanyId = stringPointer(tid)
 		if err := r.UpdateUser(ctx, existing); err != nil {
 			return domain.User{}, false, err
 		}
@@ -361,11 +362,12 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 			return domain.User{}, false, err
 		}
 		if emailUser != nil && (emailUser.AuthSource == domain.AuthSourcePassword || emailUser.AuthSource == "") {
+			if emailUser.CompanyId == nil || *emailUser.CompanyId != tid {
+				return domain.User{}, false, domain.ErrInvalidTenant
+			}
 			emailUser.AuthSource = domain.AuthSourceSAML
 			emailUser.ExternalSubject = externalSubject
-			// sub (Id) and roles are intentionally preserved during email merge;
-			// roles from the SAML assertion are ignored to keep the existing
-			// user's authorization tier unchanged.
+			emailUser.Role = tenantScopedSAMLRole(roles)
 			if err := r.UpdateUser(ctx, emailUser); err != nil {
 				return domain.User{}, false, err
 			}
@@ -377,10 +379,8 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	}
 
 	// Case 3: Create new SAML user.
-	role := domain.RoleCompanyEmployee
-	if len(roles) > 0 {
-		role = domain.UserRole(roles[0])
-	}
+	role := tenantScopedSAMLRole(roles)
+	companyID := tid
 	u := domain.User{
 		Id:              uuid.NewString(),
 		Email:           email,
@@ -389,6 +389,7 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 		CreatedAt:       time.Now(),
 		AuthSource:      domain.AuthSourceSAML,
 		ExternalSubject: externalSubject,
+		CompanyId:       &companyID,
 	}
 	data, err := json.Marshal(&u)
 	if err != nil {
@@ -405,6 +406,20 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	}
 
 	return u, true, nil
+}
+
+func tenantScopedSAMLRole(roles []string) domain.UserRole {
+	if len(roles) > 0 {
+		switch domain.UserRole(strings.TrimSpace(roles[0])) {
+		case domain.RoleAdmin, domain.RoleCompanyAdmin:
+			return domain.RoleCompanyAdmin
+		}
+	}
+	return domain.RoleCompanyEmployee
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func oobKey(code string) string {

@@ -43,6 +43,12 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 	if err != nil {
 		return "", fmt.Errorf("session bridge: upsert: %w", err)
 	}
+	// A tenant-controlled IdP can grant tenant administration, never the
+	// platform-wide ADMIN tier. Keep this issuer boundary safe even if a stale
+	// repository record predates the persistence guard.
+	if u.Role == domain.RoleAdmin {
+		u.Role = domain.RoleCompanyAdmin
+	}
 
 	// Set the tenant ID on the in-memory copy (returned by value from
 	// UpsertFromSAML) so the idToken includes the correct tid claim.

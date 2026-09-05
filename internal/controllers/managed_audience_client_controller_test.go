@@ -118,7 +118,7 @@ func TestManagedAudienceClientController_RejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func TestManagedAudienceClientController_DynamicTargetRequiresPrincipalCanary(t *testing.T) {
+func TestManagedAudienceClientController_DynamicTargetRequiresSignedPlatformProvenance(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg, key := roleAccessConfig(t)
 	cfg.TenantScopedTokenClaimsV1 = true
@@ -155,14 +155,14 @@ func TestManagedAudienceClientController_DynamicTargetRequiresPrincipalCanary(t 
 	if response := request("new-tenant", "local-tenant"); response.Code != http.StatusCreated || calls != 1 {
 		t.Fatalf("canary response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
-	if response := request("new-tenant", "foreign-tenant"); response.Code != http.StatusNotFound || calls != 1 {
-		t.Fatalf("foreign response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
+	if response := request("new-tenant", "foreign-tenant"); response.Code != http.StatusCreated || calls != 2 {
+		t.Fatalf("provenance-bound response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
 	cfg.TenantTargetDiscoveryV2 = false
-	if response := request("new-tenant", "local-tenant"); response.Code != http.StatusNotFound || calls != 1 {
+	if response := request("new-tenant", "local-tenant"); response.Code != http.StatusNotFound || calls != 2 {
 		t.Fatalf("disabled response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
-	if response := request("bereia", "foreign-tenant"); response.Code != http.StatusCreated || calls != 2 {
+	if response := request("bereia", "foreign-tenant"); response.Code != http.StatusCreated || calls != 3 {
 		t.Fatalf("static response=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
 }

@@ -433,8 +433,11 @@ func TestUpsertFromSAML_Create(t *testing.T) {
 	if u.ExternalSubject != "ext-sub-1" {
 		t.Fatalf("expected externalSubject=ext-sub-1, got %s", u.ExternalSubject)
 	}
-	if u.Role != "ADMIN" {
-		t.Fatalf("expected role ADMIN, got %s", u.Role)
+	if u.Role != domain.RoleCompanyAdmin {
+		t.Fatalf("tenant SAML role escaped platform boundary: %s", u.Role)
+	}
+	if u.CompanyId == nil || *u.CompanyId != "tenant-1" {
+		t.Fatalf("tenant SAML company = %#v", u.CompanyId)
 	}
 	if u.Id == "" {
 		t.Fatalf("expected non-empty user ID")
@@ -485,6 +488,8 @@ func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
 		AuthSource: domain.AuthSourcePassword,
 		CreatedAt:  time.Now(),
 	}
+	pwTenant := "tenant-1"
+	pwUser.CompanyId = &pwTenant
 	if err := repo.CreateUser(ctx, pwUser); err != nil {
 		t.Fatalf("create password user: %v", err)
 	}
@@ -597,12 +602,14 @@ func TestMerge_Email_FromPassword(t *testing.T) {
 		AuthSource: domain.AuthSourcePassword,
 		CreatedAt:  time.Now(),
 	}
+	pwTenant := "t1"
+	pwUser.CompanyId = &pwTenant
 	if err := repo.CreateUser(ctx, pwUser); err != nil {
 		t.Fatalf("create password user: %v", err)
 	}
 
-	// Merge via email strategy — the SAML-supplied roles (["ADMIN"]) must be
-	// ignored so the original password user's role is preserved.
+	// Merge via email strategy — the SAML-supplied platform ADMIN role must be
+	// reduced to the tenant-local tier.
 	u, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-1", "merge@example.com", "Merge User", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
@@ -616,9 +623,8 @@ func TestMerge_Email_FromPassword(t *testing.T) {
 	if u.ExternalSubject != "saml-sub-1" {
 		t.Fatalf("externalSubject should be set, got %s", u.ExternalSubject)
 	}
-	// Roles must be preserved from the original password user.
-	if u.Role != domain.RoleCompanyEmployee {
-		t.Fatalf("role should be preserved as COMPANY_EMPLOYEE, got %s", u.Role)
+	if u.Role != domain.RoleCompanyAdmin {
+		t.Fatalf("role should be bounded to COMPANY_ADMIN, got %s", u.Role)
 	}
 }
 
@@ -636,6 +642,8 @@ func TestMerge_None_CreatesDup(t *testing.T) {
 		AuthSource: domain.AuthSourcePassword,
 		CreatedAt:  time.Now(),
 	}
+	pwTenant := "t1"
+	pwUser.CompanyId = &pwTenant
 	if err := repo.CreateUser(ctx, pwUser); err != nil {
 		t.Fatalf("create password user: %v", err)
 	}
@@ -700,6 +708,8 @@ func TestMerge_SubPreserved(t *testing.T) {
 		AuthSource: domain.AuthSourcePassword,
 		CreatedAt:  time.Now(),
 	}
+	pwTenant := "t1"
+	pwUser.CompanyId = &pwTenant
 	if err := repo.CreateUser(ctx, pwUser); err != nil {
 		t.Fatalf("create password user: %v", err)
 	}

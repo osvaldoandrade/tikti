@@ -32,6 +32,12 @@ func TestPlatformPrivilegeIssuanceRequiresStoredAdmin(t *testing.T) {
 	}
 
 	user.Role = domain.RoleAdmin
+	user.AuthSource = domain.AuthSourceSAML
+	if response, err := service.TokenExchange(context.Background(), request); response != nil || !errors.Is(err, domain.ErrUnauthorizedScope) {
+		t.Fatalf("tenant SAML ADMIN global exchange = %+v, %v", response, err)
+	}
+
+	user.AuthSource = domain.AuthSourcePassword
 	response, err := service.TokenExchange(context.Background(), request)
 	if err != nil {
 		t.Fatalf("platform admin exchange: %v", err)
@@ -44,5 +50,25 @@ func TestPlatformPrivilegeIssuanceRequiresStoredAdmin(t *testing.T) {
 	if err != nil || claims["role"] != string(domain.RoleAdmin) || claims["scope"] != domain.PlatformTenantAdminScope ||
 		claims[domain.PlatformPrivilegeClaim] != domain.PlatformPrivilegeAdmin {
 		t.Fatalf("platform privilege claims = %v, %v", claims, err)
+	}
+}
+
+func TestTenantSAMLAdminCannotReuseStalePlatformRoleInDiscovery(t *testing.T) {
+	tenantID := "home"
+	user := &domain.User{
+		Id: "saml-user", Email: "saml@example.com", Status: domain.UserStatusActive,
+		Role: domain.RoleAdmin, AuthSource: domain.AuthSourceSAML, CompanyId: &tenantID,
+	}
+	if validSignedHome(user, tenantID, string(domain.RoleAdmin)) {
+		t.Fatal("stale tenant SAML ADMIN token retained platform home authority")
+	}
+	if !validSignedHome(user, tenantID, string(domain.RoleCompanyAdmin)) {
+		t.Fatal("effective tenant SAML role was not accepted")
+	}
+	authority := homeAuthority(user, string(domain.RoleCompanyAdmin), []string{
+		domain.PlatformTenantAdminScope, "code-admin:identity:write",
+	})
+	if len(authority) != 1 || authority[0] != "code-admin:identity:write" {
+		t.Fatalf("tenant SAML authority escaped home boundary: %v", authority)
 	}
 }

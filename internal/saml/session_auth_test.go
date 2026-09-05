@@ -14,14 +14,15 @@ type fakeRepo struct {
 	user    domain.User
 	created bool
 	err     error
+	roles   []string
 }
 
 func (f *fakeRepo) CreateUser(context.Context, *domain.User) error { return nil }
 func (f *fakeRepo) FindByEmail(context.Context, string) (*domain.User, error) {
 	return nil, nil
 }
-func (f *fakeRepo) UpdateUser(context.Context, *domain.User) error  { return nil }
-func (f *fakeRepo) DeleteByEmail(context.Context, string) error     { return nil }
+func (f *fakeRepo) UpdateUser(context.Context, *domain.User) error { return nil }
+func (f *fakeRepo) DeleteByEmail(context.Context, string) error    { return nil }
 func (f *fakeRepo) GetAllUsers(context.Context) ([]*domain.User, error) {
 	return nil, nil
 }
@@ -35,20 +36,39 @@ func (f *fakeRepo) SaveOobCode(context.Context, string, string, string) error { 
 func (f *fakeRepo) ConsumeOobCode(context.Context, string, string) (string, error) {
 	return "", nil
 }
-func (f *fakeRepo) UpsertFromSAML(_ context.Context, _, _, _, _ string, _ []string, _ domain.MergeStrategy) (domain.User, bool, error) {
+func (f *fakeRepo) UpsertFromSAML(_ context.Context, _, _, _, _ string, roles []string, _ domain.MergeStrategy) (domain.User, bool, error) {
+	f.roles = append([]string(nil), roles...)
 	return f.user, f.created, f.err
 }
 
 // fakeIssuer captures the arguments passed to IssueIDTokenWithAMR.
 type fakeIssuer struct {
-	token   string
-	lastAMR []string
-	err     error
+	token    string
+	lastAMR  []string
+	lastUser domain.User
+	err      error
 }
 
 func (f *fakeIssuer) IssueIDTokenWithAMR(u *domain.User, amr []string) (string, int, error) {
 	f.lastAMR = amr
+	f.lastUser = *u
 	return f.token, 3600, f.err
+}
+
+func TestSessionBridge_Issue_DowngradesTenantSAMLPlatformAdmin(t *testing.T) {
+	repo := &fakeRepo{user: domain.User{Id: "u1", Email: "admin@example.com", Role: domain.RoleAdmin, AuthSource: domain.AuthSourceSAML}}
+	issuer := &fakeIssuer{token: "tenant-token"}
+	bridge := NewSessionBridge(repo, issuer)
+	_, err := bridge.Issue(context.Background(), IssueInput{
+		TenantID: "tenant-1", ExternalSubject: "external-admin", Email: "admin@example.com",
+		Roles: []string{"ADMIN"}, AMR: []string{"saml"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if issuer.lastUser.Role != domain.RoleCompanyAdmin || issuer.lastUser.CompanyId == nil || *issuer.lastUser.CompanyId != "tenant-1" {
+		t.Fatalf("unsafe SAML issuer user: %#v", issuer.lastUser)
+	}
 }
 
 func TestSessionBridge_Issue_SAML(t *testing.T) {

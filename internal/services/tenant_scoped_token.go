@@ -152,11 +152,6 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 		!validSignedHome(user, home, signedRole) || s.clientSvc == nil {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
 	}
-	if dynamicTargets {
-		if _, allowed := s.tenantTargetDiscoveryV2Principals[home]; !allowed {
-			return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
-		}
-	}
 	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode)
 	if err != nil || !slices.Contains(discovery.authorizedTenants, target) {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
@@ -397,14 +392,15 @@ func (s *userService) targetAuthority(
 
 func validSignedHome(user *domain.User, home, signedRole string) bool {
 	return user != nil && user.Status == domain.UserStatusActive && validRoleTenantID(home) &&
-		user.CompanyId != nil && *user.CompanyId == home && signedRole == string(user.Role)
+		user.CompanyId != nil && *user.CompanyId == home && signedRole == string(effectiveUserRole(user))
 }
 
 func homeAuthority(user *domain.User, signedRole string, candidates []string) []string {
-	if user == nil || signedRole != string(user.Role) {
+	role := effectiveUserRole(user)
+	if user == nil || signedRole != string(role) {
 		return nil
 	}
-	switch user.Role {
+	switch role {
 	case domain.RoleAdmin:
 		return append([]string(nil), candidates...)
 	case domain.RoleCompanyAdmin:
