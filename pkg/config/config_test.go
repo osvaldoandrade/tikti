@@ -529,6 +529,43 @@ saml:
 	}
 }
 
+func TestSAMLConfig_ValidatesExactPlatformAdministrators(t *testing.T) {
+	base := SAMLConfig{
+		Enabled: true,
+		SP: SPConfig{
+			SigningKeyPath:  "/saml/sp.key",
+			SigningCertPath: "/saml/sp.crt",
+			EntityID:        "https://console.example.com/saml",
+			ACSURL:          "https://console.example.com/saml/acs",
+		},
+	}
+	base.PlatformAdministrators = []SAMLPlatformAdministrator{{
+		TenantID: "local-tenant",
+		Email:    "owner@example.com",
+	}}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("valid platform administrator rejected: %v", err)
+	}
+
+	for name, administrators := range map[string][]SAMLPlatformAdministrator{
+		"invalid tenant":      {{TenantID: "Local-Tenant", Email: "owner@example.com"}},
+		"non canonical email": {{TenantID: "local-tenant", Email: "Owner@example.com"}},
+		"invalid email":       {{TenantID: "local-tenant", Email: "owner"}},
+		"duplicate": {
+			{TenantID: "local-tenant", Email: "owner@example.com"},
+			{TenantID: "local-tenant", Email: "owner@example.com"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := base
+			candidate.PlatformAdministrators = administrators
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("invalid platform administrator configuration was accepted")
+			}
+		})
+	}
+}
+
 func TestSAMLConfig_DurationsParse(t *testing.T) {
 	path := writeTempConfig(t, `
 saml:

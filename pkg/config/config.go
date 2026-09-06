@@ -138,12 +138,21 @@ type WorkloadAccountBFFClientConfig struct {
 
 // SAMLConfig holds top-level SAML integration settings.
 type SAMLConfig struct {
-	Enabled  bool             `yaml:"enabled"`
-	SP       SPConfig         `yaml:"sp"`
-	ACS      ACSConfig        `yaml:"acs"`
-	IdP      IdPSectionConfig `yaml:"idp"`
-	Discover DiscoverConfig   `yaml:"discover"`
-	Metrics  MetricsConfig    `yaml:"metrics"`
+	Enabled                bool                        `yaml:"enabled"`
+	PlatformAdministrators []SAMLPlatformAdministrator `yaml:"platformAdministrators"`
+	SP                     SPConfig                    `yaml:"sp"`
+	ACS                    ACSConfig                   `yaml:"acs"`
+	IdP                    IdPSectionConfig            `yaml:"idp"`
+	Discover               DiscoverConfig              `yaml:"discover"`
+	Metrics                MetricsConfig               `yaml:"metrics"`
+}
+
+// SAMLPlatformAdministrator binds platform authority to one exact identity in
+// one trusted tenant. Tenant-controlled SAML roles remain tenant-scoped unless
+// this server-side configuration explicitly names the principal.
+type SAMLPlatformAdministrator struct {
+	TenantID string `yaml:"tenantId"`
+	Email    string `yaml:"email"`
 }
 
 // SPConfig holds SAML Service Provider parameters.
@@ -240,6 +249,25 @@ func (s SAMLConfig) Validate() error {
 	if !s.Enabled {
 		return nil
 	}
+	if len(s.PlatformAdministrators) > 16 {
+		return fmt.Errorf("saml: platformAdministrators supports at most 16 identities")
+	}
+	seenPlatformAdministrators := make(map[string]struct{}, len(s.PlatformAdministrators))
+	for index, administrator := range s.PlatformAdministrators {
+		tenantID := strings.TrimSpace(administrator.TenantID)
+		email := strings.TrimSpace(administrator.Email)
+		if tenantID != administrator.TenantID || !canonicalTenantID(tenantID) {
+			return fmt.Errorf("saml: platformAdministrators[%d].tenantId must be canonical", index)
+		}
+		if email != administrator.Email || email != strings.ToLower(email) || !canonicalPlatformAdministratorEmail(email) {
+			return fmt.Errorf("saml: platformAdministrators[%d].email must be a canonical lowercase address", index)
+		}
+		key := tenantID + "\x00" + email
+		if _, duplicate := seenPlatformAdministrators[key]; duplicate {
+			return fmt.Errorf("saml: platformAdministrators contains a duplicate identity")
+		}
+		seenPlatformAdministrators[key] = struct{}{}
+	}
 	if s.SP.SigningKeyPath == "" {
 		return fmt.Errorf("saml: signingKeyPath is required when SAML is enabled")
 	}
@@ -253,6 +281,22 @@ func (s SAMLConfig) Validate() error {
 		return fmt.Errorf("saml: acsURL is required when SAML is enabled")
 	}
 	return nil
+}
+
+func canonicalPlatformAdministratorEmail(value string) bool {
+	if len(value) < 3 || len(value) > 254 || strings.Count(value, "@") != 1 {
+		return false
+	}
+	at := strings.IndexByte(value, '@')
+	if at == 0 || at == len(value)-1 {
+		return false
+	}
+	for index := range len(value) {
+		if value[index] < '!' || value[index] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 // LoadConfig reads a YAML file, expands environment variables, and returns Config defaults.

@@ -129,7 +129,11 @@ func main() {
 	var samlRouter http.Handler
 	if cfg.SAML.Enabled {
 		repo := repository.NewRedisRepo(application.Redis)
-		bridge := saml.NewSessionBridge(repo, application.UserService.(saml.IDTokenIssuer))
+		bridge := saml.NewSessionBridge(
+			repo,
+			application.UserService.(saml.IDTokenIssuer),
+			saml.WithPlatformAdministrators(cfg.SAML.PlatformAdministrators),
+		)
 
 		provider := &saml.CrewjamProvider{
 			EntityID: cfg.SAML.SP.EntityID,

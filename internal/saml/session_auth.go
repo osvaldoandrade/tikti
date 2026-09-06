@@ -3,8 +3,10 @@ package saml
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -18,14 +20,42 @@ type IDTokenIssuer interface {
 // user via the repository and delegating token creation to the existing HS256
 // idToken issuer.
 type sessionBridgeAuth struct {
-	repo   repository.UserRepository
-	issuer IDTokenIssuer
+	repo                   repository.UserRepository
+	issuer                 IDTokenIssuer
+	platformAdministrators map[string]struct{}
+}
+
+// SessionBridgeOption configures a SessionBridge without widening the default
+// tenant-scoped SAML trust boundary.
+type SessionBridgeOption func(*sessionBridgeAuth)
+
+// WithPlatformAdministrators allows only the exact server-configured
+// (tenantId, email) identities to receive platform ADMIN authority.
+func WithPlatformAdministrators(administrators []config.SAMLPlatformAdministrator) SessionBridgeOption {
+	configured := append([]config.SAMLPlatformAdministrator(nil), administrators...)
+	return func(bridge *sessionBridgeAuth) {
+		for _, administrator := range configured {
+			key := platformAdministratorKey(administrator.TenantID, administrator.Email)
+			if key != "" {
+				bridge.platformAdministrators[key] = struct{}{}
+			}
+		}
+	}
 }
 
 // NewSessionBridge constructs a SessionBridge backed by the given repository
 // and idToken issuer.
-func NewSessionBridge(repo repository.UserRepository, issuer IDTokenIssuer) SessionBridge {
-	return &sessionBridgeAuth{repo: repo, issuer: issuer}
+func NewSessionBridge(repo repository.UserRepository, issuer IDTokenIssuer, options ...SessionBridgeOption) SessionBridge {
+	bridge := &sessionBridgeAuth{
+		repo: repo, issuer: issuer,
+		platformAdministrators: make(map[string]struct{}),
+	}
+	for _, option := range options {
+		if option != nil {
+			option(bridge)
+		}
+	}
+	return bridge
 }
 
 // Issue implements SessionBridge. It upserts the SAML-authenticated user and
@@ -43,12 +73,6 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 	if err != nil {
 		return "", fmt.Errorf("session bridge: upsert: %w", err)
 	}
-	// A tenant-controlled IdP can grant tenant administration, never the
-	// platform-wide ADMIN tier. Keep this issuer boundary safe even if a stale
-	// repository record predates the persistence guard.
-	if u.Role == domain.RoleAdmin {
-		u.Role = domain.RoleCompanyAdmin
-	}
 
 	// Set the tenant ID on the in-memory copy (returned by value from
 	// UpsertFromSAML) so the idToken includes the correct tid claim.
@@ -57,9 +81,39 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 		u.CompanyId = &tid
 	}
 
+	// A tenant-controlled IdP can grant tenant administration, never the
+	// platform-wide ADMIN tier. The sole exception is an exact principal named
+	// by server-side configuration; persist it before issuing the token so token
+	// exchange observes the same authority and fail closed if persistence fails.
+	if b.isPlatformAdministrator(in.TenantID, in.Email, u) {
+		u.Role = domain.RoleAdmin
+		if err := b.repo.UpdateUser(ctx, &u); err != nil {
+			return "", fmt.Errorf("session bridge: persist platform administrator: %w", err)
+		}
+	} else if u.Role == domain.RoleAdmin {
+		u.Role = domain.RoleCompanyAdmin
+	}
+
 	signed, _, err := b.issuer.IssueIDTokenWithAMR(&u, in.AMR)
 	if err != nil {
 		return "", fmt.Errorf("session bridge: issue id token: %w", err)
 	}
 	return signed, nil
+}
+
+func (b *sessionBridgeAuth) isPlatformAdministrator(tenantID, email string, user domain.User) bool {
+	if b == nil || user.AuthSource != domain.AuthSourceSAML || !strings.EqualFold(strings.TrimSpace(email), strings.TrimSpace(user.Email)) {
+		return false
+	}
+	_, configured := b.platformAdministrators[platformAdministratorKey(tenantID, email)]
+	return configured
+}
+
+func platformAdministratorKey(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if tenantID == "" || email == "" {
+		return ""
+	}
+	return tenantID + "\x00" + email
 }

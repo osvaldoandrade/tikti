@@ -73,8 +73,6 @@ if value and not marker then return {"legacy", value} end
 if marker and not value then return {"corrupt", ""} end
 if marker ~= value then return {"corrupt", ""} end
 return {"managed", value}`)
-	managedClientListScript = redis.NewScript(`
-return cjson.encode({clients=redis.call("HGETALL", KEYS[1]), markers=redis.call("HGETALL", KEYS[2])})`)
 )
 
 func (r *clientRepo) Create(ctx context.Context, tenantID string, client *domain.Client) error {
@@ -238,20 +236,23 @@ func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) 
 }
 
 func (r *clientRepo) List(ctx context.Context, tenantID string) ([]*domain.Client, error) {
-	raw, err := managedClientListScript.Eval(ctx, r.client, []string{
-		clientsKey(tenantID), managedClientsKey(tenantID),
-	}).Text()
+	var clientsCommand, markersCommand *redis.StringStringMapCmd
+	_, err := r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+		clientsCommand = pipe.HGetAll(ctx, clientsKey(tenantID))
+		markersCommand = pipe.HGetAll(ctx, managedClientsKey(tenantID))
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	var snapshot struct {
-		Clients []string `json:"clients"`
-		Markers []string `json:"markers"`
+	vals, err := clientsCommand.Result()
+	if err != nil {
+		return nil, err
 	}
-	if json.Unmarshal([]byte(raw), &snapshot) != nil || len(snapshot.Clients)%2 != 0 || len(snapshot.Markers)%2 != 0 {
-		return nil, errStoredManagedClientContract
+	markers, err := markersCommand.Result()
+	if err != nil {
+		return nil, err
 	}
-	vals, markers := alternatingMap(snapshot.Clients), alternatingMap(snapshot.Markers)
 	out := make([]*domain.Client, 0, len(vals))
 	managedSeen := make(map[string]struct{}, len(markers))
 	for field, v := range vals {
@@ -283,14 +284,6 @@ func clientsKey(tenantID string) string {
 
 func managedClientsKey(tenantID string) string {
 	return "managedClients:" + tenantID
-}
-
-func alternatingMap(values []string) map[string]string {
-	result := make(map[string]string, len(values)/2)
-	for index := 0; index < len(values); index += 2 {
-		result[values[index]] = values[index+1]
-	}
-	return result
 }
 
 func decodeManagedAudienceClient(tenantID, value string) (*domain.Client, bool) {

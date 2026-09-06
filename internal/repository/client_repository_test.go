@@ -138,6 +138,28 @@ func TestClientRepo_ListInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestClientRepo_ListLegacyClientsWithoutManagedMarkers(t *testing.T) {
+	_, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	legacy := &domain.Client{
+		Id: "code-admin-api", TenantId: "local-tenant",
+		Type: domain.ClientTypePublic, Status: domain.ClientStatusActive,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     []string{"code-admin:identity:read"},
+	}
+	if err := repo.Create(ctx, "local-tenant", legacy); err != nil {
+		t.Fatalf("create legacy client: %v", err)
+	}
+
+	clients, err := repo.List(ctx, "local-tenant")
+	if err != nil {
+		t.Fatalf("list legacy clients without managed markers: %v", err)
+	}
+	if len(clients) != 1 || clients[0].Id != legacy.Id || clients[0].ManagedBy != "" {
+		t.Fatalf("legacy clients = %#v", clients)
+	}
+}
+
 func TestClientsKey(t *testing.T) {
 	if got := clientsKey("x"); got != "clients:x" {
 		t.Fatalf("unexpected key: %s", got)
