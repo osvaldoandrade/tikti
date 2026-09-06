@@ -312,6 +312,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
 	}
+	platformPrivilege := validatedPlatformPrivilege(u, claims)
 	if protectedTarget && strictTarget == "" {
 		return nil, domain.ErrInvalidTenant
 	}
@@ -345,7 +346,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		discovery, err = s.resolveTenantDiscoveryAuthorization(
 			ctx, u, req.TenantID, claimStringValue(claims, "tid"),
 			claimStringValue(claims, "role"), req.ScopeCeilingV1, req.Scopes,
-			dynamicTargets, discoveryMetricMode,
+			dynamicTargets, discoveryMetricMode, platformPrivilege,
 		)
 		if err != nil {
 			return nil, err
@@ -405,7 +406,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			if !subset(scopes, tenantPermissions) {
 				return nil, domain.ErrUnauthorizedScope
 			}
-		} else if len(scopes) > 0 && !s.scopesAllowed(ctx, tenantID, u, scopes) {
+		} else if len(scopes) > 0 && !s.scopesAllowed(ctx, tenantID, u, scopes, platformPrivilege) {
 			return nil, domain.ErrUnauthorizedScope
 		}
 	}
@@ -441,7 +442,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 
 	scopeString := strings.Join(scopes, " ")
-	role := effectiveUserRole(u)
+	role := effectiveUserRole(u, platformPrivilege)
 	claimsOut := jwt.MapClaims{
 		"iss":   s.issuerBaseURL,
 		"aud":   req.Audience,
@@ -724,7 +725,7 @@ func (s *userService) getRSAPrivateKey() (interface{}, error) {
 	return s.rsaKey, nil
 }
 
-func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *domain.User, scopes []string) bool {
+func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *domain.User, scopes []string, platformPrivilege ...string) bool {
 	if u == nil {
 		return false
 	}
@@ -735,7 +736,7 @@ func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *dom
 		}
 		scopes = canonicalScopes
 	}
-	role := effectiveUserRole(u)
+	role := effectiveUserRole(u, platformPrivilege...)
 	if role == domain.RoleAdmin {
 		return true
 	}
@@ -1074,14 +1075,19 @@ func (s *userService) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 }
 
 func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, error) {
+	return s.issueIDTokenWithPlatformPrivilege(u, amr, "")
+}
+
+func (s *userService) issueIDTokenWithPlatformPrivilege(u *domain.User, amr []string, requestedPlatformPrivilege string) (string, int, error) {
 	if u == nil {
 		return "", 0, domain.ErrInvalidArgument
 	}
+	platformPrivilege := issuablePlatformPrivilege(u, requestedPlatformPrivilege)
 	claims := jwt.MapClaims{
 		"sub":    u.Id,
 		"userId": u.Id,
 		"email":  u.Email,
-		"role":   effectiveUserRole(u),
+		"role":   effectiveUserRole(u, platformPrivilege),
 		"iss":    s.issuerBaseURL,
 		"aud":    s.defaultAudience,
 		"ver":    u.TokenVersion,
@@ -1096,6 +1102,9 @@ func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, e
 	if len(amr) > 0 {
 		claims["amr"] = amr
 	}
+	if platformPrivilege != "" {
+		claims[domain.PlatformPrivilegeClaim] = platformPrivilege
+	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	signed, err := tok.SignedString([]byte(s.jwtSecret))
 	if err != nil {
@@ -1104,8 +1113,12 @@ func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, e
 	return signed, 3600, nil
 }
 
-func effectiveUserRole(user *domain.User) domain.UserRole {
-	if user != nil && user.AuthSource == domain.AuthSourceSAML && user.Role == domain.RoleAdmin {
+func effectiveUserRole(user *domain.User, platformPrivilege ...string) domain.UserRole {
+	privilege := ""
+	if len(platformPrivilege) == 1 {
+		privilege = platformPrivilege[0]
+	}
+	if user != nil && user.AuthSource == domain.AuthSourceSAML && user.Role == domain.RoleAdmin && privilege != domain.PlatformPrivilegeAdmin {
 		return domain.RoleCompanyAdmin
 	}
 	if user == nil {
@@ -1114,9 +1127,30 @@ func effectiveUserRole(user *domain.User) domain.UserRole {
 	return user.Role
 }
 
+func issuablePlatformPrivilege(user *domain.User, requested string) string {
+	if user != nil && user.Status == domain.UserStatusActive && user.AuthSource == domain.AuthSourceSAML &&
+		user.Role == domain.RoleAdmin && requested == domain.PlatformPrivilegeAdmin {
+		return domain.PlatformPrivilegeAdmin
+	}
+	return ""
+}
+
+func validatedPlatformPrivilege(user *domain.User, claims jwt.MapClaims) string {
+	if issuablePlatformPrivilege(user, claimStringValue(claims, domain.PlatformPrivilegeClaim)) == "" ||
+		claimStringValue(claims, "role") != string(domain.RoleAdmin) || user.CompanyId == nil ||
+		claimStringValue(claims, "tid") != strings.TrimSpace(*user.CompanyId) {
+		return ""
+	}
+	version, valid := tokenVersion(claims)
+	if !valid || version != user.TokenVersion {
+		return ""
+	}
+	return domain.PlatformPrivilegeAdmin
+}
+
 // IssueIDTokenWithAMR is the exported wrapper around issueIDToken that
 // accepts an explicit AMR slice.  It satisfies the saml.IDTokenIssuer
 // interface so the SAML SessionBridge can reuse the existing HS256 issuer.
-func (s *userService) IssueIDTokenWithAMR(u *domain.User, amr []string) (string, int, error) {
-	return s.issueIDToken(u, amr)
+func (s *userService) IssueIDTokenWithAMR(u *domain.User, amr []string, platformPrivilege string) (string, int, error) {
+	return s.issueIDTokenWithPlatformPrivilege(u, amr, platformPrivilege)
 }

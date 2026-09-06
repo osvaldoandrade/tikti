@@ -13,7 +13,7 @@ import (
 // IDTokenIssuer is the minimal interface needed from the existing token issuer
 // to produce HS256 idTokens with optional AMR claims.
 type IDTokenIssuer interface {
-	IssueIDTokenWithAMR(u *domain.User, amr []string) (string, int, error)
+	IssueIDTokenWithAMR(u *domain.User, amr []string, platformPrivilege string) (string, int, error)
 }
 
 // sessionBridgeAuth implements SessionBridge by looking up (or upserting) the
@@ -85,16 +85,18 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 	// platform-wide ADMIN tier. The sole exception is an exact principal named
 	// by server-side configuration; persist it before issuing the token so token
 	// exchange observes the same authority and fail closed if persistence fails.
+	platformPrivilege := ""
 	if b.isPlatformAdministrator(in.TenantID, in.Email, u) {
 		u.Role = domain.RoleAdmin
 		if err := b.repo.UpdateUser(ctx, &u); err != nil {
 			return "", fmt.Errorf("session bridge: persist platform administrator: %w", err)
 		}
+		platformPrivilege = domain.PlatformPrivilegeAdmin
 	} else if u.Role == domain.RoleAdmin {
 		u.Role = domain.RoleCompanyAdmin
 	}
 
-	signed, _, err := b.issuer.IssueIDTokenWithAMR(&u, in.AMR)
+	signed, _, err := b.issuer.IssueIDTokenWithAMR(&u, in.AMR, platformPrivilege)
 	if err != nil {
 		return "", fmt.Errorf("session bridge: issue id token: %w", err)
 	}

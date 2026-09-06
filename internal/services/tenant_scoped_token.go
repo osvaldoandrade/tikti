@@ -147,9 +147,10 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 	requestedScopes []string,
 	dynamicTargets bool,
 	metricMode string,
+	platformPrivilege string,
 ) (tenantDiscoveryAuthorization, error) {
 	if target == "" || strings.TrimSpace(target) != target || !validRoleTenantID(target) ||
-		!validSignedHome(user, home, signedRole) || s.clientSvc == nil {
+		!validSignedHome(user, home, signedRole, platformPrivilege) || s.clientSvc == nil {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
 	}
 	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode)
@@ -179,7 +180,7 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidAudience
 	}
 	roles, authority, err := s.targetAuthority(
-		ctx, user, target, home, signedRole, clientDefaults, dynamicTargets, discovery.authorizations,
+		ctx, user, target, home, signedRole, clientDefaults, dynamicTargets, discovery.authorizations, platformPrivilege,
 	)
 	if err != nil {
 		return tenantDiscoveryAuthorization{}, err
@@ -358,9 +359,10 @@ func (s *userService) targetAuthority(
 	candidates []string,
 	dynamicTargets bool,
 	authorizations map[string]tenantScopedTokenAuthorization,
+	platformPrivilege string,
 ) ([]string, []string, error) {
 	if target == home {
-		return nil, homeAuthority(user, signedRole, candidates), nil
+		return nil, homeAuthority(user, signedRole, candidates, platformPrivilege), nil
 	}
 	var authorization tenantScopedTokenAuthorization
 	if dynamicTargets {
@@ -386,17 +388,17 @@ func (s *userService) targetAuthority(
 			authority = append(authority, permission)
 		}
 	}
-	authority = append(authority, homeGlobalAuthority(user, signedRole, candidates)...)
+	authority = append(authority, homeGlobalAuthority(user, signedRole, candidates, platformPrivilege)...)
 	return authorization.roles, normalizePermissions(authority), nil
 }
 
-func validSignedHome(user *domain.User, home, signedRole string) bool {
+func validSignedHome(user *domain.User, home, signedRole string, platformPrivilege ...string) bool {
 	return user != nil && user.Status == domain.UserStatusActive && validRoleTenantID(home) &&
-		user.CompanyId != nil && *user.CompanyId == home && signedRole == string(effectiveUserRole(user))
+		user.CompanyId != nil && *user.CompanyId == home && signedRole == string(effectiveUserRole(user, platformPrivilege...))
 }
 
-func homeAuthority(user *domain.User, signedRole string, candidates []string) []string {
-	role := effectiveUserRole(user)
+func homeAuthority(user *domain.User, signedRole string, candidates []string, platformPrivilege ...string) []string {
+	role := effectiveUserRole(user, platformPrivilege...)
 	if user == nil || signedRole != string(role) {
 		return nil
 	}
@@ -416,8 +418,8 @@ func homeAuthority(user *domain.User, signedRole string, candidates []string) []
 	}
 }
 
-func homeGlobalAuthority(user *domain.User, signedRole string, candidates []string) []string {
-	fromHome := homeAuthority(user, signedRole, candidates)
+func homeGlobalAuthority(user *domain.User, signedRole string, candidates []string, platformPrivilege ...string) []string {
+	fromHome := homeAuthority(user, signedRole, candidates, platformPrivilege...)
 	result := make([]string, 0, len(fromHome))
 	for _, scope := range fromHome {
 		// Feature writes are requested only by Code Admin's fixed, short-lived

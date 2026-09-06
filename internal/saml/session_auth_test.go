@@ -50,15 +50,17 @@ func (f *fakeRepo) UpsertFromSAML(_ context.Context, _, _, _, _ string, roles []
 
 // fakeIssuer captures the arguments passed to IssueIDTokenWithAMR.
 type fakeIssuer struct {
-	token    string
-	lastAMR  []string
-	lastUser domain.User
-	err      error
+	token                 string
+	lastAMR               []string
+	lastUser              domain.User
+	lastPlatformPrivilege string
+	err                   error
 }
 
-func (f *fakeIssuer) IssueIDTokenWithAMR(u *domain.User, amr []string) (string, int, error) {
+func (f *fakeIssuer) IssueIDTokenWithAMR(u *domain.User, amr []string, platformPrivilege string) (string, int, error) {
 	f.lastAMR = amr
 	f.lastUser = *u
+	f.lastPlatformPrivilege = platformPrivilege
 	return f.token, 3600, f.err
 }
 
@@ -75,6 +77,9 @@ func TestSessionBridge_Issue_DowngradesTenantSAMLPlatformAdmin(t *testing.T) {
 	}
 	if issuer.lastUser.Role != domain.RoleCompanyAdmin || issuer.lastUser.CompanyId == nil || *issuer.lastUser.CompanyId != "tenant-1" {
 		t.Fatalf("unsafe SAML issuer user: %#v", issuer.lastUser)
+	}
+	if issuer.lastPlatformPrivilege != "" {
+		t.Fatalf("tenant SAML administrator received platform provenance: %q", issuer.lastPlatformPrivilege)
 	}
 }
 
@@ -99,6 +104,9 @@ func TestSessionBridge_Issue_ElevatesOnlyConfiguredSAMLPlatformAdministrator(t *
 	if issuer.lastUser.Role != domain.RoleAdmin || repo.updated == nil || repo.updated.Role != domain.RoleAdmin {
 		t.Fatalf("configured platform administrator was not persisted and issued as ADMIN: issued=%#v updated=%#v", issuer.lastUser, repo.updated)
 	}
+	if issuer.lastPlatformPrivilege != domain.PlatformPrivilegeAdmin {
+		t.Fatalf("configured platform administrator provenance = %q", issuer.lastPlatformPrivilege)
+	}
 }
 
 func TestSessionBridge_Issue_DoesNotElevatePlatformAdministratorAcrossTenant(t *testing.T) {
@@ -120,6 +128,9 @@ func TestSessionBridge_Issue_DoesNotElevatePlatformAdministratorAcrossTenant(t *
 	}
 	if issuer.lastUser.Role != domain.RoleCompanyAdmin || repo.updated != nil {
 		t.Fatalf("platform administrator escaped configured tenant: issued=%#v updated=%#v", issuer.lastUser, repo.updated)
+	}
+	if issuer.lastPlatformPrivilege != "" {
+		t.Fatalf("cross-tenant platform provenance = %q", issuer.lastPlatformPrivilege)
 	}
 }
 
