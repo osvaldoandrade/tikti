@@ -12,8 +12,9 @@ import (
 )
 
 type tenantScopedTokenAuthorization struct {
-	roles       []string
-	permissions []string
+	roles                      []string
+	permissions                []string
+	legacyCreatorAdministrator bool
 }
 
 type tenantDiscoveryAuthorization struct {
@@ -31,6 +32,9 @@ type tenantDiscoverySnapshot struct {
 
 const (
 	tenantFeatureAdministrationScope = "code-admin:features:write"
+	tenantIdentityWriteScope         = "code-admin:identity:write"
+	tenantSecretReadScope            = "code-admin:secrets:read"
+	tenantSecretWriteScope           = "code-admin:secrets:write"
 	maximumMembershipsScanned        = 500
 	maximumAuthorizedTenantTargets   = 100
 	maximumMembershipRoles           = 500
@@ -106,6 +110,7 @@ func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context,
 		return tenantScopedTokenAuthorization{}, domain.ErrUnauthorizedScope
 	}
 	permissions := make(map[string]struct{})
+	legacyCreatorAdministrator := false
 	for _, roleName := range selectedRoles {
 		role, roleErr := s.roleSvc.GetByName(ctx, target, roleName)
 		if roleErr != nil || role == nil || role.Name != roleName || !scopepolicy.ValidCanonicalPermissions(role.Permissions) {
@@ -114,13 +119,18 @@ func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context,
 		for _, permission := range role.Permissions {
 			permissions[permission] = struct{}{}
 		}
+		legacyCreatorAdministrator = legacyCreatorAdministrator ||
+			roleName == target+"-admin" && slices.Contains(role.Permissions, tenantIdentityWriteScope)
 	}
 	resolved := make([]string, 0, len(permissions))
 	for permission := range permissions {
 		resolved = append(resolved, permission)
 	}
 	sort.Strings(resolved)
-	return tenantScopedTokenAuthorization{roles: selectedRoles, permissions: resolved}, nil
+	return tenantScopedTokenAuthorization{
+		roles: selectedRoles, permissions: resolved,
+		legacyCreatorAdministrator: legacyCreatorAdministrator,
+	}, nil
 }
 
 func canonicalMembershipRoles(values []string) ([]string, bool) {
@@ -331,6 +341,7 @@ func (s *userService) resolveMembershipRoleAuthorization(
 		return tenantScopedTokenAuthorization{}, false
 	}
 	permissions := make(map[string]struct{})
+	legacyCreatorAdministrator := false
 	for _, roleName := range roles {
 		role, err := s.roleSvc.GetByName(ctx, tenantID, roleName)
 		if err != nil || role == nil || role.Name != roleName || !scopepolicy.ValidCanonicalPermissions(role.Permissions) {
@@ -339,6 +350,8 @@ func (s *userService) resolveMembershipRoleAuthorization(
 		for _, permission := range role.Permissions {
 			permissions[permission] = struct{}{}
 		}
+		legacyCreatorAdministrator = legacyCreatorAdministrator ||
+			roleName == tenantID+"-admin" && slices.Contains(role.Permissions, tenantIdentityWriteScope)
 	}
 	resolved := make([]string, 0, len(permissions))
 	for permission := range permissions {
@@ -347,6 +360,7 @@ func (s *userService) resolveMembershipRoleAuthorization(
 	sort.Strings(resolved)
 	return tenantScopedTokenAuthorization{
 		roles: append([]string(nil), roles...), permissions: resolved,
+		legacyCreatorAdministrator: legacyCreatorAdministrator,
 	}, true
 }
 
@@ -386,6 +400,17 @@ func (s *userService) targetAuthority(
 	for _, permission := range authorization.permissions {
 		if scopepolicy.TenantRoleAssignable(permission) {
 			authority = append(authority, permission)
+		}
+	}
+	if authorization.legacyCreatorAdministrator {
+		// Creator roles and memberships are immutable. Older automatically
+		// generated <tenant>-admin roles therefore cannot absorb the later
+		// Tenant Secret scopes. Grant only those two server-known scopes, and
+		// only while they remain inside the managed client and request ceilings.
+		for _, candidate := range candidates {
+			if candidate == tenantSecretReadScope || candidate == tenantSecretWriteScope {
+				authority = append(authority, candidate)
+			}
 		}
 	}
 	authority = append(authority, homeGlobalAuthority(user, signedRole, candidates, platformPrivilege)...)

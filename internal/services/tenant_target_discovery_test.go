@@ -581,6 +581,78 @@ func TestTenantTargetDiscovery_BuiltInAdministratorsCanElevateFeatureWritesForMe
 	}
 }
 
+func TestTenantTargetDiscovery_LegacyCreatorAdminReceivesTenantSecretScopes(t *testing.T) {
+	secretScopes, valid := scopepolicy.CanonicalAudienceScopes(append(
+		append([]string(nil), managedAudienceScopes...),
+		"code-admin:secrets:read", "code-admin:secrets:write",
+	))
+	if !valid {
+		t.Fatal("Tenant Secret scope fixture must be canonicalizable")
+	}
+
+	for _, profile := range []struct {
+		name        string
+		roleName    string
+		permissions []string
+		wantSecrets bool
+	}{
+		{
+			name:     "legacy creator administrator",
+			roleName: "bereia-admin",
+			permissions: []string{
+				"code-admin:identity:write", "code-admin:services:read", "code-admin:workloads:write",
+			},
+			wantSecrets: true,
+		},
+		{
+			name:        "creator role without identity administration",
+			roleName:    "bereia-admin",
+			permissions: []string{"code-admin:services:read", "code-admin:workloads:write"},
+		},
+		{
+			name:        "unrelated identity administrator",
+			roleName:    "other-admin",
+			permissions: []string{"code-admin:identity:write", "code-admin:workloads:write"},
+		},
+	} {
+		for _, dynamic := range []bool{false, true} {
+			mode := "v1"
+			if dynamic {
+				mode = "v2"
+			}
+			t.Run(profile.name+"/"+mode, func(t *testing.T) {
+				service, idToken := newTenantTargetDiscoveryService(t, profile.roleName, profile.permissions, domain.RoleAdmin)
+				service.clientSvc = &mockClientService{getClientFn: func(_ context.Context, tenantID, clientID string) (*domain.Client, error) {
+					return &domain.Client{
+						Id: clientID, TenantId: tenantID, Type: domain.ClientTypeService,
+						AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+						DefaultScopes:     append([]string(nil), secretScopes...), Status: domain.ClientStatusActive,
+						ManagedBy: domain.CodeAdminAudienceClientManager,
+					}, nil
+				}}
+				request := tenantTargetRequest(idToken, "bereia")
+				request.ScopeCeilingV1 = append([]string(nil), secretScopes...)
+				if dynamic {
+					service.tenantTargetDiscoveryV2 = true
+					service.tenantTargetDiscoveryV2Principals = map[string]struct{}{"local-tenant": {}}
+					request.DiscoverTenantTargetsV1 = false
+					request.DiscoverTenantTargetsV2 = true
+				}
+
+				response, err := service.TokenExchange(context.Background(), request)
+				if err != nil {
+					t.Fatalf("exchange: %v", err)
+				}
+				for _, scope := range []string{"code-admin:secrets:read", "code-admin:secrets:write"} {
+					if got := slices.Contains(response.Scopes, scope); got != profile.wantSecrets {
+						t.Fatalf("scope %s present=%t want=%t scopes=%v", scope, got, profile.wantSecrets, response.Scopes)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestTenantTargetDiscovery_CanReturnToSignedHomeTenant(t *testing.T) {
 	service, idToken := newTenantTargetDiscoveryService(
 		t, "bereia-read", []string{"code-admin:workloads:read"}, domain.RoleAdmin,
