@@ -498,6 +498,95 @@ func TestUpsertFromSAML_ExistingAdminSurvivesMissingRoleAttribute(t *testing.T) 
 	}
 }
 
+func TestUpsertFromSAML_RecoversPriorDemotionFromExactAdminMembership(t *testing.T) {
+	rdb, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+	tenantID := "tenant-1"
+
+	created, wasCreated, err := repo.UpsertFromSAML(
+		ctx, tenantID, "ext-sub-1", "admin@example.com", "Admin",
+		[]string{"ADMIN"}, domain.MergeStrategyEmail,
+	)
+	if err != nil || !wasCreated || created.Role != domain.RoleCompanyAdmin {
+		t.Fatalf("seed tenant admin: user=%#v created=%t err=%v", created, wasCreated, err)
+	}
+	created.Role = domain.RoleCompanyEmployee
+	if err := repo.UpdateUser(ctx, &created); err != nil {
+		t.Fatalf("persist prior regression: %v", err)
+	}
+	if err := NewMembershipRepo(rdb).Create(ctx, &domain.Membership{
+		Id: "membership-admin", TenantId: tenantID, UserId: created.Id,
+		Roles: []string{"ADMIN"}, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create exact admin membership: %v", err)
+	}
+
+	recovered, wasCreated, err := repo.UpsertFromSAML(
+		ctx, tenantID, "ext-sub-1", "admin@example.com", "Admin",
+		nil, domain.MergeStrategyEmail,
+	)
+	if err != nil || wasCreated || recovered.Role != domain.RoleCompanyAdmin {
+		t.Fatalf("recover tenant admin: user=%#v created=%t err=%v", recovered, wasCreated, err)
+	}
+}
+
+func TestUpsertFromSAML_ExplicitEmployeeRoleOverridesAdminMembership(t *testing.T) {
+	rdb, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+	tenantID := "tenant-1"
+
+	created, _, err := repo.UpsertFromSAML(
+		ctx, tenantID, "ext-sub-1", "admin@example.com", "Admin",
+		nil, domain.MergeStrategyEmail,
+	)
+	if err != nil {
+		t.Fatalf("seed SAML user: %v", err)
+	}
+	if err := NewMembershipRepo(rdb).Create(ctx, &domain.Membership{
+		Id: "membership-admin", TenantId: tenantID, UserId: created.Id,
+		Roles: []string{"ADMIN"}, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("create exact admin membership: %v", err)
+	}
+
+	updated, _, err := repo.UpsertFromSAML(
+		ctx, tenantID, "ext-sub-1", "admin@example.com", "Admin",
+		[]string{"COMPANY_EMPLOYEE"}, domain.MergeStrategyEmail,
+	)
+	if err != nil || updated.Role != domain.RoleCompanyEmployee {
+		t.Fatalf("explicit employee assertion was not authoritative: user=%#v err=%v", updated, err)
+	}
+}
+
+func TestUpsertFromSAML_DoesNotRecoverFromUnilateralAdminMembership(t *testing.T) {
+	rdb, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+	tenantID := "tenant-1"
+
+	created, _, err := repo.UpsertFromSAML(
+		ctx, tenantID, "ext-sub-1", "admin@example.com", "Admin",
+		nil, domain.MergeStrategyEmail,
+	)
+	if err != nil {
+		t.Fatalf("seed SAML user: %v", err)
+	}
+	unilateral := domain.Membership{
+		Id: "membership-admin", TenantId: tenantID, UserId: created.Id,
+		Roles: []string{"ADMIN"}, CreatedAt: time.Now(),
+	}
+	if err := rdb.HSet(ctx, membershipsKey(tenantID), created.Id, mustJSON(t, unilateral)).Err(); err != nil {
+		t.Fatalf("seed unilateral membership: %v", err)
+	}
+
+	updated, _, err := repo.UpsertFromSAML(
+		ctx, tenantID, "ext-sub-1", "admin@example.com", "Admin",
+		nil, domain.MergeStrategyEmail,
+	)
+	if err != nil || updated.Role != domain.RoleCompanyEmployee {
+		t.Fatalf("unilateral membership elevated SAML user: user=%#v err=%v", updated, err)
+	}
+}
+
 func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()

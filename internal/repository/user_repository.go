@@ -344,7 +344,7 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	}
 	if existing != nil {
 		existing.Email = email
-		existing.Role = existingTenantScopedSAMLRole(existing.Role, roles)
+		existing.Role = r.existingTenantScopedSAMLRole(ctx, tid, existing, roles)
 		existing.AuthSource = domain.AuthSourceSAML
 		existing.ExternalSubject = externalSubject
 		existing.CompanyId = stringPointer(tid)
@@ -367,7 +367,7 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 			}
 			emailUser.AuthSource = domain.AuthSourceSAML
 			emailUser.ExternalSubject = externalSubject
-			emailUser.Role = existingTenantScopedSAMLRole(emailUser.Role, roles)
+			emailUser.Role = r.existingTenantScopedSAMLRole(ctx, tid, emailUser, roles)
 			if err := r.UpdateUser(ctx, emailUser); err != nil {
 				return domain.User{}, false, err
 			}
@@ -431,6 +431,50 @@ func existingTenantScopedSAMLRole(existing domain.UserRole, asserted []string) d
 	default:
 		return domain.RoleCompanyEmployee
 	}
+}
+
+func (r *redisRepo) existingTenantScopedSAMLRole(
+	ctx context.Context,
+	tenantID string,
+	user *domain.User,
+	asserted []string,
+) domain.UserRole {
+	if user == nil {
+		return domain.RoleCompanyEmployee
+	}
+	role := existingTenantScopedSAMLRole(user.Role, asserted)
+	if len(asserted) > 0 || role == domain.RoleCompanyAdmin || r == nil || r.client == nil {
+		return role
+	}
+
+	// v0.2.98 could persist COMPANY_EMPLOYEE when an IdP omitted its optional
+	// roles attribute. Recover only from an intact, tenant-local membership that
+	// explicitly assigned the built-in administration role. The matching reverse
+	// index prevents a unilateral forward record from becoming elevation input.
+	raw, err := r.client.HGet(ctx, membershipsKey(tenantID), user.Id).Result()
+	if err != nil || raw == "" {
+		return role
+	}
+	reverse, err := r.client.SIsMember(ctx, membershipsByUserPrefix+user.Id, tenantID).Result()
+	if err != nil || !reverse {
+		return role
+	}
+	membership, valid := decodeExactMembership(raw)
+	if !valid || membership.TenantId != tenantID || membership.UserId != user.Id ||
+		!canonicalUserIdentity(membership.Id) || membership.CreatedAt.IsZero() {
+		return role
+	}
+	assignments, valid := canonicalMembershipAssignments(membership.Roles)
+	if !valid {
+		return role
+	}
+	for _, assignment := range assignments {
+		switch domain.UserRole(assignment) {
+		case domain.RoleAdmin, domain.RoleCompanyAdmin:
+			return domain.RoleCompanyAdmin
+		}
+	}
+	return role
 }
 
 func stringPointer(value string) *string {
