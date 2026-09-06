@@ -474,6 +474,30 @@ func TestUpsertFromSAML_UpdateSame(t *testing.T) {
 	}
 }
 
+func TestUpsertFromSAML_ExistingAdminSurvivesMissingRoleAttribute(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+
+	created, wasCreated, err := repo.UpsertFromSAML(
+		ctx, "tenant-1", "ext-sub-1", "admin@example.com", "Admin",
+		[]string{"ADMIN"}, domain.MergeStrategyEmail,
+	)
+	if err != nil || !wasCreated || created.Role != domain.RoleCompanyAdmin {
+		t.Fatalf("seed tenant admin: user=%#v created=%t err=%v", created, wasCreated, err)
+	}
+
+	updated, wasCreated, err := repo.UpsertFromSAML(
+		ctx, "tenant-1", "ext-sub-1", "admin@example.com", "Admin",
+		nil, domain.MergeStrategyEmail,
+	)
+	if err != nil || wasCreated {
+		t.Fatalf("refresh tenant admin: user=%#v created=%t err=%v", updated, wasCreated, err)
+	}
+	if updated.Role != domain.RoleCompanyAdmin {
+		t.Fatalf("missing optional SAML roles erased tenant authority: %s", updated.Role)
+	}
+}
+
 func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
@@ -510,6 +534,32 @@ func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
 	}
 	if u.ExternalSubject != "ext-sub-bob" {
 		t.Fatalf("expected externalSubject set after merge, got %s", u.ExternalSubject)
+	}
+}
+
+func TestUpsertFromSAML_MergeLegacyAdminWithoutRoleAttribute(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+	tenantID := "tenant-1"
+
+	legacyAdmin := &domain.User{
+		Id: "legacy-admin", Email: "legacy-admin@example.com", Password: "hashed-password",
+		Role: domain.RoleAdmin, Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword, CompanyId: &tenantID, CreatedAt: time.Now(),
+	}
+	if err := repo.CreateUser(ctx, legacyAdmin); err != nil {
+		t.Fatalf("create legacy admin: %v", err)
+	}
+
+	merged, created, err := repo.UpsertFromSAML(
+		ctx, tenantID, "ext-legacy-admin", legacyAdmin.Email, "Legacy Admin",
+		nil, domain.MergeStrategyEmail,
+	)
+	if err != nil || created {
+		t.Fatalf("merge legacy admin: user=%#v created=%t err=%v", merged, created, err)
+	}
+	if merged.Role != domain.RoleCompanyAdmin || merged.AuthSource != domain.AuthSourceSAML {
+		t.Fatalf("legacy admin did not retain bounded tenant authority: %#v", merged)
 	}
 }
 

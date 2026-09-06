@@ -344,7 +344,7 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 	}
 	if existing != nil {
 		existing.Email = email
-		existing.Role = tenantScopedSAMLRole(roles)
+		existing.Role = existingTenantScopedSAMLRole(existing.Role, roles)
 		existing.AuthSource = domain.AuthSourceSAML
 		existing.ExternalSubject = externalSubject
 		existing.CompanyId = stringPointer(tid)
@@ -367,7 +367,7 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 			}
 			emailUser.AuthSource = domain.AuthSourceSAML
 			emailUser.ExternalSubject = externalSubject
-			emailUser.Role = tenantScopedSAMLRole(roles)
+			emailUser.Role = existingTenantScopedSAMLRole(emailUser.Role, roles)
 			if err := r.UpdateUser(ctx, emailUser); err != nil {
 				return domain.User{}, false, err
 			}
@@ -416,6 +416,21 @@ func tenantScopedSAMLRole(roles []string) domain.UserRole {
 		}
 	}
 	return domain.RoleCompanyEmployee
+}
+
+func existingTenantScopedSAMLRole(existing domain.UserRole, asserted []string) domain.UserRole {
+	if len(asserted) > 0 {
+		return tenantScopedSAMLRole(asserted)
+	}
+	// Absence of the optional roles attribute is not a revocation signal.
+	// Preserve only tenant-local administration and collapse legacy platform
+	// ADMIN records to COMPANY_ADMIN at the SAML trust boundary.
+	switch existing {
+	case domain.RoleAdmin, domain.RoleCompanyAdmin:
+		return domain.RoleCompanyAdmin
+	default:
+		return domain.RoleCompanyEmployee
+	}
 }
 
 func stringPointer(value string) *string {
