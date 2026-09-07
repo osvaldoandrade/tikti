@@ -169,10 +169,6 @@ func TestAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) {
 	cfg.JwtSecret = "legacy-secret"
 	calls := map[string]int{}
 	userSvc := &fakeUserService{
-		signUpFn: func(context.Context, domain.SignUpReq) (*domain.SignUpResp, error) {
-			calls["signup"]++
-			return &domain.SignUpResp{LocalId: "user-1", Email: "u@example.com"}, nil
-		},
 		setStatusFn: func(context.Context, string, string) (*domain.StatusResp, error) {
 			calls["status"]++
 			return &domain.StatusResp{LocalId: "user-1", Email: "u@example.com", Status: "ACTIVE"}, nil
@@ -192,7 +188,6 @@ func TestAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) {
 	}}
 
 	router := gin.New()
-	router.POST("/signup", NewSignUpController(userSvc, cfg).Handle)
 	adminUser := NewUserAdminController(userSvc, cfg)
 	router.POST("/status", adminUser.SetStatus)
 	router.POST("/revoke", adminUser.Revoke)
@@ -222,7 +217,6 @@ func TestAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) {
 		body                            any
 		want                            int
 	}{
-		{name: "signup tenant admin", path: "/signup", authorization: localAdmin, call: "signup", body: domain.SignUpReq{Email: "u@example.com", Password: "password"}, want: http.StatusForbidden},
 		{name: "status legacy HS256", path: "/status", authorization: legacyAdmin, call: "status", body: map[string]any{"email": "u@example.com", "status": "ACTIVE"}, want: http.StatusUnauthorized},
 		{name: "status raw platform token", path: "/status", authorization: platformToken, call: "status", body: map[string]any{"email": "u@example.com", "status": "ACTIVE"}, want: http.StatusUnauthorized},
 		{name: "revoke tenant admin", path: "/revoke", authorization: localAdmin, call: "revoke", body: map[string]any{"email": "u@example.com", "scope": "global"}, want: http.StatusForbidden},
@@ -240,7 +234,7 @@ func TestAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) {
 	}
 }
 
-func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
+func TestTenantRoleClientControllers_Handle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg, key := roleAccessConfig(t)
 	cfg.JwtSecret = "s1"
@@ -250,12 +244,10 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	})
 
 	tenantSvc := &fakeTenantService{}
-	memberSvc := &fakeMembershipService{}
 	roleSvc := &fakeRoleService{}
 	clientSvc := &fakeClientService{}
 
 	tenantCtrl := NewTenantController(tenantSvc, cfg)
-	memberCtrl := NewMembershipController(memberSvc, cfg)
 	roleCtrl := NewRoleController(roleSvc, cfg)
 	clientCtrl := NewClientController(clientSvc, cfg)
 
@@ -263,9 +255,6 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	r.PUT("/tenants/:tenantId", tenantCtrl.CreateWithID)
 	r.GET("/tenants", tenantCtrl.List)
 	r.GET("/tenants/:tenantId", tenantCtrl.Get)
-	r.GET("/tenants/:tenantId/users", memberCtrl.List)
-	r.POST("/tenants/:tenantId/users", memberCtrl.Create)
-	r.POST("/tenants/:tenantId/users/remove", memberCtrl.Remove)
 	r.PUT("/tenants/:tenantId/roles/:roleName", roleCtrl.Put)
 	r.GET("/tenants/:tenantId/roles", roleCtrl.ListAdmin)
 	r.POST("/tenants/:tenantId/clients", clientCtrl.Create)
@@ -310,17 +299,6 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 		t.Fatalf("tenant list: expected 200, got %d", rec.Code)
 	}
 
-	memberSvc.listFn = func(_ context.Context, tenantID string, cursor uint64, pageSize int64) (*domain.TenantUsersPage, error) {
-		if tenantID != "t1" || cursor != 7 || pageSize != 20 {
-			t.Fatalf("unexpected membership list request: tenant=%s cursor=%d pageSize=%d", tenantID, cursor, pageSize)
-		}
-		return &domain.TenantUsersPage{Users: []domain.TenantUserResp{{Id: "u1", Email: "u@example.com"}}}, nil
-	}
-	rec = performJSON(t, r, http.MethodGet, "/tenants/t1/users?pageSize=20&pageToken=7", nil, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("membership list: expected 200, got %d", rec.Code)
-	}
-
 	tenantSvc.getFn = func(ctx context.Context, tenantID string) (*domain.TenantResp, error) { return nil, domain.ErrNotFound }
 	rec = performJSON(t, r, http.MethodGet, "/tenants/t1", nil, admin)
 	if rec.Code != http.StatusNotFound {
@@ -346,58 +324,6 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	rec = performJSON(t, r, http.MethodGet, "/tenants/t1", nil, admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tenant get ok: expected 200, got %d", rec.Code)
-	}
-
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users", nil, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("membership create bad req: expected 400, got %d", rec.Code)
-	}
-	memberSvc.createFn = func(ctx context.Context, tenantID string, req domain.MembershipCreateReq) (*domain.MembershipResp, error) {
-		return nil, domain.ErrInvalidTenant
-	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users", domain.MembershipCreateReq{Email: "u@x.com"}, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("membership create err: expected 400, got %d", rec.Code)
-	}
-	memberSvc.createFn = func(ctx context.Context, tenantID string, req domain.MembershipCreateReq) (*domain.MembershipResp, error) {
-		return nil, domain.ErrNotFound
-	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users", domain.MembershipCreateReq{Email: "u@x.com"}, admin)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("membership create not found: expected 404, got %d", rec.Code)
-	}
-	memberSvc.createFn = func(ctx context.Context, tenantID string, req domain.MembershipCreateReq) (*domain.MembershipResp, error) {
-		return &domain.MembershipResp{TenantId: tenantID, Email: req.Email}, nil
-	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users", domain.MembershipCreateReq{Email: "u@x.com"}, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("membership create ok: expected 200, got %d", rec.Code)
-	}
-
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users/remove", nil, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("membership remove bad req: expected 400, got %d", rec.Code)
-	}
-	memberSvc.removeFn = func(ctx context.Context, tenantID string, req domain.MembershipRemoveReq) (*domain.MembershipRemoveResp, error) {
-		return nil, domain.ErrInvalidArgument
-	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users/remove", domain.MembershipRemoveReq{Email: "u@x.com"}, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("membership remove err: expected 400, got %d", rec.Code)
-	}
-	memberSvc.removeFn = func(ctx context.Context, tenantID string, req domain.MembershipRemoveReq) (*domain.MembershipRemoveResp, error) {
-		return nil, domain.ErrNotFound
-	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users/remove", domain.MembershipRemoveReq{Email: "u@x.com"}, admin)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("membership remove not found: expected 404, got %d", rec.Code)
-	}
-	memberSvc.removeFn = func(ctx context.Context, tenantID string, req domain.MembershipRemoveReq) (*domain.MembershipRemoveResp, error) {
-		return &domain.MembershipRemoveResp{TenantId: tenantID, Email: req.Email}, nil
-	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/users/remove", domain.MembershipRemoveReq{Email: "u@x.com"}, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("membership remove ok: expected 200, got %d", rec.Code)
 	}
 
 	rec = performJSON(t, r, http.MethodPut, "/tenants/t1/roles/R1", nil, admin)

@@ -211,9 +211,9 @@ func TestAdminMutationCommandsUseHeaderAPIKeyAndScopedAccessToken(t *testing.T) 
 		name, method, path string
 		run                func(*string, *bool) error
 	}{
-		{name: "user create", method: http.MethodPost, path: "/v1/accounts/signUp", run: func(profile *string, outputJSON *bool) error {
+		{name: "user create", method: http.MethodPost, path: "/v1/admin/identity/directory/users", run: func(profile *string, outputJSON *bool) error {
 			command := userCmd(profile, outputJSON)
-			command.SetArgs([]string{"create", "--email", "u@example.com", "--password", "password"})
+			command.SetArgs([]string{"create", "--email", "u@example.com", "--temporary-password", "temporary-password"})
 			return command.Execute()
 		}},
 		{name: "user suspend", method: http.MethodPost, path: "/v1/accounts/status", run: func(profile *string, outputJSON *bool) error {
@@ -278,7 +278,7 @@ func TestAdminMutationCommandsFailLocallyWithoutScopedAccessToken(t *testing.T) 
 	}{
 		{name: "user create", run: func(profile *string, outputJSON *bool) error {
 			command := userCmd(profile, outputJSON)
-			command.SetArgs([]string{"create", "--email", "u@example.com", "--password", "password"})
+			command.SetArgs([]string{"create", "--email", "u@example.com", "--temporary-password", "temporary-password"})
 			return command.Execute()
 		}},
 		{name: "user suspend", run: func(profile *string, outputJSON *bool) error {

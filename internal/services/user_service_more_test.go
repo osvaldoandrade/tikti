@@ -28,7 +28,6 @@ type mockUserRepo struct {
 	incrementTokenVersionFn func(context.Context, string) (int, *domain.User, error)
 	saveOobCodeFn           func(context.Context, string, string, string) error
 	consumeOobCodeFn        func(context.Context, string, string) (string, error)
-	getAllUsersFn           func(context.Context) ([]*domain.User, error)
 	upsertFromSAMLFn        func(context.Context, string, string, string, string, []string, domain.MergeStrategy) (domain.User, bool, error)
 }
 
@@ -79,12 +78,6 @@ func (m *mockUserRepo) ConsumeOobCode(ctx context.Context, code string, expected
 		return m.consumeOobCodeFn(ctx, code, expectedReqType)
 	}
 	return "", nil
-}
-func (m *mockUserRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
-	if m.getAllUsersFn != nil {
-		return m.getAllUsersFn(ctx)
-	}
-	return nil, nil
 }
 func (m *mockUserRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error) {
 	if m.upsertFromSAMLFn != nil {
@@ -243,38 +236,9 @@ func bcryptHash(t *testing.T, raw string) string {
 	return string(h)
 }
 
-func TestUserService_SignUpAndSignIn(t *testing.T) {
+func TestUserService_SignIn(t *testing.T) {
 	repo := &mockUserRepo{}
-	membership := &mockMembershipRepo{}
-	svc := NewUserService(repo, membership, nil, nil, "secret", "http://issuer", "tikti", makePEMKey(t), "kid").(*userService)
-
-	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
-		return &domain.User{Id: "u1", Email: email}, nil
-	}
-	if _, err := svc.SignUp(context.Background(), domain.SignUpReq{Email: "a@x.com", Password: "p"}); err != domain.ErrEmailExists {
-		t.Fatalf("expected ErrEmailExists, got %v", err)
-	}
-
-	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) { return nil, nil }
-	createErr := errors.New("create-fail")
-	repo.createUserFn = func(ctx context.Context, user *domain.User) error { return createErr }
-	if _, err := svc.SignUp(context.Background(), domain.SignUpReq{Email: "a@x.com", Password: "p"}); !errors.Is(err, createErr) {
-		t.Fatalf("expected create error, got %v", err)
-	}
-
-	membershipCreated := false
-	repo.createUserFn = func(ctx context.Context, user *domain.User) error { return nil }
-	membership.createFn = func(ctx context.Context, m *domain.Membership) error {
-		membershipCreated = true
-		return nil
-	}
-	resp, err := svc.SignUp(context.Background(), domain.SignUpReq{Email: "a@x.com", Password: "p", Role: string(domain.RoleCompanyAdmin)})
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if !membershipCreated || resp.Email != "a@x.com" {
-		t.Fatalf("unexpected signup response: %+v", resp)
-	}
+	svc := NewUserService(repo, nil, nil, nil, "secret", "http://issuer", "tikti", makePEMKey(t), "kid").(*userService)
 
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) { return nil, errors.New("x") }
 	if _, err := svc.SignIn(context.Background(), domain.SignInReq{Email: "a@x.com", Password: "p"}); err != domain.ErrInvalidCreds {
@@ -842,15 +806,6 @@ func TestUserService_StatusRevokeOobAndReset(t *testing.T) {
 	repo.updateUserFn = func(ctx context.Context, user *domain.User) error { return nil }
 	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "p"}); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
-	}
-
-	repo.getAllUsersFn = func(ctx context.Context) ([]*domain.User, error) { return nil, errors.New("list-fail") }
-	if _, err := svc.GetAllUsers(context.Background()); err == nil {
-		t.Fatalf("expected list error")
-	}
-	repo.getAllUsersFn = func(ctx context.Context) ([]*domain.User, error) { return []*domain.User{{Id: "u1"}}, nil }
-	if users, err := svc.GetAllUsers(context.Background()); err != nil || len(users) != 1 {
-		t.Fatalf("unexpected users: %+v err=%v", users, err)
 	}
 }
 

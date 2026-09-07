@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -34,6 +35,10 @@ func (ctrl *SignInController) Handle(ctx *gin.Context) {
 	})
 	result := <-ch
 	if e, ok := result.(error); ok {
+		if errors.Is(e, domain.ErrPasswordChangeRequired) {
+			ctx.JSON(http.StatusPreconditionRequired, gin.H{"error": domain.ErrPasswordChangeRequired.Error(), "code": "PASSWORD_CHANGE_REQUIRED"})
+			return
+		}
 		ctx.JSON(http.StatusUnauthorized, gin.H{"error": e.Error()})
 		return
 	}

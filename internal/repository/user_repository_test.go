@@ -243,31 +243,6 @@ func TestUserRepo_OobHelpersAndConsumption(t *testing.T) {
 	}
 }
 
-func TestUserRepo_GetAllUsers(t *testing.T) {
-	rdb, repo := newUserRepoForTest(t)
-	ctx := context.Background()
-	r := repo.(*redisRepo)
-
-	if err := rdb.HSet(ctx, usersHashV2, "u1", mustJSON(t, domain.User{Id: "u1", Email: "u1@x.com", Password: "h"})).Err(); err != nil {
-		t.Fatalf("hset: %v", err)
-	}
-	// duplicate email in legacy should be skipped.
-	if err := rdb.HSet(ctx, legacyUsersHash, "u1@x.com", mustJSON(t, domain.User{Id: "u-legacy", Email: "u1@x.com", Password: "h"})).Err(); err != nil {
-		t.Fatalf("hset legacy: %v", err)
-	}
-	if err := rdb.HSet(ctx, legacyUsersHash, "u2@x.com", mustJSON(t, domain.User{Id: "u2", Email: "u2@x.com", Password: "h"})).Err(); err != nil {
-		t.Fatalf("hset legacy2: %v", err)
-	}
-
-	users, err := r.GetAllUsers(ctx)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if len(users) != 2 {
-		t.Fatalf("expected 2 users, got %d (%+v)", len(users), users)
-	}
-}
-
 func TestUserRepo_CreateUser_RollbackWhenEmailIndexFails(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -280,7 +255,7 @@ func TestUserRepo_CreateUser_RollbackWhenEmailIndexFails(t *testing.T) {
 	t.Cleanup(func() { _ = observer.Close() })
 
 	setErr := errors.New("set-fail")
-	rdb.AddHook(commandErrorHook{byName: map[string]error{"set": setErr}})
+	rdb.AddHook(commandErrorHook{byName: map[string]error{"eval": setErr, "evalsha": setErr}})
 
 	r := NewRedisRepo(rdb).(*redisRepo)
 	ctx := context.Background()
@@ -767,7 +742,7 @@ func TestMerge_Email_FromPassword(t *testing.T) {
 	}
 }
 
-func TestMerge_None_CreatesDup(t *testing.T) {
+func TestMerge_None_RejectsDuplicateDirectoryEmail(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 
@@ -787,19 +762,16 @@ func TestMerge_None_CreatesDup(t *testing.T) {
 		t.Fatalf("create password user: %v", err)
 	}
 
-	// With none strategy a new user must be created (no email merge).
-	u, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-dup", "dup@example.com", "Dup User", []string{"ADMIN"}, domain.MergeStrategyNone)
-	if err != nil {
-		t.Fatalf("upsert: %v", err)
+	// The global directory has one canonical owner per normalized email. A
+	// SAML policy that forbids merging therefore fails closed instead of
+	// creating an ambiguous duplicate identity.
+	_, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-dup", "DUP@example.com", "Dup User", []string{"ADMIN"}, domain.MergeStrategyNone)
+	if !errors.Is(err, domain.ErrEmailExists) || created {
+		t.Fatalf("duplicate directory identity created=%t error=%v", created, err)
 	}
-	if !created {
-		t.Fatalf("expected new user (created=true) with none strategy")
-	}
-	if u.Id == "pw-dup-1" {
-		t.Fatalf("should have created a separate user, got same ID")
-	}
-	if u.AuthSource != domain.AuthSourceSAML {
-		t.Fatalf("new user should be SAML, got %s", u.AuthSource)
+	stored, findErr := repo.FindByEmail(ctx, "dup@example.com")
+	if findErr != nil || stored.Id != "pw-dup-1" || stored.AuthSource != domain.AuthSourcePassword {
+		t.Fatalf("canonical identity changed: user=%#v error=%v", stored, findErr)
 	}
 }
 

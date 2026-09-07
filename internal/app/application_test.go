@@ -53,7 +53,7 @@ func TestValidateWorkloadIdentityRuntimeConfig(t *testing.T) {
 func TestSetupMappingsRegistersIdentityV2TenantRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
-	SetupMappings(engine, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
+	SetupMappings(engine, &config.Config{}, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
 	routes := make(map[string]bool)
 	for _, route := range engine.Routes() {
 		routes[route.Method+" "+route.Path] = true
@@ -74,7 +74,7 @@ func TestSetupMappingsRegistersIdentityV2TenantRoutes(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := gin.New()
-			SetupMappings(router, &config.Config{ApiKey: test.key}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			SetupMappings(router, &config.Config{ApiKey: test.key}, nil, nil, nil, nil, nil, nil, nil, nil)
 			req := httptest.NewRequest(test.method, test.target, strings.NewReader(`{}`))
 			req.Header.Set("X-API-Key", test.header)
 			rec := httptest.NewRecorder()
@@ -84,16 +84,15 @@ func TestSetupMappingsRegistersIdentityV2TenantRoutes(t *testing.T) {
 			}
 		})
 	}
-	SetupMappings(gin.New(), &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	SetupMappings(gin.New(), &config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 }
 
 func TestProtectedRoutesRejectQueryAPIKeyBeforeControllers(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	SetupMappings(router, &config.Config{ApiKey: "secret"}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+	SetupMappings(router, &config.Config{ApiKey: "secret"}, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	for _, path := range []string{
-		"/v1/accounts/signUp",
 		"/v1/accounts/signInWithPassword",
 		"/v1/accounts/lookup",
 		"/v1/accounts/token/exchange",
@@ -115,6 +114,12 @@ func TestProtectedRoutesRejectQueryAPIKeyBeforeControllers(t *testing.T) {
 			}
 		})
 	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/accounts/signUp?key=secret", strings.NewReader(`{}`))
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("superseded sign-up route remains registered: %d", response.Code)
+	}
 }
 
 type applicationWorkloadAccountService struct{}
@@ -131,7 +136,7 @@ func TestSetupMappingsRegistersExactWorkloadAccountEdgeAliases(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	cfg := &config.Config{WorkloadAccountBFF: config.WorkloadAccountBFFConfig{Enabled: true}}
-	SetupMappings(router, cfg, nil, nil, nil, nil, nil, nil, applicationWorkloadAccountService{}, nil, nil)
+	SetupMappings(router, cfg, nil, nil, nil, nil, nil, applicationWorkloadAccountService{}, nil, nil)
 
 	routes := make(map[string]bool)
 	for _, route := range router.Routes() {
@@ -174,7 +179,7 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	privateKey := applicationTestPrivateKey(t, 2048)
 	cfg := &config.Config{ApiKey: "secret", JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}
 	router := gin.New()
-	SetupMappings(router, cfg, nil, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
+	SetupMappings(router, cfg, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
 	routes := map[string]bool{}
 	for _, route := range router.Routes() {
 		routes[route.Method+" "+route.Path] = true
@@ -285,8 +290,8 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 		}
 	}
 	empty := gin.New()
-	SetupMappings(empty, &config.Config{JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}, nil, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
-	SetupMappings(gin.New(), cfg, nil, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
+	SetupMappings(empty, &config.Config{JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
+	SetupMappings(gin.New(), cfg, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/admin/tenants/bereia/roles", nil)
 	req.Header.Set("X-API-Key", "secret")
@@ -373,7 +378,6 @@ func TestNewApplicationWiresDynamicManagedAudienceTarget(t *testing.T) {
 		application.Config,
 		application.UserService,
 		application.TenantSvc,
-		application.MemberSvc,
 		application.RoleSvc,
 		application.ClientSvc,
 		application.WorkloadSvc,

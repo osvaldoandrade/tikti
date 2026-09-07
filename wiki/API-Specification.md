@@ -42,7 +42,7 @@ Request:
 }
 ```
 
-Response 200:
+Response 201:
 
 ```json
 {
@@ -64,17 +64,19 @@ Error cases:
 
 Behaves identically to `/signIn` but requires an API key. This endpoint exists to match the Firebase API surface and to enforce API key usage in server-to-server calls.
 
-### POST /v1/accounts/signUp
+### POST /v1/admin/identity/directory/users
 
-Creates a user. The caller must supply `X-API-Key` and a provenance-bound platform-admin RS256 access token in the `Authorization` header. Only `Bearer <jwt>` is accepted, and authority is validated before the request body or user service is processed.
+Creates a global directory user with a request-only temporary password. The
+caller supplies `X-API-Key` and a provenance-bound platform-admin RS256 access
+token. Normal session and token issuance remains blocked until the password is
+changed through `POST /v1/accounts/changeTemporaryPassword`.
 
 Request:
 
 ```json
 {
   "email": "new@company.com",
-  "password": "secret",
-  "role": "COMPANY_EMPLOYEE"
+  "temporaryPassword": "OneTimeSecret123"
 }
 ```
 
@@ -82,13 +84,16 @@ Response 200:
 
 ```json
 {
-  "localId": "uuid",
+  "id": "uuid",
   "email": "new@company.com",
+  "status": "ACTIVE",
+  "authSource": "PASSWORD",
+  "passwordChangeRequired": true,
   "createdAt": "2026-01-28T12:00:00Z"
 }
 ```
 
-`email` must be globally unique. `role` defaults to `COMPANY_EMPLOYEE` when omitted.
+`email` is normalized and globally unique. No tenant membership is created.
 
 ### POST /v1/accounts/lookup
 
@@ -594,12 +599,16 @@ Returns the global inventory with `local-tenant` projected as the unique
 `MASTER` named `Code Foundry`, followed by alphabetically ordered `WORKLOAD`
 tenants. A query-string API key is rejected.
 
-## Membership storage contract (internal admin)
+## Identity directory and access contract (internal admin)
 
-Workload-facing directory and access administration belongs to Code Admin
-Identity V2. Tikti no longer exposes email-based membership routes.
-
-`GET /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts a single 1–128 character ASCII user ID segment (`[A-Za-z0-9._:-]`), except for the complete dot-segments `.` and `..`. Those aliases return 400 before any storage read; dots embedded in an otherwise valid ID remain supported.
+Canonical administration lives under `/v1/admin/identity`. Directory lists are
+bounded and secret-free. A workload administrator's prefix search returns only
+members of its signed tenant; exact normalized email is the only external-user
+resolver. Direct and group access uses explicit tenant routes under
+`/access-assignments`, with monotonic versions and quoted ETag/If-Match
+protection. Effective access exposes direct or group provenance. Old membership
+HTTP routes are removed; legacy membership data is retained only as input until
+the bounded startup backfill records its authoritative completion marker.
 
 ## Client management (admin)
 

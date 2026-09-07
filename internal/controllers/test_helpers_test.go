@@ -15,7 +15,6 @@ import (
 )
 
 type fakeUserService struct {
-	signUpFn              func(context.Context, domain.SignUpReq) (*domain.SignUpResp, error)
 	signInFn              func(context.Context, domain.SignInReq) (*domain.SignInResp, error)
 	signInWithOobCodeFn   func(context.Context, domain.SignInWithOobCodeReq) (*domain.SignInResp, error)
 	lookupFn              func(context.Context, domain.LookupReq) (*domain.LookupResp, error)
@@ -30,14 +29,6 @@ type fakeUserService struct {
 	sendOobFn             func(context.Context, domain.SendOobReq) (*domain.SendOobResp, error)
 	sendOobForTenantFn    func(context.Context, string, domain.SendOobReq) (*domain.SendOobTenantResp, error)
 	resetPasswordFn       func(context.Context, domain.ResetPwdReq) error
-	getAllUsersFn         func(context.Context) ([]*domain.User, error)
-}
-
-func (f *fakeUserService) SignUp(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error) {
-	if f.signUpFn != nil {
-		return f.signUpFn(ctx, req)
-	}
-	return nil, nil
 }
 
 func (f *fakeUserService) SignIn(ctx context.Context, req domain.SignInReq) (*domain.SignInResp, error) {
@@ -138,13 +129,6 @@ func (f *fakeUserService) ResetPassword(ctx context.Context, req domain.ResetPwd
 	return nil
 }
 
-func (f *fakeUserService) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
-	if f.getAllUsersFn != nil {
-		return f.getAllUsersFn(ctx)
-	}
-	return nil, nil
-}
-
 type fakeTenantService struct {
 	createWithIDFn  func(context.Context, string, domain.TenantCreateReq) (*domain.TenantResp, bool, error)
 	getFn           func(context.Context, string) (*domain.TenantResp, error)
@@ -180,41 +164,6 @@ func (f *fakeTenantService) List(ctx context.Context, offset uint64, pageSize in
 func (f *fakeTenantService) EnsureDefault(ctx context.Context) (*domain.TenantResp, error) {
 	if f.ensureDefaultFn != nil {
 		return f.ensureDefaultFn(ctx)
-	}
-	return nil, nil
-}
-
-type fakeMembershipService struct {
-	createFn            func(context.Context, string, domain.MembershipCreateReq) (*domain.MembershipResp, error)
-	removeFn            func(context.Context, string, domain.MembershipRemoveReq) (*domain.MembershipRemoveResp, error)
-	listFn              func(context.Context, string, uint64, int64) (*domain.TenantUsersPage, error)
-	listTenantIDsByUser func(context.Context, string) ([]string, error)
-}
-
-func (f *fakeMembershipService) Create(ctx context.Context, tenantID string, req domain.MembershipCreateReq) (*domain.MembershipResp, error) {
-	if f.createFn != nil {
-		return f.createFn(ctx, tenantID, req)
-	}
-	return nil, nil
-}
-
-func (f *fakeMembershipService) Remove(ctx context.Context, tenantID string, req domain.MembershipRemoveReq) (*domain.MembershipRemoveResp, error) {
-	if f.removeFn != nil {
-		return f.removeFn(ctx, tenantID, req)
-	}
-	return nil, nil
-}
-
-func (f *fakeMembershipService) List(ctx context.Context, tenantID string, cursor uint64, pageSize int64) (*domain.TenantUsersPage, error) {
-	if f.listFn != nil {
-		return f.listFn(ctx, tenantID, cursor, pageSize)
-	}
-	return &domain.TenantUsersPage{Users: []domain.TenantUserResp{}}, nil
-}
-
-func (f *fakeMembershipService) ListTenantIDsByUser(ctx context.Context, userID string) ([]string, error) {
-	if f.listTenantIDsByUser != nil {
-		return f.listTenantIDsByUser(ctx, userID)
 	}
 	return nil, nil
 }

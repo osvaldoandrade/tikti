@@ -32,7 +32,7 @@ var (
 	errStoredTenantContract = errors.New("stored tenant contract mismatch")
 	errStoredUserContract   = errors.New("stored user contract mismatch")
 	tenantFields            = fields("id", "slug", "name", "status", "createdAt")
-	userFields              = fields("localId", "email", "password", "role", "status", "companyId", "tokenVersion", "createdAt", "authSource", "externalSubject")
+	userFields              = fields("localId", "email", "password", "role", "status", "companyId", "tokenVersion", "createdAt", "authSource", "externalSubject", "passwordChangeRequired")
 )
 
 func (r *tenantRepo) GetExact(ctx context.Context, tenantID string) (*domain.Tenant, error) {

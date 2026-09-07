@@ -79,7 +79,7 @@ func requireTenantIdentityAuthority(c *gin.Context, cfg *config.Config, tenantID
 	if !ok {
 		return false
 	}
-	if !canonicalMembershipTenantPath(tenantID) {
+	if !canonicalTenantIDPath(tenantID) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
 		return false
 	}

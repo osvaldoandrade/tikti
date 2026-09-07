@@ -64,6 +64,7 @@ func main() {
 		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
 		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
 		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+		directory: repository.NewIdentityDirectoryRepository(client),
 	}, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Tikti bootstrap failed:", err)
@@ -73,6 +74,7 @@ func main() {
 		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
 		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
 		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+		directory: repository.NewIdentityDirectoryRepository(client),
 	}, accountBrokers); err != nil {
 		fmt.Fprintln(os.Stderr, "Tikti workload account bootstrap failed:", err)
 		os.Exit(1)

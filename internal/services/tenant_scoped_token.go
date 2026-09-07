@@ -79,23 +79,17 @@ func (s *userService) tenantScopedTokenTarget(requested string) (string, bool) {
 }
 
 func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context, user *domain.User, target string) (tenantScopedTokenAuthorization, error) {
-	if user == nil || user.Status != domain.UserStatusActive || !validRoleTenantID(target) || s.exactMembershipRepo == nil || s.tenantRepo == nil {
+	if user == nil || user.Status != domain.UserStatusActive || !validRoleTenantID(target) || s.tenantRepo == nil || s.directoryAccess == nil && s.exactMembershipRepo == nil {
 		return tenantScopedTokenAuthorization{}, domain.ErrInvalidTenant
 	}
-	tenantIDs, exceeded, err := s.exactMembershipRepo.ListTenantIDsByUserExactBounded(
-		ctx, user.Id, maximumMembershipsScanned,
-	)
+	tenantIDs, exceeded, err := s.accessTenantIDs(ctx, user.Id)
 	if err != nil || exceeded || len(tenantIDs) == 0 || !containsString(tenantIDs, target) {
 		return tenantScopedTokenAuthorization{}, domain.ErrInvalidTenant
 	}
 	var selectedRoles []string
 	for _, tenantID := range tenantIDs {
-		membership, readErr := s.exactMembershipRepo.GetExact(ctx, tenantID, user.Id)
-		if readErr != nil || membership == nil || membership.TenantId != tenantID || membership.UserId != user.Id {
-			return tenantScopedTokenAuthorization{}, domain.ErrInvalidTenant
-		}
-		roles, valid := canonicalMembershipRoles(membership.Roles)
-		if !valid {
+		roles, roleErr := s.accessTenantRoles(ctx, user.Id, tenantID)
+		if roleErr != nil {
 			return tenantScopedTokenAuthorization{}, domain.ErrInvalidTenant
 		}
 		if tenantID == target {
@@ -248,16 +242,14 @@ func (s *userService) discoverTenantTargets(
 	dynamicTargets bool,
 	metricMode string,
 ) (tenantDiscoverySnapshot, error) {
-	if user == nil || user.Status != domain.UserStatusActive || s.exactMembershipRepo == nil || s.tenantRepo == nil {
+	if user == nil || user.Status != domain.UserStatusActive || s.tenantRepo == nil || s.directoryAccess == nil && s.exactMembershipRepo == nil {
 		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
 	homeTenant, err := s.tenantRepo.Get(ctx, home)
 	if err != nil || homeTenant == nil || homeTenant.Id != home || homeTenant.Status != domain.TenantStatusActive {
 		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
-	tenantIDs, exceeded, err := s.exactMembershipRepo.ListTenantIDsByUserExactBounded(
-		ctx, user.Id, maximumMembershipsScanned,
-	)
+	tenantIDs, exceeded, err := s.accessTenantIDs(ctx, user.Id)
 	if err != nil || exceeded {
 		if exceeded {
 			s.tenantDiscoveryMetrics.observeOmission(metricMode, "membership_limit")
@@ -274,12 +266,8 @@ func (s *userService) discoverTenantTargets(
 				continue
 			}
 		}
-		membership, readErr := s.exactMembershipRepo.GetExact(ctx, tenantID, user.Id)
-		if readErr != nil || membership == nil || membership.TenantId != tenantID || membership.UserId != user.Id {
-			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
-		}
-		roles, valid := canonicalMembershipRoles(membership.Roles)
-		if !valid {
+		roles, readErr := s.accessTenantRoles(ctx, user.Id, tenantID)
+		if readErr != nil {
 			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 		}
 		if dynamicTargets && len(roles) > maximumDynamicMembershipRoles {
@@ -330,6 +318,36 @@ func (s *userService) discoverTenantTargets(
 		authorizedTenants: result,
 		authorizations:    authorizations,
 	}, nil
+}
+
+func (s *userService) accessTenantIDs(ctx context.Context, userID string) ([]string, bool, error) {
+	if s.directoryAccess != nil {
+		return s.directoryAccess.ListEffectiveTenantIDs(ctx, userID, maximumMembershipsScanned)
+	}
+	return s.exactMembershipRepo.ListTenantIDsByUserExactBounded(ctx, userID, maximumMembershipsScanned)
+}
+
+func (s *userService) accessTenantRoles(ctx context.Context, userID, tenantID string) ([]string, error) {
+	if s.directoryAccess != nil {
+		roles, _, err := s.directoryAccess.GetEffectiveTenantRoles(ctx, userID, tenantID)
+		if err != nil {
+			return nil, err
+		}
+		canonical, valid := canonicalMembershipRoles(roles)
+		if !valid {
+			return nil, domain.ErrInvalidTenant
+		}
+		return canonical, nil
+	}
+	membership, err := s.exactMembershipRepo.GetExact(ctx, tenantID, userID)
+	if err != nil || membership == nil || membership.TenantId != tenantID || membership.UserId != userID {
+		return nil, domain.ErrInvalidTenant
+	}
+	roles, valid := canonicalMembershipRoles(membership.Roles)
+	if !valid {
+		return nil, domain.ErrInvalidTenant
+	}
+	return roles, nil
 }
 
 func (s *userService) resolveMembershipRoleAuthorization(

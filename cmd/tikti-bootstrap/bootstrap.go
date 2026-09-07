@@ -34,6 +34,7 @@ type stores struct {
 	roles       repository.RoleRepository
 	clients     repository.ClientRepository
 	workloads   repository.WorkloadBindingRepository
+	directory   repository.IdentityDirectoryRepository
 }
 
 type accountBrokerSettings struct {
@@ -107,7 +108,11 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 	}); err != nil {
 		return fmt.Errorf("upsert bootstrap role: %w", err)
 	}
-	if err := data.memberships.Create(ctx, &domain.Membership{
+	if data.directory != nil {
+		if _, _, err := data.directory.PutAccessAssignment(ctx, cfg.tenantID, domain.AccessPrincipalUser, user.Id, []string{"ADMIN"}, ""); err != nil {
+			return fmt.Errorf("upsert bootstrap access assignment: %w", err)
+		}
+	} else if err := data.memberships.Create(ctx, &domain.Membership{
 		Id: uuid.NewString(), TenantId: cfg.tenantID, UserId: user.Id,
 		Roles: []string{"ADMIN"}, CreatedAt: time.Now().UTC(),
 	}); err != nil {

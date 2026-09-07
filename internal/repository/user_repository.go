@@ -22,7 +22,6 @@ type UserRepository interface {
 	IncrementTokenVersion(ctx context.Context, email string) (int, *domain.User, error)
 	SaveOobCode(ctx context.Context, code, email, reqType string) error
 	ConsumeOobCode(ctx context.Context, code string, expectedReqType string) (string, error)
-	GetAllUsers(ctx context.Context) ([]*domain.User, error)
 	UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error)
 }
 
@@ -73,32 +72,13 @@ return email
 
 // CreateUser serializes and stores a user document under the users hash.
 func (r *redisRepo) CreateUser(ctx context.Context, user *domain.User) error {
-	data, err := json.Marshal(user)
-	if err != nil {
-		return err
-	}
-	if user.Email == "" {
-		return domain.ErrInvalidArgument
-	}
-	existing, _ := r.FindByEmail(ctx, user.Email)
-	if existing != nil {
-		return domain.ErrEmailExists
-	}
-	if user.Id == "" {
-		return domain.ErrInvalidArgument
-	}
-	if err := r.client.HSet(ctx, usersHashV2, user.Id, data).Err(); err != nil {
-		return err
-	}
-	if err := r.client.Set(ctx, userByEmailKeyNS+user.Email, user.Id, 0).Err(); err != nil {
-		_ = r.client.HDel(ctx, usersHashV2, user.Id).Err()
-		return err
-	}
-	return nil
+	_, err := NewIdentityDirectoryRepository(r.client).CreateDirectoryUser(ctx, user)
+	return err
 }
 
 // FindByEmail retrieves a stored user by email, returning nil when absent.
 func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User, error) {
+	email = normalizeDirectoryEmail(email)
 	if email == "" {
 		return nil, nil
 	}
@@ -152,30 +132,20 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 
 // UpdateUser overwrites the stored user JSON for the provided user.
 func (r *redisRepo) UpdateUser(ctx context.Context, user *domain.User) error {
-	data, err := json.Marshal(user)
-	if err != nil {
-		return err
-	}
-	if user.Id == "" {
-		return domain.ErrInvalidArgument
-	}
-	if err := r.client.HSet(ctx, usersHashV2, user.Id, data).Err(); err != nil {
-		return err
-	}
-	if user.Email != "" {
-		_ = r.client.Set(ctx, userByEmailKeyNS+user.Email, user.Id, 0).Err()
-	}
-	return nil
+	_, err := NewIdentityDirectoryRepository(r.client).UpdateDirectoryUser(ctx, user)
+	return err
 }
 
 // DeleteByEmail removes a user entry from Redis by email.
 func (r *redisRepo) DeleteByEmail(ctx context.Context, email string) error {
+	email = normalizeDirectoryEmail(email)
 	if email == "" {
 		return nil
 	}
 	if userID, err := r.client.Get(ctx, userByEmailKeyNS+email).Result(); err == nil && userID != "" {
 		_ = r.client.HDel(ctx, usersHashV2, userID).Err()
 		_ = r.client.Del(ctx, userByEmailKeyNS+email).Err()
+		_ = r.client.ZRem(ctx, directoryUserEmailIndex, directoryUserIndexMember(email, userID)).Err()
 	}
 	_ = r.client.HDel(ctx, legacyUsersHash, email).Err()
 	return nil
@@ -256,41 +226,6 @@ func (r *redisRepo) ConsumeOobCode(ctx context.Context, code string, expectedReq
 
 	// Fallback for legacy codes stored in the global hash ("oobs") for a short post-deploy window.
 	return r.consumeLegacyOobCode(ctx, code, expectedReqType)
-}
-
-// GetAllUsers returns all stored users without filtering, primarily for diagnostics.
-func (r *redisRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
-	vals, err := r.client.HGetAll(ctx, usersHashV2).Result()
-	if err != nil {
-		return nil, err
-	}
-	var users []*domain.User
-	byEmail := map[string]struct{}{}
-	for _, v := range vals {
-		var u domain.User
-		if e := json.Unmarshal([]byte(v), &u); e != nil {
-			return nil, e
-		}
-		users = append(users, &u)
-		if u.Email != "" {
-			byEmail[u.Email] = struct{}{}
-		}
-	}
-	legacy, err := r.client.HGetAll(ctx, legacyUsersHash).Result()
-	if err != nil {
-		return users, nil
-	}
-	for email, v := range legacy {
-		if _, ok := byEmail[email]; ok {
-			continue
-		}
-		var u domain.User
-		if e := json.Unmarshal([]byte(v), &u); e != nil {
-			return nil, e
-		}
-		users = append(users, &u)
-	}
-	return users, nil
 }
 
 // samlSubjectKey builds the Redis key used to index users by (tenant, externalSubject).
@@ -391,17 +326,11 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 		ExternalSubject: externalSubject,
 		CompanyId:       &companyID,
 	}
-	data, err := json.Marshal(&u)
-	if err != nil {
-		return domain.User{}, false, err
-	}
-	if err := r.client.HSet(ctx, usersHashV2, u.Id, data).Err(); err != nil {
-		return domain.User{}, false, err
-	}
-	if err := r.client.Set(ctx, userByEmailKeyNS+email, u.Id, 0).Err(); err != nil {
+	if err := r.CreateUser(ctx, &u); err != nil {
 		return domain.User{}, false, err
 	}
 	if err := r.client.Set(ctx, samlSubjectKey(tid, externalSubject), u.Id, 0).Err(); err != nil {
+		_ = r.DeleteByEmail(ctx, email)
 		return domain.User{}, false, err
 	}
 

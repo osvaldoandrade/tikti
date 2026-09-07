@@ -14,7 +14,7 @@ Functional testing (black-box) driven by the SPEC is the mandatory base for ever
 
 Packages:
 
-- `PF-22` (`M-SVC-USER-SignIn`, `M-SVC-USER-SignUp`, `M-SVC-USER-Lookup`)
+- `PF-22` (`M-SVC-USER-SignIn`, `M-SVC-USER-Lookup`)
 - `PF-23` (`M-SVC-USER-SendOob`, `M-SVC-USER-SendOobForTenant`, `M-SVC-USER-SignInWithOobCode`, `M-SVC-USER-ResetPassword`)
 - `PF-24` (`M-SVC-USER-TokenExchange`, `M-SVC-USER-ValidateAccessToken`, `M-SVC-USER-JWKS`, `M-SVC-USER-issueIDToken`, `M-SVC-USER-getRSAPrivateKey`)
 - `PF-28` (`M-UTIL-JWKS-BuildJWKS`, `M-UTIL-JWKS-Marshal`, `M-UTIL-PARSERSA`, `M-UTIL-VALIDATERS256`, `M-UTIL-PARSETOKEN`)

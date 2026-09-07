@@ -50,7 +50,7 @@ func TestSAMLAdminRoutesRejectForeignAuthorityBeforeStore(t *testing.T) {
 	}
 	store := &samlRouteCountingStore{}
 	router := gin.New()
-	SetupMappings(router, cfg, nil, nil, nil, nil, nil, nil, nil, store, nil)
+	SetupMappings(router, cfg, nil, nil, nil, nil, nil, nil, store, nil)
 	bearer := func(claims jwt.MapClaims) string {
 		return "Bearer " + applicationRoleToken(t, privateKey, claims)
 	}

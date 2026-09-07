@@ -60,10 +60,7 @@ data:
     tenantScopedTokenClaimsV1Tenants: {{ .Values.config.tenantScopedTokenClaimsV1Tenants | toJson }}
     tenantTargetDiscoveryV2: {{ .Values.config.tenantTargetDiscoveryV2 }}
     tenantTargetDiscoveryV2PrincipalTenants: {{ .Values.config.tenantTargetDiscoveryV2PrincipalTenants | toJson }}
-    exactMembershipReadRoutesV1: {{ .Values.config.exactMembershipReadRoutesV1 }}
-    exactMembershipReadRoutesV1Tenants: {{ .Values.config.exactMembershipReadRoutesV1Tenants | toJson }}
-    membershipV2WriteRoutesV1: {{ .Values.config.membershipV2WriteRoutesV1 }}
-    membershipV2WriteRoutesV1Tenants: {{ .Values.config.membershipV2WriteRoutesV1Tenants | toJson }}
+    identityGroupsV1: {{ .Values.config.identityGroupsV1 }}
     workloadIdentity:
       clusterRef: {{ .Values.config.workloadIdentity.clusterRef | quote }}
       issuer: {{ .Values.config.workloadIdentity.issuer | quote }}

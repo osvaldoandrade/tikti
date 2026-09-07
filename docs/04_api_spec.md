@@ -64,31 +64,41 @@ Error cases:
 
 Behaves identically to `/signIn` but requires an API key. This endpoint exists to match the Firebase API surface and to enforce API key usage in server-to-server calls.
 
-### POST /v1/accounts/signUp
+### POST /v1/admin/identity/directory/users
 
-Creates a user. The caller must supply `X-API-Key` and a provenance-bound platform-admin RS256 access token in the `Authorization` header. Only `Bearer <jwt>` is accepted, and authority is validated before the request body or user service is processed.
+Creates a global directory user. The caller must supply `X-API-Key` and a provenance-bound platform-admin RS256 access token. The temporary password is request-only, is persisted only as a bcrypt hash, and blocks every normal session/token path until it is changed.
 
 Request:
 
 ```json
 {
   "email": "new@company.com",
-  "password": "secret",
-  "role": "COMPANY_EMPLOYEE"
+  "temporaryPassword": "OneTimeSecret123"
 }
 ```
 
-Response 200:
+Response 201:
 
 ```json
 {
-  "localId": "uuid",
+  "id": "uuid",
   "email": "new@company.com",
+  "status": "ACTIVE",
+  "authSource": "PASSWORD",
+  "passwordChangeRequired": true,
   "createdAt": "2026-01-28T12:00:00Z"
 }
 ```
 
-`email` must be globally unique. `role` defaults to `COMPANY_EMPLOYEE` when omitted.
+`email` is normalized and globally unique. No membership, including a
+membership in a tenant named `default`, is created.
+
+### POST /v1/accounts/changeTemporaryPassword
+
+Accepts `email`, `temporaryPassword`, and `newPassword`. A successful response
+is 204 and invalidates older tokens by incrementing the internal token version.
+The route never returns either password or issues a session. A subsequent
+normal sign-in is required.
 
 ### POST /v1/accounts/lookup
 
@@ -760,18 +770,28 @@ Response 200:
 }
 ```
 
-## Membership storage contract (internal admin)
+## Identity directory and access contract (internal admin)
 
-The internal exact-target membership API requires the API key exclusively in
-`X-API-Key` and a strict RS256 bearer for the configured issuer and Code Admin
-audience. Workload-facing directory and access administration is exposed by
-Code Admin Identity V2; Tikti no longer exposes email-based membership routes.
+Canonical administration lives under `/v1/admin/identity`. User and group
+collections are bounded to 200 items per page and use opaque query-bound
+cursors. Directory responses never contain password material, token versions,
+or external federation subjects. Workload administrators may search only the
+identities already authorized in their signed tenant; an exact normalized email
+is the sole exception used to resolve an external user before granting access.
 
-`GET /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts a single 1–128 character ASCII user ID segment (`[A-Za-z0-9._:-]`), except for the complete dot-segments `.` and `..`. Those aliases return 400 before any storage read; dots embedded in an otherwise valid ID remain supported.
+Direct and group assignments use
+`/v1/admin/identity/tenants/{tenantId}/access-assignments/...`. PUT is
+idempotent; changes and deletes compare the quoted monotonic `ETag` supplied in
+`If-Match`. Effective access is the sorted union of direct and active-group
+roles with explicit `DIRECT` or `GROUP` provenance. The old membership HTTP
+routes are removed.
 
-`PUT /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts the exact body `{"roles":[...]}` only while membership v2 writes, exact reads, and tenant-scoped token claims are enabled for the same tenant allowlist. The RS256 bearer must carry `code-admin:tenants:admin`, the persisted `ADMIN` role, and Tikti's `tikti_platform_privilege=platform-admin` issuance claim. A `COMPANY_ADMIN` token or an older scope-only token cannot write a membership, including across tenant boundaries.
-
-The v2 write atomically stores identical v2 and compatibility projections on a single Redis/Kvrocks node. Every server and bootstrap legacy writer, including processes started with the v2 write route disabled, permanently rejects create, update, and delete with a membership conflict whenever the target pair has either v2 marker; no route flag restores an unguarded legacy path. Legacy-only pairs remain writable for compatibility. Roll out this guard to the entire server and bootstrap fleet while the v2 route is still disabled. Roll back route exposure by disabling the v2 write flag while retaining the guarded image; do not restore an older unguarded image or manually delete one projection until an audited reconciliation proves no v2-owned pair remains.
+At startup Tikti indexes legacy users and projects legacy memberships into
+direct assignments before accepting traffic. The migration is bounded and
+restart-safe: an incomplete run resumes, while its completion marker freezes
+legacy input so edits and revocations in V2 are never overwritten or
+resurrected. `identityGroupsV1` gates group mutations only and defaults off;
+disabling it is a data-preserving rollback.
 
 ## Client management (admin)
 

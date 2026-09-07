@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
@@ -47,6 +48,7 @@ type workloadAccountBFFService struct {
 	users       workloadAccountUserStore
 	memberships workloadAccountMembershipReader
 	writer      MembershipV2WriteService
+	access      repository.IdentityDirectoryRepository
 	tokens      workloadAccountTokenService
 	clients     map[string]config.WorkloadAccountBFFClientConfig
 	now         func() time.Time
@@ -59,6 +61,7 @@ func NewWorkloadAccountBFFService(
 	writer MembershipV2WriteService,
 	tokens workloadAccountTokenService,
 	clients []config.WorkloadAccountBFFClientConfig,
+	access ...repository.IdentityDirectoryRepository,
 ) WorkloadAccountBFFService {
 	bySubject := make(map[string]config.WorkloadAccountBFFClientConfig, len(clients))
 	for _, client := range clients {
@@ -66,10 +69,14 @@ func NewWorkloadAccountBFFService(
 		client.Scopes = append([]string(nil), client.Scopes...)
 		bySubject[subject] = client
 	}
-	return &workloadAccountBFFService{
+	service := &workloadAccountBFFService{
 		verifier: verifier, users: users, memberships: memberships, writer: writer,
 		tokens: tokens, clients: bySubject, now: time.Now,
 	}
+	if len(access) == 1 {
+		service.access = access[0]
+	}
+	return service
 }
 
 func (s *workloadAccountBFFService) Register(
@@ -89,8 +96,17 @@ func (s *workloadAccountBFFService) Register(
 	if err != nil {
 		return nil, false, err
 	}
-	membership, _, err := s.writer.Ensure(ctx, client.TenantID, user.Id, []string{client.Role})
-	if err != nil || !validWorkloadAccountMembership(membership, client, user.Id) {
+	validAssignment := false
+	if s.access != nil {
+		assignment, _, assignmentErr := s.access.PutAccessAssignment(ctx, client.TenantID, domain.AccessPrincipalUser, user.Id, []string{client.Role}, "")
+		err = assignmentErr
+		validAssignment = assignment != nil && assignment.TenantID == client.TenantID && assignment.PrincipalID == user.Id && assignment.PrincipalType == domain.AccessPrincipalUser && slices.Equal(assignment.Roles, []string{client.Role})
+	} else {
+		membership, _, membershipErr := s.writer.Ensure(ctx, client.TenantID, user.Id, []string{client.Role})
+		err = membershipErr
+		validAssignment = validWorkloadAccountMembership(membership, client, user.Id)
+	}
+	if err != nil || !validAssignment {
 		if created {
 			_ = s.users.DeleteByEmail(ctx, user.Email)
 		}
@@ -118,7 +134,7 @@ func (s *workloadAccountBFFService) Session(
 	if err != nil {
 		return nil, err
 	}
-	if s.users == nil || s.memberships == nil || s.tokens == nil {
+	if s.users == nil || s.tokens == nil || s.access == nil && s.memberships == nil {
 		return nil, domain.ErrWorkloadAccountUnavailable
 	}
 	user, err := s.users.FindByEmail(ctx, credentials.Email)
@@ -129,12 +145,22 @@ func (s *workloadAccountBFFService) Session(
 		!utils.VerifyPassword(user.Password, credentials.Password) {
 		return nil, domain.ErrInvalidCreds
 	}
-	membership, err := s.memberships.Get(ctx, client.TenantID, user.Id)
-	if err != nil {
-		return nil, domain.ErrWorkloadAccountUnavailable
-	}
-	if !validWorkloadAccountMembership(membership, client, user.Id) {
-		return nil, domain.ErrWorkloadBindingDenied
+	if s.access != nil {
+		roles, _, accessErr := s.access.GetEffectiveTenantRoles(ctx, user.Id, client.TenantID)
+		if accessErr != nil {
+			return nil, domain.ErrWorkloadAccountUnavailable
+		}
+		if !slices.Contains(roles, client.Role) {
+			return nil, domain.ErrWorkloadBindingDenied
+		}
+	} else {
+		membership, membershipErr := s.memberships.Get(ctx, client.TenantID, user.Id)
+		if membershipErr != nil {
+			return nil, domain.ErrWorkloadAccountUnavailable
+		}
+		if !validWorkloadAccountMembership(membership, client, user.Id) {
+			return nil, domain.ErrWorkloadBindingDenied
+		}
 	}
 	identity, err := s.tokens.SignIn(ctx, domain.SignInReq{
 		Email: credentials.Email, Password: credentials.Password, ReturnSecureToken: true,
@@ -192,7 +218,7 @@ func (s *workloadAccountBFFService) ensurePasswordUser(
 	client config.WorkloadAccountBFFClientConfig,
 	credentials domain.WorkloadAccountCredentials,
 ) (*domain.User, bool, error) {
-	if s.users == nil || s.writer == nil {
+	if s.users == nil || s.writer == nil && s.access == nil {
 		return nil, false, domain.ErrWorkloadAccountUnavailable
 	}
 	existing, err := s.users.FindByEmail(ctx, credentials.Email)

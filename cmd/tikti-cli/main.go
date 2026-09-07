@@ -307,7 +307,7 @@ func tokenCmd(profileName *string, outputJSON *bool) *cobra.Command {
 }
 
 func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var email, password, role string
+	var email, temporaryPassword string
 	cmd := &cobra.Command{Use: "user", Short: "User administration"}
 	get := &cobra.Command{
 		Use:   "get",
@@ -336,7 +336,7 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	cmd.AddCommand(get)
 	create := &cobra.Command{
 		Use:   "create",
-		Short: "Create user",
+		Short: "Create a global directory user with a temporary password",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			prof, err := loadProfile(*profileName)
 			if err != nil {
@@ -345,15 +345,15 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if email == "" {
 				email = prompt("Email", "", false)
 			}
-			if password == "" {
-				password = prompt("Password", "", true)
+			if temporaryPassword == "" {
+				temporaryPassword = prompt("Temporary password", "", true)
 			}
 			token, err := tenantAdministrationAccessToken(prof)
 			if err != nil {
 				return err
 			}
-			body := map[string]any{"email": email, "password": password, "role": role}
-			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/signUp", token, prof.ApiKey, body)
+			body := map[string]any{"email": email, "temporaryPassword": temporaryPassword}
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/admin/identity/directory/users", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -361,8 +361,7 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 		},
 	}
 	create.Flags().StringVar(&email, "email", "", "User email")
-	create.Flags().StringVar(&password, "password", "", "User password")
-	create.Flags().StringVar(&role, "role", "COMPANY_EMPLOYEE", "User role")
+	create.Flags().StringVar(&temporaryPassword, "temporary-password", "", "One-time password that must be changed before sign-in")
 	cmd.AddCommand(create)
 
 	del := &cobra.Command{

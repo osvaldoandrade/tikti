@@ -41,7 +41,7 @@ Emails: `valid.user@acme.test`, `unknown@acme.test`, `admin@acme.test`, `saml.us
 | `PF-19` Service membership | `CF-19-01..06` | valid create/remove/list, missing user, missing tenant, repo error | empty roles | response and effects follow domain rules |
 | `PF-20` Service role | `CF-20-01..06` | valid create/list, duplicate role, resolve permissions, repo error | empty/duplicate permissions | canonical permission set |
 | `PF-21` Service tenant | `CF-21-01..05` | valid create/get/default, missing tenant, repo error | empty/invalid slug | tenant output according to rules |
-| `PF-22` Service user basic auth | `CF-22-01..07` | valid signIn/signUp/lookup, invalid credentials, suspended/inactive user, invalid token | empty email/password | auth and lookup according to SPEC |
+| `PF-22` Service user basic auth | `CF-22-01..07` | valid sign-in/lookup, forced temporary-password rotation, invalid credentials, suspended/inactive user, invalid token | empty email/password | auth and lookup according to SPEC |
 | `PF-23` Service user OOB | `CF-23-01..08` | sendOob, sendOobForTenant, signInWithOobCode, resetPassword; invalid/expired/consumed code | non-existent email, mismatched requestType | OOB flow according to SPEC |
 | `PF-24` Service user token/JWKS | `CF-24-01..08` | valid/invalid tokenExchange, validate token, JWKS build, key parse fail, claim mismatch | ttl 0/max, empty scopes | strict claims/aud/iss/scope/eventTypes |
 | `PF-25` Service user admin ops | `CF-25-01..07` | valid setStatus/revoke/update/delete/getAll, missing user, invalid status/scope | status outside enum | final user state |
@@ -74,13 +74,8 @@ Legend: `Matrix ID` is the identifier in the test plan. `PF Profile` is the func
 | `internal/controllers/delete_controller.go:Handle` | `M-CTRL-DELETE-HANDLE` | `PF-07` | `CF-07-01..06` | Admin mutations with status codes |
 | `internal/controllers/jwks_controller.go:NewJWKSController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/controllers/jwks_controller.go:Handle` | `M-CTRL-JWKS-HANDLE` | `PF-06` | `CF-06-01..07` | Auth/OOB contract according to SPEC |
-| `internal/controllers/list_controller.go:NewListController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
-| `internal/controllers/list_controller.go:Handle` | `M-CTRL-LIST-HANDLE` | `PF-05` | `CF-05-01..05` | HTTP read with parse and response contract |
 | `internal/controllers/lookup_controller.go:NewLookupController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/controllers/lookup_controller.go:Handle` | `M-CTRL-LOOKUP-HANDLE` | `PF-06` | `CF-06-01..07` | Auth/OOB contract according to SPEC |
-| `internal/controllers/membership_controller.go:NewMembershipController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
-| `internal/controllers/membership_controller.go:Create` | `M-CTRL-MEMBERSHIP-CREATE` | `PF-04` | `CF-04-01..05` | HTTP write with bind+validation+service |
-| `internal/controllers/membership_controller.go:Remove` | `M-CTRL-MEMBERSHIP-REMOVE` | `PF-07` | `CF-07-01..06` | Admin mutations with status codes |
 | `internal/controllers/oob_controller.go:NewOobSendController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/controllers/oob_controller.go:NewOobResetController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/controllers/oob_controller.go:Handle` | `M-CTRL-OOB-SEND-HANDLE` | `PF-06` | `CF-06-01..07` | Auth/OOB contract according to SPEC |
@@ -92,8 +87,6 @@ Legend: `Matrix ID` is the identifier in the test plan. `PF Profile` is the func
 | `internal/controllers/role_controller.go:NewRoleController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/controllers/role_controller.go:Create` | `M-CTRL-ROLE-CREATE` | `PF-04` | `CF-04-01..05` | HTTP write with bind+validation+service |
 | `internal/controllers/role_controller.go:List` | `M-CTRL-ROLE-LIST` | `PF-05` | `CF-05-01..05` | HTTP read with parse and response contract |
-| `internal/controllers/signup_controller.go:NewSignUpController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
-| `internal/controllers/signup_controller.go:Handle` | `M-CTRL-SIGNUP-HANDLE` | `PF-06` | `CF-06-01..07` | Auth/OOB contract according to SPEC |
 | `internal/controllers/singin_controller.go:NewSignInController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/controllers/singin_controller.go:Handle` | `M-CTRL-SIGNIN-HANDLE` | `PF-06` | `CF-06-01..07` | Auth/OOB contract according to SPEC |
 | `internal/controllers/tenant_controller.go:NewTenantController` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
@@ -139,7 +132,6 @@ Legend: `Matrix ID` is the identifier in the test plan. `PF Profile` is the func
 | `internal/repository/user_repository.go:IncrementTokenVersion` | `M-REPO-USER-IncrementTokenVersion` | `PF-15` | `CF-15-01..05` | Status/tokenVersion updated correctly |
 | `internal/repository/user_repository.go:SaveOobCode` | `M-REPO-USER-SaveOobCode` | `PF-16` | `CF-16-01..06` | OOB single-use + requestType enforcement |
 | `internal/repository/user_repository.go:ConsumeOobCode` | `M-REPO-USER-ConsumeOobCode` | `PF-16` | `CF-16-01..06` | OOB single-use + requestType enforcement |
-| `internal/repository/user_repository.go:GetAllUsers` | `M-REPO-USER-GetAllUsers` | `PF-13` | `CF-13-01..05` | Get/List/Ensure with not-found and success paths |
 | `internal/repository/user_repository.go:oobKey` | `M-REPO-USER-oobKey` | `PF-11` | `CF-11-01..03` | Canonical persistence key |
 | `internal/repository/user_repository.go:coerceString` | `M-REPO-USER-coerceString` | `PF-17` | `CF-17-01..05` | Deterministic legacy compatibility |
 | `internal/repository/user_repository.go:consumeLegacyOobCode` | `M-REPO-USER-consumeLegacyOobCode` | `PF-17` | `CF-17-01..05` | Deterministic legacy compatibility |
@@ -152,10 +144,6 @@ Legend: `Matrix ID` is the identifier in the test plan. `PF Profile` is the func
 | `internal/services/client_service.go:Create` | `M-SVC-CLIENT-Create` | `PF-18` | `CF-18-01..07` | Client domain mapping + validations |
 | `internal/services/client_service.go:Get` | `M-SVC-CLIENT-Get` | `PF-18` | `CF-18-01..07` | Client domain mapping + validations |
 | `internal/services/client_service.go:List` | `M-SVC-CLIENT-List` | `PF-18` | `CF-18-01..07` | Client domain mapping + validations |
-| `internal/services/membership_service.go:NewMembershipService` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
-| `internal/services/membership_service.go:Create` | `M-SVC-MEMBERSHIP-Create` | `PF-19` | `CF-19-01..06` | Membership rules and consistency |
-| `internal/services/membership_service.go:Remove` | `M-SVC-MEMBERSHIP-Remove` | `PF-19` | `CF-19-01..06` | Membership rules and consistency |
-| `internal/services/membership_service.go:ListTenantIDsByUser` | `M-SVC-MEMBERSHIP-ListTenantIDsByUser` | `PF-19` | `CF-19-01..06` | Membership rules and consistency |
 | `internal/services/role_service.go:NewRoleService` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/services/role_service.go:Create` | `M-SVC-ROLE-Create` | `PF-20` | `CF-20-01..06` | Role/permission set canonical |
 | `internal/services/role_service.go:List` | `M-SVC-ROLE-List` | `PF-20` | `CF-20-01..06` | Role/permission set canonical |
@@ -187,8 +175,6 @@ Legend: `Matrix ID` is the identifier in the test plan. `PF Profile` is the func
 | `internal/services/user_service.go:SendOob` | `M-SVC-USER-SendOob` | `PF-23` | `CF-23-01..08` | OOB email/password flow according to SPEC |
 | `internal/services/user_service.go:SendOobForTenant` | `M-SVC-USER-SendOobForTenant` | `PF-23` | `CF-23-01..08` | OOB email/password flow according to SPEC |
 | `internal/services/user_service.go:ResetPassword` | `M-SVC-USER-ResetPassword` | `PF-23` | `CF-23-01..08` | OOB email/password flow according to SPEC |
-| `internal/services/user_service.go:SignUp` | `M-SVC-USER-SignUp` | `PF-22` | `CF-22-01..07` | Basic auth and lookup according to SPEC |
-| `internal/services/user_service.go:GetAllUsers` | `M-SVC-USER-GetAllUsers` | `PF-25` | `CF-25-01..07` | Admin user operations with audit guarantees |
 | `internal/services/user_service.go:issueIDToken` | `M-SVC-USER-issueIDToken` | `PF-24` | `CF-24-01..08` | Tokens/JWKS/claims validated |
 | `internal/utils/api_key.go:ApiKey` | `M-UTIL-APIKEY` | `PF-27` | `CF-27-01..04` | API key middleware accepts/rejects |
 | `internal/utils/jwks.go:BuildJWKS` | `M-UTIL-JWKS-BuildJWKS` | `PF-28` | `CF-28-01..06` | JWT/JWKS parse+verify with errors |

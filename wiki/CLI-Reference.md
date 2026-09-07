@@ -73,10 +73,10 @@ The CLI includes the profile's idToken in the Authorization header when calling 
 
 The CLI exposes a `user` command group for account lifecycle operations. These commands require an admin token and operate globally; tenant access belongs to Code Admin Identity V2.
 
-`user create` creates a user with email, password, and a role. This maps to `POST /v1/accounts/signUp` and uses the admin token in the Authorization header. The CLI never prints the password after submission.
+`user create` creates a global directory user with an administrator-supplied temporary password. This maps to `POST /v1/admin/identity/directory/users`, uses the admin token in the Authorization header, and never prints the password after submission.
 
 ```bash
-tikti-cli user create --email user@company.com --password 'Secret123' --role COMPANY_EMPLOYEE
+tikti-cli user create --email user@company.com --temporary-password 'OneTimeSecret123'
 ```
 
 `user get` fetches identity metadata for the current idToken. This maps to `lookup`.

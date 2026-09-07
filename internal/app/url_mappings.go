@@ -14,10 +14,9 @@ import (
 )
 
 // SetupMappings registers every public and protected route with their respective controllers.
-func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService, workloadAccountService services.WorkloadAccountBFFService, samlStore saml.Store, samlMetrics *saml.Metrics) {
+func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService, workloadAccountService services.WorkloadAccountBFFService, samlStore saml.Store, samlMetrics *saml.Metrics) {
 	v1 := engine.Group("/v1")
 
-	v1.POST("/accounts/signUp", utils.RequiredApiKeyHeader(cfg.ApiKey), controllers.NewSignUpController(userService, cfg).Handle)
 	signInCtrl := controllers.NewSignInController(userService, cfg)
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
 	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
@@ -99,6 +98,40 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	}
 }
 
+func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, service services.IdentityDirectoryService) {
+	if engine == nil || cfg == nil || service == nil {
+		return
+	}
+	controller := controllers.NewIdentityDirectoryController(service, cfg)
+	// Temporary-password rotation is credential-authenticated and issues no
+	// session. All administrative directory routes additionally require the
+	// private service API key and a validated RS256 administrative bearer.
+	engine.POST("/v1/accounts/changeTemporaryPassword", identityDirectoryContractMarker, controller.ChangeTemporaryPassword)
+	routes := engine.Group("/v1/admin/identity", identityDirectoryContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
+	routes.GET("/directory/users", controller.ListUsers)
+	routes.POST("/directory/users", controller.CreateUser)
+	routes.GET("/directory/users/:userId", controller.GetUser)
+	routes.GET("/directory/users/:userId/access", controller.GetUserAccess)
+	routes.GET("/directory/groups", controller.ListGroups)
+	routes.POST("/directory/groups", controller.CreateGroup)
+	routes.GET("/directory/groups/:groupId", controller.GetGroup)
+	routes.PATCH("/directory/groups/:groupId", controller.PatchGroup)
+	routes.DELETE("/directory/groups/:groupId", controller.DeleteGroup)
+	routes.PUT("/directory/groups/:groupId/members/:userId", controller.PutGroupMember)
+	routes.DELETE("/directory/groups/:groupId/members/:userId", controller.DeleteGroupMember)
+	routes.GET("/tenants/:tenantId/access-assignments", controller.ListAssignments)
+	routes.GET("/tenants/:tenantId/access-assignments/users/:userId", controller.GetUserAssignment)
+	routes.PUT("/tenants/:tenantId/access-assignments/users/:userId", controller.PutUserAssignment)
+	routes.DELETE("/tenants/:tenantId/access-assignments/users/:userId", controller.DeleteUserAssignment)
+	routes.PUT("/tenants/:tenantId/access-assignments/groups/:groupId", controller.PutGroupAssignment)
+	routes.DELETE("/tenants/:tenantId/access-assignments/groups/:groupId", controller.DeleteGroupAssignment)
+}
+
+func identityDirectoryContractMarker(c *gin.Context) {
+	c.Header("X-Tikti-Contract", "identity-directory-v2")
+	c.Next()
+}
+
 func setupStorageSTSMappings(engine *gin.Engine, cfg *config.Config, controller *storagests.Controller) {
 	if engine == nil || cfg == nil || !cfg.StorageSTS.Enabled || controller == nil {
 		return
@@ -151,35 +184,4 @@ func setupObjectStorageBrowserMappings(engine *gin.Engine, cfg *config.Config, c
 		routes.GET(path+"/", controller.Reject)
 		routes.POST(path+"/", controller.Reject)
 	}
-}
-
-func setupExactMembershipReadMappings(engine *gin.Engine, cfg *config.Config, service services.ExactMembershipReadService) {
-	if engine == nil || cfg == nil || !cfg.ExactMembershipReadRoutesV1 || service == nil {
-		return
-	}
-	controller := controllers.NewExactMembershipReadController(service, cfg)
-	routes := engine.Group("/v1/admin/tenants/:tenantId/memberships", exactMembershipContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
-	routes.GET("", controller.List)
-	routes.GET("/:userId", controller.Get)
-}
-
-func exactMembershipContractMarker(c *gin.Context) {
-	c.Header("X-Tikti-Contract", "exact-memberships-v1")
-	c.Next()
-}
-
-func setupMembershipV2WriteMappings(engine *gin.Engine, cfg *config.Config, service services.MembershipV2WriteService) {
-	if engine == nil || cfg == nil || !cfg.MembershipV2WriteRoutesV1 || service == nil {
-		return
-	}
-	controller := controllers.NewMembershipV2WriteController(service, cfg)
-	routes := engine.Group("/v1/admin/tenants/:tenantId/memberships", membershipV2WriteContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
-	routes.PUT("/:userId", controller.Put)
-	// Register the slash alias so Gin cannot redirect a privileged write.
-	routes.PUT("/:userId/", controller.Put)
-}
-
-func membershipV2WriteContractMarker(c *gin.Context) {
-	c.Header("X-Tikti-Contract", "membership-v2-write-v1")
-	c.Next()
 }

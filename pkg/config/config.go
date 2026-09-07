@@ -41,11 +41,7 @@ type Config struct {
 	TenantScopedTokenClaimsV1Tenants        []string                   `yaml:"tenantScopedTokenClaimsV1Tenants"`
 	TenantTargetDiscoveryV2                 bool                       `yaml:"tenantTargetDiscoveryV2"`
 	TenantTargetDiscoveryV2PrincipalTenants []string                   `yaml:"tenantTargetDiscoveryV2PrincipalTenants"`
-	ExactMembershipReadRoutesV1             bool                       `yaml:"exactMembershipReadRoutesV1"`
-	ExactMembershipReadRoutesV1Tenants      []string                   `yaml:"exactMembershipReadRoutesV1Tenants"`
-	ExactMembershipPageTokenSecret          string                     `yaml:"-"`
-	MembershipV2WriteRoutesV1               bool                       `yaml:"membershipV2WriteRoutesV1"`
-	MembershipV2WriteRoutesV1Tenants        []string                   `yaml:"membershipV2WriteRoutesV1Tenants"`
+	IdentityGroupsV1                        bool                       `yaml:"identityGroupsV1"`
 }
 
 // HTTPConfig defines the public server boundary.
@@ -414,58 +410,15 @@ func LoadConfig(filePath string) (*Config, error) {
 	if c.TenantTargetDiscoveryV2 && !c.TenantScopedTokenClaimsV1 {
 		return nil, fmt.Errorf("tenantTargetDiscoveryV2 requires tenantScopedTokenClaimsV1 while the v1 fallback remains active")
 	}
-	if raw, exists := os.LookupEnv("EXACT_MEMBERSHIP_READ_ROUTES_V1"); exists {
+	if raw, exists := os.LookupEnv("IDENTITY_GROUPS_V1"); exists {
 		switch strings.TrimSpace(raw) {
 		case "true":
-			c.ExactMembershipReadRoutesV1 = true
+			c.IdentityGroupsV1 = true
 		case "false":
-			c.ExactMembershipReadRoutesV1 = false
+			c.IdentityGroupsV1 = false
 		default:
-			return nil, fmt.Errorf("EXACT_MEMBERSHIP_READ_ROUTES_V1 must be true or false")
+			return nil, fmt.Errorf("IDENTITY_GROUPS_V1 must be true or false")
 		}
-	}
-	if raw, exists := os.LookupEnv("EXACT_MEMBERSHIP_READ_ROUTES_V1_TENANTS"); exists {
-		c.ExactMembershipReadRoutesV1Tenants = nil
-		if strings.TrimSpace(raw) != "" {
-			c.ExactMembershipReadRoutesV1Tenants = strings.Split(raw, ",")
-		}
-	}
-	c.ExactMembershipReadRoutesV1Tenants, err = canonicalNamedTenantAllowlist("exactMembershipReadRoutesV1Tenants", c.ExactMembershipReadRoutesV1Tenants)
-	if err != nil {
-		return nil, err
-	}
-	if c.ExactMembershipReadRoutesV1 && len(c.ExactMembershipReadRoutesV1Tenants) == 0 {
-		return nil, fmt.Errorf("exactMembershipReadRoutesV1 requires a non-empty tenant allowlist")
-	}
-	if c.ExactMembershipReadRoutesV1 {
-		if err = loadSecretFile("EXACT_MEMBERSHIP_PAGE_TOKEN_SECRET_FILE", &c.ExactMembershipPageTokenSecret); err != nil {
-			return nil, err
-		}
-	}
-	if raw, exists := os.LookupEnv("MEMBERSHIP_V2_WRITE_ROUTES_V1"); exists {
-		switch strings.TrimSpace(raw) {
-		case "true":
-			c.MembershipV2WriteRoutesV1 = true
-		case "false":
-			c.MembershipV2WriteRoutesV1 = false
-		default:
-			return nil, fmt.Errorf("MEMBERSHIP_V2_WRITE_ROUTES_V1 must be true or false")
-		}
-	}
-	if raw, exists := os.LookupEnv("MEMBERSHIP_V2_WRITE_ROUTES_V1_TENANTS"); exists {
-		c.MembershipV2WriteRoutesV1Tenants = nil
-		if strings.TrimSpace(raw) != "" {
-			c.MembershipV2WriteRoutesV1Tenants = strings.Split(raw, ",")
-		}
-	}
-	c.MembershipV2WriteRoutesV1Tenants, err = canonicalNamedTenantAllowlist("membershipV2WriteRoutesV1Tenants", c.MembershipV2WriteRoutesV1Tenants)
-	if err != nil {
-		return nil, err
-	}
-	if c.MembershipV2WriteRoutesV1 && (!c.TenantScopedTokenClaimsV1 || !c.ExactMembershipReadRoutesV1 || len(c.MembershipV2WriteRoutesV1Tenants) == 0 ||
-		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.ExactMembershipReadRoutesV1Tenants) ||
-		!slices.Equal(c.MembershipV2WriteRoutesV1Tenants, c.TenantScopedTokenClaimsV1Tenants)) {
-		return nil, fmt.Errorf("membershipV2WriteRoutesV1 requires matching exact-read and tenant-scope canary allowlists")
 	}
 	if c.IssuerBaseURL == "" {
 		log.Println("WARNING: IssuerBaseURL not set. Using http://localhost:8080")
@@ -812,8 +765,8 @@ func validateWorkloadAccountBFF(c *Config) error {
 	if strings.TrimSpace(c.WorkloadIdentity.Issuer) == "" && len(c.WorkloadIdentity.Providers) == 0 {
 		return fmt.Errorf("workloadAccountBFF requires workload identity verification")
 	}
-	if !c.TenantScopedTokenClaimsV1 || !c.ExactMembershipReadRoutesV1 || !c.MembershipV2WriteRoutesV1 {
-		return fmt.Errorf("workloadAccountBFF requires tenant-scoped tokens and exact membership reads and writes")
+	if !c.TenantScopedTokenClaimsV1 {
+		return fmt.Errorf("workloadAccountBFF requires tenant-scoped tokens")
 	}
 	seenSubjects := make(map[string]struct{}, len(broker.Clients))
 	for index := range broker.Clients {
@@ -831,9 +784,7 @@ func validateWorkloadAccountBFF(c *Config) error {
 			!validWorkloadAccountName(client.Role, 128) || client.Role == "ADMIN" ||
 			client.Role == "COMPANY_ADMIN" || client.Role == "COMPANY_EMPLOYEE" ||
 			client.TTLSeconds < 60 || client.TTLSeconds > 3600 ||
-			!slices.Contains(c.TenantScopedTokenClaimsV1Tenants, client.TenantID) ||
-			!slices.Contains(c.ExactMembershipReadRoutesV1Tenants, client.TenantID) ||
-			!slices.Contains(c.MembershipV2WriteRoutesV1Tenants, client.TenantID) {
+			!slices.Contains(c.TenantScopedTokenClaimsV1Tenants, client.TenantID) {
 			return fmt.Errorf("workloadAccountBFF client %d is outside the exact tenant workload boundary", index)
 		}
 		if !validWorkloadAccountScopes(client.Audience, client.Scopes) {

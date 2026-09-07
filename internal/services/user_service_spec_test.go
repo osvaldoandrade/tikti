@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"crypto/rsa"
-	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -363,22 +362,6 @@ func TestUserServiceSpec_ResetPassword_RejectsMalformedPayload(t *testing.T) {
 	}
 	if consumeCalls != 0 {
 		t.Fatalf("consume must not run for malformed payload, got %d calls", consumeCalls)
-	}
-}
-
-func TestUserServiceSpec_SignUp_RepositoryLookupFailurePropagates(t *testing.T) {
-	repo := &mockUserRepo{}
-	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
-		return nil, errors.New("repo unavailable")
-	}
-
-	svc := NewUserService(repo, nil, nil, nil, "secret", "https://api.storifly.ai", "tikti", makePEMKey(t), "kid").(*userService)
-	_, err := svc.SignUp(context.Background(), domain.SignUpReq{
-		Email:    "new@company.com",
-		Password: "secret",
-	})
-	if err == nil || err.Error() != "repo unavailable" {
-		t.Fatalf("expected repository lookup error to propagate, got %v", err)
 	}
 }
 

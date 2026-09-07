@@ -14,59 +14,6 @@ import (
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
-func TestSignUpController_Handle(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	cfg, key := roleAccessConfig(t)
-	cfg.JwtSecret = "s1"
-	svc := &fakeUserService{}
-	ctrl := NewSignUpController(svc, cfg)
-	r := gin.New()
-	r.POST("/signup", ctrl.Handle)
-
-	rec := performJSON(t, r, http.MethodPost, "/signup", nil, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rec.Code)
-	}
-
-	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rec.Code)
-	}
-
-	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, "Bearer bad")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", rec.Code)
-	}
-
-	nonAdmin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
-		"sub": "tenant-admin", "role": string(domain.RoleAdmin), "scope": tenantIdentityWriteScope, "tid": "bereia",
-	})
-	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, nonAdmin)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", rec.Code)
-	}
-
-	svc.signUpFn = func(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error) {
-		return nil, errors.New("boom")
-	}
-	admin := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
-		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope, "tid": "home",
-		domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
-	})
-	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-
-	svc.signUpFn = func(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error) {
-		return &domain.SignUpResp{LocalId: "u1", Email: req.Email}, nil
-	}
-	rec = performJSON(t, r, http.MethodPost, "/signup", domain.SignUpReq{Email: "a@x.com", Password: "p"}, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-}
-
 func TestSignInController_Handle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &fakeUserService{}
@@ -168,18 +115,16 @@ func TestTokenExchangeController_Handle(t *testing.T) {
 	}
 }
 
-func TestUpdateDeleteListControllers_Handle(t *testing.T) {
+func TestUpdateDeleteControllers_Handle(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc := &fakeUserService{}
 
 	update := NewUpdateController(svc, &config.Config{})
 	del := NewDeleteController(svc, &config.Config{})
-	list := NewListController(svc, &config.Config{})
 
 	r := gin.New()
 	r.POST("/update", update.Handle)
 	r.POST("/delete", del.Handle)
-	r.GET("/users", list.Handle)
 
 	rec := performJSON(t, r, http.MethodPost, "/update", nil, "")
 	if rec.Code != http.StatusBadRequest {
@@ -213,17 +158,6 @@ func TestUpdateDeleteListControllers_Handle(t *testing.T) {
 	rec = performJSON(t, r, http.MethodPost, "/delete", domain.DeleteReq{IdToken: "x"}, "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "DeleteAccountResponse") {
 		t.Fatalf("delete ok unexpected: code=%d body=%s", rec.Code, rec.Body.String())
-	}
-
-	svc.getAllUsersFn = func(ctx context.Context) ([]*domain.User, error) { return nil, errors.New("boom") }
-	rec = performJSON(t, r, http.MethodGet, "/users", nil, "")
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("list err: expected 500, got %d", rec.Code)
-	}
-	svc.getAllUsersFn = func(ctx context.Context) ([]*domain.User, error) { return []*domain.User{{Id: "u1"}}, nil }
-	rec = performJSON(t, r, http.MethodGet, "/users", nil, "")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list ok: expected 200, got %d", rec.Code)
 	}
 }
 

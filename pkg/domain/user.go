@@ -74,20 +74,9 @@ type User struct {
 	CreatedAt       time.Time  `json:"createdAt"`
 	AuthSource      AuthSource `json:"authSource"`
 	ExternalSubject string     `json:"externalSubject"`
-}
-
-// SignUpReq holds the payload expected when an admin creates a new user.
-type SignUpReq struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Role     string `json:"role,omitempty"`
-}
-
-// SignUpResp captures the subset of data echoed back after a successful creation.
-type SignUpResp struct {
-	LocalId   string    `json:"localId"`
-	Email     string    `json:"email"`
-	CreatedAt time.Time `json:"createdAt"`
+	// PasswordChangeRequired prevents administrator-supplied temporary
+	// credentials from creating a normal session before rotation.
+	PasswordChangeRequired bool `json:"passwordChangeRequired,omitempty"`
 }
 
 // SignInReq represents the password-based sign-in payload.

@@ -101,7 +101,6 @@ func main() {
 		cfg,
 		application.UserService,
 		application.TenantSvc,
-		application.MemberSvc,
 		application.RoleSvc,
 		application.ClientSvc,
 		application.WorkloadSvc,

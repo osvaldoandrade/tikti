@@ -30,9 +30,6 @@ func (f *fakeRepo) UpdateUser(_ context.Context, user *domain.User) error {
 	return f.updateErr
 }
 func (f *fakeRepo) DeleteByEmail(context.Context, string) error { return nil }
-func (f *fakeRepo) GetAllUsers(context.Context) ([]*domain.User, error) {
-	return nil, nil
-}
 func (f *fakeRepo) SetStatus(context.Context, string, domain.UserStatus) (*domain.User, error) {
 	return nil, nil
 }

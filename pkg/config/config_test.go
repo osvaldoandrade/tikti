@@ -399,10 +399,6 @@ func TestLoadConfig_WorkloadAccountBFFExactClient(t *testing.T) {
 	path := writeTempConfig(t, `
 tenantScopedTokenClaimsV1: true
 tenantScopedTokenClaimsV1Tenants: [bereia]
-exactMembershipReadRoutesV1: true
-exactMembershipReadRoutesV1Tenants: [bereia]
-membershipV2WriteRoutesV1: true
-membershipV2WriteRoutesV1Tenants: [bereia]
 workloadIdentity:
   issuer: https://kubernetes.example.test
   jwksUrl: https://kubernetes.example.test/openid/v1/jwks
@@ -437,10 +433,6 @@ func TestLoadConfig_WorkloadAccountBFFFailsClosed(t *testing.T) {
 	base := `
 tenantScopedTokenClaimsV1: true
 tenantScopedTokenClaimsV1Tenants: [bereia]
-exactMembershipReadRoutesV1: true
-exactMembershipReadRoutesV1Tenants: [bereia]
-membershipV2WriteRoutesV1: true
-membershipV2WriteRoutesV1Tenants: [bereia]
 workloadIdentity:
   issuer: https://kubernetes.example.test
   jwksUrl: https://kubernetes.example.test/openid/v1/jwks

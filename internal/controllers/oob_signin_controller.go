@@ -33,6 +33,8 @@ func (ctrl *oobSignInController) Handle(c *gin.Context) {
 	result := <-ch
 	if err, ok := result.(error); ok {
 		switch err {
+		case domain.ErrPasswordChangeRequired:
+			c.JSON(http.StatusPreconditionRequired, gin.H{"error": err.Error(), "code": "PASSWORD_CHANGE_REQUIRED"})
 		case domain.ErrInvalidArgument:
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		case domain.ErrInvalidOob, domain.ErrInvalidCreds, domain.ErrNotFound:

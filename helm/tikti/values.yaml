@@ -67,10 +67,7 @@ config:
   tenantScopedTokenClaimsV1Tenants: []
   tenantTargetDiscoveryV2: false
   tenantTargetDiscoveryV2PrincipalTenants: []
-  exactMembershipReadRoutesV1: false
-  exactMembershipReadRoutesV1Tenants: []
-  membershipV2WriteRoutesV1: false
-  membershipV2WriteRoutesV1Tenants: []
+  identityGroupsV1: false
   workloadIdentity:
     clusterRef: ""
     issuer: ""

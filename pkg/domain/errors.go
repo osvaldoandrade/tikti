@@ -7,6 +7,16 @@ var (
 	ErrEmailExists = errors.New("email already registered")
 	// ErrInvalidCreds indicates the credentials were incorrect or missing.
 	ErrInvalidCreds = errors.New("invalid credentials")
+	// ErrPasswordChangeRequired is returned without issuing a normal session.
+	ErrPasswordChangeRequired = errors.New("password change required")
+	// ErrVersionConflict protects mutable directory records from lost updates.
+	ErrVersionConflict = errors.New("version conflict")
+	// ErrGroupMutationsDisabled keeps the initially dark Groups rollout read-only.
+	ErrGroupMutationsDisabled = errors.New("group mutations are disabled")
+	// ErrGroupExists indicates another global group owns the normalized name.
+	ErrGroupExists = errors.New("group already exists")
+	// ErrDirectoryInvariant signals corrupt or ambiguous indexed identity data.
+	ErrDirectoryInvariant = errors.New("identity directory invariant violated")
 	// ErrInvalidToken indicates the supplied token is malformed or invalid.
 	ErrInvalidToken = errors.New("invalid token")
 	// ErrInvalidAudience indicates the supplied audience is missing or not allowed.

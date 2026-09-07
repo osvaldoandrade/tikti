@@ -190,7 +190,10 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/accounts/signUp` | POST | Register a new user account (`X-API-Key` and platform-admin RS256 bearer required) |
+| `/admin/identity/directory/users` | GET, POST | Search the bounded safe directory or create a temporary-password user (`X-API-Key` and RS256 authority required) |
+| `/admin/identity/directory/groups` | GET, POST | Search reusable global groups or create one (`X-API-Key`; writes are flag-protected) |
+| `/admin/identity/tenants/:tenantId/access-assignments` | GET | List direct assignments for the explicit target tenant (`X-API-Key` and RS256 authority required) |
+| `/accounts/changeTemporaryPassword` | POST | Replace an administrator-issued temporary password before normal session issuance |
 | `/accounts/signIn` | POST | Authenticate and receive an HS256 idToken |
 | `/accounts/signInWithPassword` | POST | Password authentication (`X-API-Key`) |
 | `/accounts/lookup` | POST | Look up an account (`X-API-Key`) |
@@ -204,17 +207,14 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/tenants` | POST | Create a tenant (`X-API-Key` and platform-admin RS256 bearer required) |
-| `/tenants/:tenantId` | PUT | Create a deterministic tenant without overwrite (service API key and platform-admin access token required) |
-| `/tenants/:id` | GET | Retrieve a tenant (`X-API-Key` and scoped RS256 bearer required) |
-| `/tenants/:tenantId/users` | POST | Add a user to a tenant (`X-API-Key` and exact-tenant/platform RS256 bearer required) |
-| `/tenants/:tenantId/roles` | POST | Create a role within a tenant (`X-API-Key` and exact-tenant/platform RS256 bearer required) |
+| `/admin/identity/tenant-inventory` | GET | List the authoritative MASTER-first tenant inventory (`X-API-Key` and scoped RS256 bearer required) |
+| `/admin/identity/tenants/:tenantId` | GET, PUT | Read or ensure an explicit tenant target (`X-API-Key` and scoped RS256 bearer required) |
+| `/admin/identity/tenants/:tenantId/access-assignments/users/:userId` | GET, PUT, DELETE | Read or mutate one direct user assignment with ETag/If-Match |
+| `/admin/identity/tenants/:tenantId/access-assignments/groups/:groupId` | PUT, DELETE | Mutate one group assignment with ETag/If-Match |
 | `/admin/tenants/:tenantId/roles/:roleName` | PUT | Create-if-absent tenant role using `X-API-Key` and a scoped RS256 bearer |
 | `/admin/tenants/:tenantId/roles/:roleName` | GET | Read one exact tenant role using `X-API-Key` and a scoped RS256 bearer |
 | `/admin/tenants/:tenantId/roles` | GET | List tenant roles by name using `X-API-Key` and a scoped RS256 bearer |
-| `/tenants/:tenantId/roles` | GET | List roles within a tenant (`X-API-Key` and scoped RS256 bearer required) |
-| `/tenants/:tenantId/clients` | POST | Register a client for a tenant (`X-API-Key` and exact-tenant/platform RS256 bearer required) |
-| `/tenants/:tenantId/clients` | GET | List clients for a tenant (`X-API-Key` and scoped RS256 bearer required) |
+| `/admin/tenants/:tenantId/clients` | GET, POST | List or register clients for an explicit tenant (`X-API-Key` and scoped RS256 bearer required) |
 
 ### Admin
 

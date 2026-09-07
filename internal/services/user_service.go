@@ -22,7 +22,6 @@ import (
 
 // UserService exposes all account-management operations used by the controllers.
 type UserService interface {
-	SignUp(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error)
 	SignIn(ctx context.Context, req domain.SignInReq) (*domain.SignInResp, error)
 	SignInWithOobCode(ctx context.Context, req domain.SignInWithOobCodeReq) (*domain.SignInResp, error)
 	Lookup(ctx context.Context, req domain.LookupReq) (*domain.LookupResp, error)
@@ -37,7 +36,6 @@ type UserService interface {
 	SendOob(ctx context.Context, req domain.SendOobReq) (*domain.SendOobResp, error)
 	SendOobForTenant(ctx context.Context, tenantID string, req domain.SendOobReq) (*domain.SendOobTenantResp, error)
 	ResetPassword(ctx context.Context, req domain.ResetPwdReq) error
-	GetAllUsers(ctx context.Context) ([]*domain.User, error)
 }
 
 // userService is the concrete UserService backed by the repository and JWT utilities.
@@ -45,6 +43,7 @@ type userService struct {
 	repo                              repository.UserRepository
 	membershipRepo                    repository.MembershipRepository
 	exactMembershipRepo               repository.ExactMembershipRepository
+	directoryAccess                   repository.IdentityDirectoryRepository
 	tenantRepo                        repository.TenantRepository
 	tenantScopedTokenClaimsV1         bool
 	tenantScopedTokenAllowlist        map[string]struct{}
@@ -64,6 +63,13 @@ type userService struct {
 }
 
 type UserServiceOption func(*userService)
+
+// WithIdentityDirectoryAccess makes mutable direct and inherited assignments
+// the token authority after the startup backfill. Legacy memberships remain a
+// migration input only.
+func WithIdentityDirectoryAccess(access repository.IdentityDirectoryRepository) UserServiceOption {
+	return func(service *userService) { service.directoryAccess = access }
+}
 
 // NewUserService builds a service instance that signs JWTs with the provided secret.
 func NewUserService(r repository.UserRepository, membershipRepo repository.MembershipRepository, roleSvc RoleService, clientSvc ClientService, jwtSecret string, issuerBaseURL string, defaultAudience string, jwksPrivateKey string, jwksKeyID string, options ...UserServiceOption) UserService {
@@ -88,50 +94,6 @@ func NewUserService(r repository.UserRepository, membershipRepo repository.Membe
 	return service
 }
 
-// SignUp validates uniqueness, hashes the password and persists a new user.
-func (s *userService) SignUp(ctx context.Context, req domain.SignUpReq) (*domain.SignUpResp, error) {
-	existing, err := s.repo.FindByEmail(ctx, req.Email)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		return nil, domain.ErrEmailExists
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, err
-	}
-	role := domain.RoleCompanyEmployee
-	if req.Role != "" {
-		role = domain.UserRole(req.Role)
-	}
-	u := &domain.User{
-		Id:        uuid.NewString(),
-		Email:     req.Email,
-		Password:  string(hash),
-		Role:      role,
-		Status:    domain.UserStatusActive,
-		CreatedAt: time.Now(),
-	}
-	if er := s.repo.CreateUser(ctx, u); er != nil {
-		return nil, er
-	}
-	if s.membershipRepo != nil {
-		_ = s.membershipRepo.Create(ctx, &domain.Membership{
-			Id:        uuid.NewString(),
-			TenantId:  "default",
-			UserId:    u.Id,
-			Roles:     []string{string(role)},
-			CreatedAt: time.Now(),
-		})
-	}
-	return &domain.SignUpResp{
-		LocalId:   u.Id,
-		Email:     u.Email,
-		CreatedAt: u.CreatedAt,
-	}, nil
-}
-
 // SignIn verifies credentials and returns a signed JWT alongside metadata.
 func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain.SignInResp, error) {
 	u, err := s.repo.FindByEmail(ctx, req.Email)
@@ -143,6 +105,9 @@ func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain
 	}
 	if !utils.VerifyPassword(u.Password, req.Password) {
 		return nil, domain.ErrInvalidCreds
+	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
 	}
 	signed, expiresIn, e2 := s.issueIDToken(u, nil)
 	if e2 != nil {
@@ -178,6 +143,9 @@ func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWi
 	}
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
+	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
 	}
 
 	signed, expiresIn, tokenErr := s.issueIDToken(u, nil)
@@ -311,6 +279,9 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
+	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
 	}
 	platformPrivilege := validatedPlatformPrivilege(u, claims)
 	if protectedTarget && strictTarget == "" {
@@ -523,6 +494,9 @@ func (s *userService) ValidateIDToken(ctx context.Context, tokenString string, i
 	if user.Status != domain.UserStatusActive {
 		return nil, domain.ErrInvalidCreds
 	}
+	if user.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
+	}
 	version, ok := tokenVersion(claims)
 	if !ok || version != user.TokenVersion {
 		return nil, domain.ErrInvalidToken
@@ -577,6 +551,9 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 	}
 	if u.Status != domain.UserStatusActive {
 		return nil, domain.ErrInvalidCreds
+	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
 	}
 	if u.TokenVersion != version {
 		return nil, domain.ErrInvalidToken
@@ -744,7 +721,11 @@ func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *dom
 		return !containsString(scopes, domain.PlatformTenantAdminScope)
 	}
 	roles := []string{string(role)}
-	if s.membershipRepo != nil {
+	if s.directoryAccess != nil {
+		if effective, _, err := s.directoryAccess.GetEffectiveTenantRoles(ctx, u.Id, tenantID); err == nil {
+			roles = append(roles, effective...)
+		}
+	} else if s.membershipRepo != nil {
 		if m, _ := s.membershipRepo.Get(ctx, tenantID, u.Id); m != nil {
 			roles = append(roles, m.Roles...)
 		}
@@ -791,6 +772,13 @@ func normalizeList(in []string) []string {
 }
 
 func (s *userService) listTenantIDs(ctx context.Context, userID string) []string {
+	if s.directoryAccess != nil && userID != "" {
+		ids, exceeded, err := s.directoryAccess.ListEffectiveTenantIDs(ctx, userID, maximumMembershipsScanned)
+		if err == nil && !exceeded {
+			return ids
+		}
+		return nil
+	}
 	if s.membershipRepo == nil || userID == "" {
 		return nil
 	}
@@ -879,8 +867,13 @@ func (s *userService) UpdateUser(ctx context.Context, req domain.UpdateReq) (*do
 		u.Email = req.Email
 	}
 	if req.Password != "" {
-		hash, _ := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		hash, hashErr := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+		if hashErr != nil {
+			return nil, domain.ErrInvalidArgument
+		}
 		u.Password = string(hash)
+		u.PasswordChangeRequired = false
+		u.TokenVersion++
 	}
 	if e2 := s.repo.UpdateUser(ctx, u); e2 != nil {
 		return nil, e2
@@ -998,7 +991,12 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 		if err := s.repo.CreateUser(ctx, u); err != nil {
 			return nil, err
 		}
-		if s.membershipRepo != nil {
+		if s.directoryAccess != nil {
+			if _, _, assignmentErr := s.directoryAccess.PutAccessAssignment(ctx, tenantID, domain.AccessPrincipalUser, u.Id, []string{string(role)}, ""); assignmentErr != nil {
+				_ = s.repo.DeleteByEmail(ctx, u.Email)
+				return nil, assignmentErr
+			}
+		} else if s.membershipRepo != nil {
 			_ = s.membershipRepo.Create(ctx, &domain.Membership{
 				Id:        uuid.NewString(),
 				TenantId:  tenantID,
@@ -1017,9 +1015,18 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 	}
 
 	// Every tenant-scoped OOB operation, including PASSWORD_RESET, must be
-	// authorized by an exact membership or the user's exact legacy company.
+	// authorized by canonical effective access or the user's exact legacy
+	// company. The latter remains a read-only migration fallback.
 	// This check deliberately happens before the OOB code is generated or saved.
-	if s.membershipRepo != nil {
+	if s.directoryAccess != nil {
+		roles, _, accessErr := s.directoryAccess.GetEffectiveTenantRoles(ctx, u.Id, tenantID)
+		if accessErr != nil {
+			return nil, accessErr
+		}
+		if len(roles) == 0 && (u.CompanyId == nil || *u.CompanyId != tenantID) {
+			return nil, domain.ErrInvalidTenant
+		}
+	} else if s.membershipRepo != nil {
 		membership, err := s.membershipRepo.Get(ctx, tenantID, u.Id)
 		if err != nil {
 			return nil, err
@@ -1061,17 +1068,17 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 	if e2 != nil || u == nil {
 		return domain.ErrNotFound
 	}
-	hash, _ := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	hash, hashErr := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if hashErr != nil {
+		return domain.ErrInvalidArgument
+	}
 	u.Password = string(hash)
+	u.PasswordChangeRequired = false
+	u.TokenVersion++
 	if e3 := s.repo.UpdateUser(ctx, u); e3 != nil {
 		return e3
 	}
 	return nil
-}
-
-// GetAllUsers retrieves every stored user without filtering, mainly for administrative use.
-func (s *userService) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
-	return s.repo.GetAllUsers(ctx)
 }
 
 func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, error) {
@@ -1081,6 +1088,9 @@ func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, e
 func (s *userService) issueIDTokenWithPlatformPrivilege(u *domain.User, amr []string, requestedPlatformPrivilege string) (string, int, error) {
 	if u == nil {
 		return "", 0, domain.ErrInvalidArgument
+	}
+	if u.PasswordChangeRequired {
+		return "", 0, domain.ErrPasswordChangeRequired
 	}
 	platformPrivilege := issuablePlatformPrivilege(u, requestedPlatformPrivilege)
 	claims := jwt.MapClaims{
