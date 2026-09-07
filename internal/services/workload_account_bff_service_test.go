@@ -77,6 +77,18 @@ type workloadAccountTokens struct {
 	exchange domain.TokenExchangeReq
 }
 
+type workloadAccountDeletion struct {
+	tenantID string
+	userID   string
+	email    string
+	err      error
+}
+
+func (f *workloadAccountDeletion) Delete(_ context.Context, tenantID, userID, email string) error {
+	f.tenantID, f.userID, f.email = tenantID, userID, email
+	return f.err
+}
+
 func (f *workloadAccountTokens) SignIn(_ context.Context, request domain.SignInReq) (*domain.SignInResp, error) {
 	f.signIn = request
 	return &domain.SignInResp{IdToken: "identity-token", LocalId: "user-1", Email: request.Email, ExpiresIn: 3600}, nil
@@ -107,6 +119,7 @@ func TestWorkloadAccountBFFRegistersAndReplaysExactTenantMembership(t *testing.T
 	service := NewWorkloadAccountBFFService(
 		workloadAccountVerifier{subject: testWorkloadAccountSubject()}, users,
 		&workloadAccountMemberships{}, writer, &workloadAccountTokens{},
+		&workloadAccountDeletion{},
 		[]config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()},
 	)
 	request := domain.WorkloadAccountCredentials{Email: " Reader@Example.com ", Password: "correct horse battery staple"}
@@ -142,7 +155,8 @@ func TestWorkloadAccountBFFSessionPinsServerSelectedAuthority(t *testing.T) {
 	tokens := &workloadAccountTokens{}
 	service := NewWorkloadAccountBFFService(
 		workloadAccountVerifier{subject: testWorkloadAccountSubject()}, users, memberships,
-		&workloadAccountWriter{}, tokens, []config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()},
+		&workloadAccountWriter{}, tokens, &workloadAccountDeletion{},
+		[]config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()},
 	)
 	result, err := service.Session(context.Background(), "projected-token", domain.WorkloadAccountCredentials{
 		Email: "reader@example.com", Password: "correct horse battery staple",
@@ -185,6 +199,7 @@ func TestWorkloadAccountBFFFailsClosed(t *testing.T) {
 				test.verifier, &workloadAccountUsers{user: test.user},
 				&workloadAccountMemberships{membership: test.membership},
 				&workloadAccountWriter{}, &workloadAccountTokens{},
+				&workloadAccountDeletion{},
 				[]config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()},
 			)
 			_, err := service.Session(context.Background(), "projected-token", domain.WorkloadAccountCredentials{
@@ -202,12 +217,39 @@ func TestWorkloadAccountBFFRollsBackNewUserWhenMembershipFails(t *testing.T) {
 	service := NewWorkloadAccountBFFService(
 		workloadAccountVerifier{subject: testWorkloadAccountSubject()}, users,
 		&workloadAccountMemberships{}, &workloadAccountWriter{err: errors.New("storage canary")},
-		&workloadAccountTokens{}, []config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()},
+		&workloadAccountTokens{}, &workloadAccountDeletion{},
+		[]config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()},
 	)
 	_, _, err := service.Register(context.Background(), "projected-token", domain.WorkloadAccountCredentials{
 		Email: "reader@example.com", Password: "correct horse battery staple",
 	})
 	if err == nil || users.deleted != "reader@example.com" || users.created == nil {
 		t.Fatalf("rollback created=%#v deleted=%q err=%v", users.created, users.deleted, err)
+	}
+}
+
+func TestWorkloadAccountBFFDeletesOnlyAuthenticatedTenantAccount(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct horse battery staple"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := &workloadAccountUsers{user: &domain.User{
+		Id: "user-1", Email: "reader@example.com", Password: string(hash), Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword,
+	}}
+	memberships := &workloadAccountMemberships{membership: &domain.Membership{
+		TenantId: "bereia", UserId: "user-1", Roles: []string{"bereia-user"}, CreatedAt: time.Now(),
+	}}
+	deletion := &workloadAccountDeletion{}
+	service := NewWorkloadAccountBFFService(
+		workloadAccountVerifier{subject: testWorkloadAccountSubject()}, users, memberships,
+		&workloadAccountWriter{}, &workloadAccountTokens{}, deletion,
+		[]config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()},
+	)
+	err = service.Delete(context.Background(), "projected-token", domain.WorkloadAccountCredentials{
+		Email: " Reader@Example.com ", Password: "correct horse battery staple",
+	})
+	if err != nil || deletion.tenantID != "bereia" || deletion.userID != "user-1" || deletion.email != "reader@example.com" {
+		t.Fatalf("deletion=%#v err=%v", deletion, err)
 	}
 }
