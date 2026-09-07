@@ -66,38 +66,6 @@ func TestNewTenantService(t *testing.T) {
 	}
 }
 
-func TestTenantService_Create(t *testing.T) {
-	svc := NewTenantService(&fakeTenantRepo{})
-	if _, err := svc.Create(context.Background(), domain.TenantCreateReq{Name: "", Slug: "a"}); err != domain.ErrInvalidArgument {
-		t.Fatalf("expected ErrInvalidArgument, got %v", err)
-	}
-	if _, err := svc.Create(context.Background(), domain.TenantCreateReq{Name: "a", Slug: ""}); err != domain.ErrInvalidArgument {
-		t.Fatalf("expected ErrInvalidArgument, got %v", err)
-	}
-
-	repoErr := errors.New("repo-fail")
-	svc = NewTenantService(&fakeTenantRepo{createFn: func(ctx context.Context, tenant *domain.Tenant) error {
-		return repoErr
-	}})
-	if _, err := svc.Create(context.Background(), domain.TenantCreateReq{Name: "n", Slug: "s"}); !errors.Is(err, repoErr) {
-		t.Fatalf("expected repo error, got %v", err)
-	}
-
-	svc = NewTenantService(&fakeTenantRepo{createFn: func(ctx context.Context, tenant *domain.Tenant) error {
-		if tenant.Id == "" {
-			t.Fatalf("expected generated id")
-		}
-		return nil
-	}})
-	resp, err := svc.Create(context.Background(), domain.TenantCreateReq{Name: "Name", Slug: "slug"})
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if resp.Name != "Name" || resp.Slug != "slug" || resp.Status != domain.TenantStatusActive {
-		t.Fatalf("unexpected response: %+v", resp)
-	}
-}
-
 func TestTenantService_CreateWithID(t *testing.T) {
 	var stored *domain.Tenant
 	repo := &fakeTenantRepo{createAbsentFn: func(
@@ -314,6 +282,38 @@ func TestTenantService_List(t *testing.T) {
 	page, err := svc.List(context.Background(), 2, 20)
 	if err != nil || len(page.Tenants) != 1 || page.Tenants[0].Status != domain.TenantStatusDisabled || page.NextPageToken != "22" {
 		t.Fatalf("unexpected page: %+v err=%v", page, err)
+	}
+}
+
+func TestTenantServiceProjectsOneAuthoritativeMaster(t *testing.T) {
+	svc := NewTenantService(&fakeTenantRepo{
+		getFn: func(_ context.Context, tenantID string) (*domain.Tenant, error) {
+			return &domain.Tenant{Id: tenantID, Name: "Local tenant", Slug: tenantID, Status: domain.TenantStatusActive}, nil
+		},
+		listFn: func(context.Context, uint64, int64) ([]domain.Tenant, string, error) {
+			return []domain.Tenant{
+				{Id: "local-tenant", Name: "Local tenant", Slug: "local-tenant", Status: domain.TenantStatusActive},
+				{Id: "bereia", Name: "Bereia", Slug: "bereia", Status: domain.TenantStatusActive},
+			}, "", nil
+		},
+	})
+	master, err := svc.Get(context.Background(), "local-tenant")
+	if err != nil || master.Name != "Code Foundry" || master.TenantType != domain.TenantTypeMaster {
+		t.Fatalf("master projection=%+v err=%v", master, err)
+	}
+	page, err := svc.List(context.Background(), 0, 20)
+	if err != nil || len(page.Tenants) != 2 || page.Tenants[0].Id != "local-tenant" || page.Tenants[0].TenantType != domain.TenantTypeMaster || page.Tenants[1].TenantType != domain.TenantTypeWorkload {
+		t.Fatalf("inventory=%+v err=%v", page, err)
+	}
+}
+
+func TestTenantServiceRejectsMasterNameSpoofing(t *testing.T) {
+	svc := NewTenantService(&fakeTenantRepo{})
+	if _, _, err := svc.CreateWithID(context.Background(), "workload", domain.TenantCreateReq{Name: "Code Foundry", Slug: "workload"}); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("workload spoof err=%v", err)
+	}
+	if _, _, err := svc.CreateWithID(context.Background(), "local-tenant", domain.TenantCreateReq{Name: "Other", Slug: "local-tenant"}); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("master rename err=%v", err)
 	}
 }
 

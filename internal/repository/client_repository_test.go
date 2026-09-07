@@ -61,6 +61,48 @@ func TestClientRepo_CreateGetList(t *testing.T) {
 	}
 }
 
+func TestClientRepo_CreateNeverOverwritesExistingCredential(t *testing.T) {
+	_, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	first := &domain.Client{Id: "worker", TenantId: "bereia", SecretHash: "first-hash", Type: domain.ClientTypeService}
+	if err := repo.Create(ctx, "bereia", first); err != nil {
+		t.Fatalf("create first client: %v", err)
+	}
+	second := &domain.Client{Id: "worker", TenantId: "bereia", SecretHash: "replacement-hash", Type: domain.ClientTypePublic}
+	if err := repo.Create(ctx, "bereia", second); !errors.Is(err, domain.ErrClientConflict) {
+		t.Fatalf("second create error=%v, want ErrClientConflict", err)
+	}
+	stored, err := repo.Get(ctx, "bereia", "worker")
+	if err != nil || stored.SecretHash != "first-hash" || stored.Type != domain.ClientTypeService {
+		t.Fatalf("existing client was overwritten: stored=%#v error=%v", stored, err)
+	}
+}
+
+func TestClientRepo_UpsertBootstrapIsExplicitAndCannotReplaceManagedClient(t *testing.T) {
+	_, repo := newClientRepoForTest(t)
+	ctx := context.Background()
+	initial := &domain.Client{Id: "code-admin-api", TenantId: "local-tenant", Type: domain.ClientTypePublic, DefaultScopes: []string{"old"}}
+	if err := repo.UpsertBootstrap(ctx, "local-tenant", initial); err != nil {
+		t.Fatalf("initial bootstrap upsert: %v", err)
+	}
+	replacement := &domain.Client{Id: "code-admin-api", TenantId: "local-tenant", Type: domain.ClientTypePublic, DefaultScopes: []string{"new"}}
+	if err := repo.UpsertBootstrap(ctx, "local-tenant", replacement); err != nil {
+		t.Fatalf("reconcile bootstrap client: %v", err)
+	}
+	stored, err := repo.Get(ctx, "local-tenant", "code-admin-api")
+	if err != nil || len(stored.DefaultScopes) != 1 || stored.DefaultScopes[0] != "new" {
+		t.Fatalf("bootstrap client was not reconciled: stored=%#v error=%v", stored, err)
+	}
+
+	managed := managedAudienceFixture("bereia", "code-admin:workloads:read")
+	if _, _, err := repo.EnsureManagedAudience(ctx, "bereia", managed); err != nil {
+		t.Fatalf("seed managed client: %v", err)
+	}
+	if err := repo.UpsertBootstrap(ctx, "bereia", &domain.Client{Id: managed.Id, Type: domain.ClientTypePublic}); !errors.Is(err, domain.ErrManagedClientConflict) {
+		t.Fatalf("managed client replacement error=%v, want ErrManagedClientConflict", err)
+	}
+}
+
 func TestClientRepoUsesDirectEvalForKvrocksCompatibility(t *testing.T) {
 	rdb, repo := newClientRepoForTest(t)
 	rdb.AddHook(commandErrorHook{byName: map[string]error{
@@ -72,6 +114,11 @@ func TestClientRepoUsesDirectEvalForKvrocksCompatibility(t *testing.T) {
 		Id: "legacy-client", Type: domain.ClientTypeService,
 	}); err != nil {
 		t.Fatalf("create with direct EVAL: %v", err)
+	}
+	if err := repo.UpsertBootstrap(ctx, "local-tenant", &domain.Client{
+		Id: "bootstrap-client", Type: domain.ClientTypePublic,
+	}); err != nil {
+		t.Fatalf("bootstrap upsert with direct EVAL: %v", err)
 	}
 	if _, _, err := repo.EnsureManagedAudience(
 		ctx,

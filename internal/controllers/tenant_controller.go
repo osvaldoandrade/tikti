@@ -28,31 +28,6 @@ func NewTenantController(svc services.TenantService, cfg *config.Config) *tenant
 	return &tenantController{svc: svc, cfg: cfg}
 }
 
-func (t *tenantController) Create(c *gin.Context) {
-	if _, ok := requirePlatformTenantAdmin(c, t.cfg); !ok {
-		return
-	}
-	var req domain.TenantCreateReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {
-		return t.svc.Create(ctx, req)
-	})
-	result := <-ch
-	if err, ok := result.(error); ok {
-		switch err {
-		case domain.ErrInvalidArgument:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		}
-		return
-	}
-	c.JSON(http.StatusOK, result)
-}
-
 func (t *tenantController) CreateWithID(c *gin.Context) {
 	claims, ok := requirePlatformTenantAdmin(c, t.cfg)
 	if !ok {
@@ -149,8 +124,8 @@ func decodeTenantCreate(body io.Reader) (domain.TenantCreateReq, error) {
 }
 
 func (t *tenantController) Get(c *gin.Context) {
-	id := c.Param("id")
-	if !requireLegacyCodeAdminTenantRead(c, t.cfg, id) {
+	id := c.Param("tenantId")
+	if _, ok := requireTenantIAMRead(c, t.cfg, id); !ok {
 		return
 	}
 	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {
@@ -172,7 +147,7 @@ func (t *tenantController) Get(c *gin.Context) {
 }
 
 func (t *tenantController) List(c *gin.Context) {
-	if !requireLegacyCodeAdminPlatformRead(c, t.cfg) {
+	if _, ok := requirePlatformTenantAdmin(c, t.cfg); !ok {
 		return
 	}
 	pageSize := int64(50)

@@ -60,38 +60,10 @@ func requireTenantIAMRead(c *gin.Context, cfg *config.Config, tenantID string) (
 	return claims, true
 }
 
-// requireTenantIdentityRead authorizes compatibility reads without falling
-// back to the advisory role carried by legacy identity tokens. A tenant-local
-// access token is confined to its signed tid. Cross-tenant administration
-// requires Tikti's provenance-bound platform privilege.
+// requireTenantIdentityRead confines a tenant-local access token to its signed
+// tid. Cross-tenant administration requires provenance-bound platform access.
 func requireTenantIdentityRead(c *gin.Context, cfg *config.Config, tenantID string) bool {
 	return requireTenantIdentityAuthority(c, cfg, tenantID, false)
-}
-
-// Legacy Code Admin reads retain their established missing-authentication
-// response while moving token verification and tenant authorization to the
-// strict privileged path.
-func requireLegacyCodeAdminTenantRead(c *gin.Context, cfg *config.Config, tenantID string) bool {
-	if !legacyCodeAdminAuthenticationPresent(c) {
-		return false
-	}
-	return requireTenantIdentityRead(c, cfg, tenantID)
-}
-
-func requireLegacyCodeAdminPlatformRead(c *gin.Context, cfg *config.Config) bool {
-	if !legacyCodeAdminAuthenticationPresent(c) {
-		return false
-	}
-	_, ok := requirePlatformTenantAdmin(c, cfg)
-	return ok
-}
-
-func legacyCodeAdminAuthenticationPresent(c *gin.Context) bool {
-	if strings.TrimSpace(c.GetHeader("Authorization")) != "" {
-		return true
-	}
-	c.JSON(http.StatusUnauthorized, gin.H{"error": "missing authentication"})
-	return false
 }
 
 func requireTenantMembershipRead(c *gin.Context, cfg *config.Config, tenantID string) bool {

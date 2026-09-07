@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -88,39 +89,60 @@ func (r *tenantRepo) Get(ctx context.Context, tenantID string) (*domain.Tenant, 
 }
 
 func (r *tenantRepo) List(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error) {
-	keys, err := r.client.HKeys(ctx, tenantsHash).Result()
-	if err != nil {
-		return nil, "", err
-	}
-	sort.Strings(keys)
-	if offset >= uint64(len(keys)) {
-		return []domain.Tenant{}, "", nil
-	}
-	end := offset + uint64(pageSize)
-	if end > uint64(len(keys)) {
-		end = uint64(len(keys))
-	}
-	values, err := r.client.HMGet(ctx, tenantsHash, keys[offset:end]...).Result()
+	values, err := r.client.HGetAll(ctx, tenantsHash).Result()
 	if err != nil {
 		return nil, "", err
 	}
 	tenants := make([]domain.Tenant, 0, len(values))
+	masterCount := 0
 	for _, value := range values {
-		encoded, ok := value.(string)
-		if !ok || encoded == "" {
+		if value == "" {
 			continue
 		}
 		var tenant domain.Tenant
-		if err := json.Unmarshal([]byte(encoded), &tenant); err != nil {
+		if err := json.Unmarshal([]byte(value), &tenant); err != nil {
 			return nil, "", err
+		}
+		if tenant.Id == domain.MasterTenantID {
+			masterCount++
+			if tenant.Slug != domain.MasterTenantID {
+				return nil, "", domain.ErrTenantInvariant
+			}
+		} else if strings.EqualFold(strings.TrimSpace(tenant.Name), domain.MasterTenantName) {
+			return nil, "", domain.ErrTenantInvariant
 		}
 		tenants = append(tenants, tenant)
 	}
+	if masterCount != 1 {
+		return nil, "", domain.ErrTenantInvariant
+	}
+	sort.Slice(tenants, func(left, right int) bool {
+		if tenants[left].Id == domain.MasterTenantID {
+			return true
+		}
+		if tenants[right].Id == domain.MasterTenantID {
+			return false
+		}
+		leftName := strings.ToLower(strings.TrimSpace(tenants[left].Name))
+		rightName := strings.ToLower(strings.TrimSpace(tenants[right].Name))
+		if leftName == rightName {
+			return tenants[left].Id < tenants[right].Id
+		}
+		return leftName < rightName
+	})
+	if offset >= uint64(len(tenants)) {
+		return []domain.Tenant{}, "", nil
+	}
+	end := offset + uint64(pageSize)
+	if end > uint64(len(tenants)) {
+		end = uint64(len(tenants))
+	}
+	page := append([]domain.Tenant(nil), tenants[offset:end]...)
 	next := ""
-	if end < uint64(len(keys)) {
+	if end < uint64(len(tenants)) {
 		next = strconv.FormatUint(end, 10)
 	}
-	return tenants, next, nil
+	return page, next, nil
 }
 
 func (r *tenantRepo) EnsureDefault(ctx context.Context) (*domain.Tenant, error) {

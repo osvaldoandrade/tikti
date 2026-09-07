@@ -16,6 +16,7 @@ import (
 
 type ClientRepository interface {
 	Create(ctx context.Context, tenantID string, client *domain.Client) error
+	UpsertBootstrap(ctx context.Context, tenantID string, client *domain.Client) error
 	EnsureManagedAudience(ctx context.Context, tenantID string, client *domain.Client) (*domain.Client, bool, error)
 	Get(ctx context.Context, tenantID string, clientID string) (*domain.Client, error)
 	List(ctx context.Context, tenantID string) ([]*domain.Client, error)
@@ -31,10 +32,15 @@ func NewClientRepo(rdb *redis.Client) ClientRepository {
 
 var (
 	errStoredManagedClientContract = errors.New("stored managed client contract mismatch")
-	legacyClientCreateScript       = redis.NewScript(`
+	clientCreateOnceScript         = redis.NewScript(`
 if redis.call("HEXISTS", KEYS[2], ARGV[1]) == 1 then return "protected" end
 local existing = redis.call("HGET", KEYS[1], ARGV[1])
 if existing and string.find(existing, ARGV[3], 1, true) then return "corrupt" end
+if existing then return "exists" end
+redis.call("HSET", KEYS[1], ARGV[1], ARGV[2])
+return "stored"`)
+	bootstrapClientUpsertScript = redis.NewScript(`
+if redis.call("HEXISTS", KEYS[2], ARGV[1]) == 1 then return "protected" end
 redis.call("HSET", KEYS[1], ARGV[1], ARGV[2])
 return "stored"`)
 	managedClientEnsureScript = redis.NewScript(`
@@ -77,19 +83,11 @@ return {"managed", value}`)
 
 func (r *clientRepo) Create(ctx context.Context, tenantID string, client *domain.Client) error {
 	tenantID = strings.TrimSpace(tenantID)
-	if client == nil {
-		return domain.ErrInvalidArgument
-	}
-	clientID := strings.TrimSpace(client.Id)
-	if tenantID == "" || clientID == "" || client.ManagedBy != "" {
-		return domain.ErrInvalidArgument
-	}
-	client.Id = clientID
-	data, err := json.Marshal(client)
+	clientID, data, err := unmanagedClientPayload(tenantID, client)
 	if err != nil {
 		return err
 	}
-	result, err := legacyClientCreateScript.Eval(ctx, r.client, []string{
+	result, err := clientCreateOnceScript.Eval(ctx, r.client, []string{
 		clientsKey(tenantID), managedClientsKey(tenantID),
 	}, clientID, data, `"managedBy":"`).Text()
 	if err != nil {
@@ -100,9 +98,51 @@ func (r *clientRepo) Create(ctx context.Context, tenantID string, client *domain
 		return nil
 	case "protected":
 		return domain.ErrManagedClientConflict
+	case "exists":
+		return domain.ErrClientConflict
 	default:
 		return errStoredManagedClientContract
 	}
+}
+
+// UpsertBootstrap reconciles the installation-owned audience without exposing
+// replacement semantics through the administrative client creation service.
+func (r *clientRepo) UpsertBootstrap(ctx context.Context, tenantID string, client *domain.Client) error {
+	tenantID = strings.TrimSpace(tenantID)
+	clientID, data, err := unmanagedClientPayload(tenantID, client)
+	if err != nil {
+		return err
+	}
+	result, err := bootstrapClientUpsertScript.Eval(ctx, r.client, []string{
+		clientsKey(tenantID), managedClientsKey(tenantID),
+	}, clientID, data).Text()
+	if err != nil {
+		return err
+	}
+	if result == "protected" {
+		return domain.ErrManagedClientConflict
+	}
+	if result != "stored" {
+		return errStoredManagedClientContract
+	}
+	return nil
+}
+
+func unmanagedClientPayload(tenantID string, client *domain.Client) (string, []byte, error) {
+	tenantID = strings.TrimSpace(tenantID)
+	if client == nil {
+		return "", nil, domain.ErrInvalidArgument
+	}
+	clientID := strings.TrimSpace(client.Id)
+	if tenantID == "" || clientID == "" || client.ManagedBy != "" {
+		return "", nil, domain.ErrInvalidArgument
+	}
+	client.Id = clientID
+	data, err := json.Marshal(client)
+	if err != nil {
+		return "", nil, err
+	}
+	return clientID, data, nil
 }
 
 // EnsureManagedAudience atomically creates, replays, or reconciles one owned managed client.

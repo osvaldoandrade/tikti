@@ -26,6 +26,10 @@ func (f *fakeClientRepo) Create(ctx context.Context, tenantID string, client *do
 	return nil
 }
 
+func (f *fakeClientRepo) UpsertBootstrap(context.Context, string, *domain.Client) error {
+	return nil
+}
+
 func (f *fakeClientRepo) EnsureManagedAudience(ctx context.Context, tenantID string, client *domain.Client) (*domain.Client, bool, error) {
 	if f.ensureFn != nil {
 		return f.ensureFn(ctx, tenantID, client)

@@ -136,32 +136,56 @@ func TestTenantRepo_Get_NotFoundAndInvalidJSON(t *testing.T) {
 func TestTenantRepo_ListIsStableAndPaginated(t *testing.T) {
 	rdb, repo := newTenantRepoForTest(t)
 	ctx := context.Background()
-	if tenants, _, err := repo.List(ctx, 0, 2); err != nil || len(tenants) != 0 {
-		t.Fatalf("empty list: %+v, %v", tenants, err)
+	if _, _, err := repo.List(ctx, 0, 2); !errors.Is(err, domain.ErrTenantInvariant) {
+		t.Fatalf("empty inventory did not fail closed: %v", err)
 	}
 	for _, tenant := range []*domain.Tenant{
-		{Id: "tenant-c", Name: "C", Slug: "c"},
-		{Id: "tenant-a", Name: "A", Slug: "a"},
-		{Id: "tenant-b", Name: "B", Slug: "b", Status: domain.TenantStatusDisabled},
+		{Id: domain.MasterTenantID, Name: "Legacy local name", Slug: domain.MasterTenantID},
+		{Id: "tenant-c", Name: "C", Slug: "tenant-c"},
+		{Id: "tenant-a", Name: "A", Slug: "tenant-a"},
+		{Id: "tenant-b", Name: "B", Slug: "tenant-b", Status: domain.TenantStatusDisabled},
 	} {
 		if err := repo.Create(ctx, tenant); err != nil {
 			t.Fatalf("create tenant: %v", err)
 		}
 	}
 	first, next, err := repo.List(ctx, 0, 2)
-	if err != nil || len(first) != 2 || first[0].Id != "tenant-a" || first[1].Id != "tenant-b" || next != "2" {
+	if err != nil || len(first) != 2 || first[0].Id != domain.MasterTenantID || first[1].Id != "tenant-a" || next != "2" {
 		t.Fatalf("unexpected first page: %+v next=%q err=%v", first, next, err)
 	}
 	second, next, err := repo.List(ctx, 2, 2)
-	if err != nil || len(second) != 1 || second[0].Id != "tenant-c" || next != "" {
+	if err != nil || len(second) != 2 || second[0].Id != "tenant-b" || second[1].Id != "tenant-c" || next != "" {
 		t.Fatalf("unexpected second page: %+v next=%q err=%v", second, next, err)
 	}
 	if empty, _, err := repo.List(ctx, 99, 2); err != nil || len(empty) != 0 {
 		t.Fatalf("offset page: %+v, %v", empty, err)
 	}
 	_ = rdb.HSet(ctx, tenantsHash, "empty", "").Err()
-	if tenants, _, err := repo.List(ctx, 0, 10); err != nil || len(tenants) != 3 {
+	if tenants, _, err := repo.List(ctx, 0, 10); err != nil || len(tenants) != 4 {
 		t.Fatalf("empty tenant value was not skipped: %+v, %v", tenants, err)
+	}
+}
+
+func TestTenantRepoListRejectsPersistedMasterSpoof(t *testing.T) {
+	rdb, repo := newTenantRepoForTest(t)
+	ctx := context.Background()
+	if err := repo.Create(ctx, &domain.Tenant{Id: domain.MasterTenantID, Name: "Legacy", Slug: domain.MasterTenantID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.Create(ctx, &domain.Tenant{Id: "spoof", Name: domain.MasterTenantName, Slug: "spoof"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.List(ctx, 0, 20); !errors.Is(err, domain.ErrTenantInvariant) {
+		t.Fatalf("spoofed master was accepted: %v", err)
+	}
+	if err := rdb.HDel(ctx, tenantsHash, "spoof").Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rdb.HDel(ctx, tenantsHash, domain.MasterTenantID).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.List(ctx, 0, 20); !errors.Is(err, domain.ErrTenantInvariant) {
+		t.Fatalf("missing master was accepted: %v", err)
 	}
 }
 

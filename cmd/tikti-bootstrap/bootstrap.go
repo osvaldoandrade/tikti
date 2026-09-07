@@ -113,7 +113,7 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 	}); err != nil {
 		return fmt.Errorf("upsert bootstrap membership: %w", err)
 	}
-	if err := data.clients.Create(ctx, cfg.tenantID, &domain.Client{
+	if err := data.clients.UpsertBootstrap(ctx, cfg.tenantID, &domain.Client{
 		Id: cfg.audience, TenantId: cfg.tenantID, Type: domain.ClientTypePublic,
 		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
 		DefaultScopes:     append([]string(nil), cfg.scopes...), Status: "ACTIVE",

@@ -1,70 +1,71 @@
 # Tenant Admin Lifecycle
 
-Manage tenant resources, memberships, and identity federation through admin operations. This flow covers tenant creation through to IdP registration for SAML SSO.
+Manage tenant metadata, roles, applications, and identity federation through
+explicit-target administration. Global users, groups, and tenant access are
+managed by Code Admin Identity V2.
 
 ## Actors
 
-- Global admin or tenant admin
+- Platform admin or exact-target tenant admin
+- Code Admin API
 - Tikti API
 - Tikti CLI
 
 ## Preconditions
 
-The caller is authenticated and authorized for admin scopes. The target tenant exists for tenant-scoped operations (steps 2 onward).
+The caller presents the service API key in `X-API-Key` and a scoped RS256
+access token. Cross-tenant administration additionally requires the persisted
+`ADMIN` role and `tikti_platform_privilege=platform-admin` issuance claim.
 
 ## Main flow
 
-1. Admin creates a tenant via `POST /v1/tenants`.
-2. Admin creates tenant roles via `POST /v1/tenants/{tenantId}/roles`.
-3. Admin creates tenant clients via `POST /v1/tenants/{tenantId}/clients`.
-4. Admin adds users to the tenant via `POST /v1/tenants/{tenantId}/users`.
-5. Admin registers a SAML IdP for the tenant via `tikti-cli saml idp register --tid {tenantId}`. This stores the IdP metadata, SSO URL, and pinned signing certificates at `saml:idp:{tenantId}` in Redis.
-6. Admin removes users from the tenant via `POST /v1/tenants/{tenantId}/users/remove` when needed.
-7. Admin suspends or reactivates users via account status operations when needed.
+1. A platform admin creates a tenant with `PUT /v1/admin/identity/tenants/{tenantId}`.
+2. An authorized admin creates roles with `PUT /v1/admin/tenants/{tenantId}/roles/{roleName}`.
+3. An authorized admin registers applications with `POST /v1/admin/tenants/{tenantId}/clients`.
+4. Code Admin grants user or group access to that explicit tenant through Identity V2.
+5. Code Admin configures SAML for that explicit tenant; Tikti persists the tenant-local IdP trust.
 
 ### Sequence diagram
 
 ```mermaid
 sequenceDiagram
     participant A as Admin
+    participant C as Code Admin
     participant T as Tikti API
-    participant C as Tikti CLI
     participant R as Redis
 
-    A->>T: POST /v1/tenants
-    T-->>A: Tenant created
-    A->>T: POST /v1/tenants/{tenantId}/roles
-    T-->>A: Role created
-    A->>T: POST /v1/tenants/{tenantId}/clients
-    T-->>A: Client created
-    A->>T: POST /v1/tenants/{tenantId}/users
-    T-->>A: Membership created
-    A->>C: tikti-cli saml idp register --tid {tenantId}
-    C->>R: SET saml:idp:{tenantId} (metadata, cert, SSO URL)
-    C-->>A: IdP registered
-    opt Remove user from tenant
-        A->>T: POST /v1/tenants/{tenantId}/users/remove
-        T-->>A: Membership removed
-    end
-    opt Suspend or activate user
-        A->>T: POST /v1/accounts/status (X-API-Key + platform RS256 bearer)
-        T-->>A: Status updated
-    end
+    A->>T: PUT /v1/admin/identity/tenants/{tenantId}
+    T-->>A: Tenant created or idempotent replay
+    A->>T: PUT /v1/admin/tenants/{tenantId}/roles/{roleName}
+    T-->>A: Role created or idempotent replay
+    A->>T: POST /v1/admin/tenants/{tenantId}/clients
+    T-->>A: Application registered
+    A->>C: Grant directory principal access to tenant
+    C->>T: Exact-target membership projection
+    T->>R: Atomic membership indexes
+    A->>C: Configure SAML for tenant
+    C->>T: Exact-target SAML request
+    T->>R: Store saml:idp:{tenantId}
 ```
 
 ## Expected outcomes
 
-Tenant boundaries are enforced in every mutation. Role and client registries are deterministic and auditable. Membership changes are reflected in subsequent authorization decisions. After IdP registration, tenant users can authenticate via SAML SSO at `/saml/login/{tenantId}`.
+Tenant boundaries are enforced on every operation. No mutation derives its
+target from a selector or active-tenant header. Role, application, membership,
+and SAML records remain deterministic and tenant-scoped.
 
 ## Failure scenarios
 
-Non-admin caller: operation denied.
+- Missing or insufficient authority: request denied before storage access.
+- Path/header/body tenant divergence: request rejected.
+- Invalid tenant, role, or client payload: contract error.
+- Conflicting idempotent create: `409 Conflict` without overwrite.
+- Invalid or expired SAML signing material: configuration rejected.
 
-Invalid tenant identifier: operation denied with a contract error.
+## Cutover
 
-Invalid role or scope payload: validation error.
-
-IdP registration with an invalid or expired signing certificate: registration rejected by the CLI.
+The former `/v1/tenants...` admin aliases and Tikti membership CLI commands are
+not retained. The HTTP cutover does not delete stored identities or access data.
 
 ## Related specs
 

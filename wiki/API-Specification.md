@@ -554,11 +554,14 @@ Error cases:
 
 ## Tenant management (admin)
 
-These endpoints support multi-tenant operations. They require an ADMIN token.
+These endpoints use an explicit target tenant and require `X-API-Key` plus a
+scoped RS256 bearer.
 
-### POST /v1/tenants
+### PUT /v1/admin/identity/tenants/{tenantId}
 
-Creates a tenant.
+Creates a tenant without overwrite. The path ID must equal the canonical slug;
+creation returns 201, an identical replay returns 200, and conflicting metadata
+returns 409.
 
 Request:
 
@@ -569,7 +572,7 @@ Request:
 }
 ```
 
-Response 200:
+Response:
 
 ```json
 {
@@ -581,78 +584,26 @@ Response 200:
 }
 ```
 
-### GET /v1/tenants/id/{tenantId}
+### GET /v1/admin/identity/tenants/{tenantId}
 
 Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 
-The Code Admin compatibility reads `GET /v1/tenants`,
-`GET /v1/tenants/id/{tenantId}`, `GET /v1/tenants/{tenantId}/roles`, and both
-legacy client GET routes accept the API key only in `X-API-Key`. A `key` query
-parameter is rejected even when the correct header is present. Existing callers
-that already use the header retain their paths and response contracts.
+### GET /v1/admin/identity/tenant-inventory
 
-## Membership management (admin)
+Returns the global inventory with `local-tenant` projected as the unique
+`MASTER` named `Code Foundry`, followed by alphabetically ordered `WORKLOAD`
+tenants. A query-string API key is rejected.
 
-The compatibility routes `GET|POST /v1/tenants/{tenantId}/users` and
-`POST /v1/tenants/{tenantId}/users/remove` require the API key exclusively in
-`X-API-Key` and a strict RS256 bearer for the configured issuer and Code Admin
-audience. Query parameter `key` is rejected, including when the correct header
-is also present. A tenant-local bearer may read with
-`code-admin:identity:read` or `code-admin:identity:write` and may mutate only
-with `code-admin:identity:write`; in both cases its signed `tid` must exactly
-match the path tenant. Cross-tenant access requires
-`code-admin:tenants:admin`, persisted `ADMIN` role, and
-`tikti_platform_privilege=platform-admin`. HS256 identity tokens, role-only
-tokens, missing subjects, scope suffixes, and foreign `tid` values are denied
-before a membership service call.
+## Membership storage contract (internal admin)
+
+Workload-facing directory and access administration belongs to Code Admin
+Identity V2. Tikti no longer exposes email-based membership routes.
 
 `GET /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts a single 1–128 character ASCII user ID segment (`[A-Za-z0-9._:-]`), except for the complete dot-segments `.` and `..`. Those aliases return 400 before any storage read; dots embedded in an otherwise valid ID remain supported.
 
-### GET /v1/tenants/{tenantId}/users
-
-Lists only users belonging to the path tenant under the compatibility
-authorization contract above. The response omits passwords, token versions,
-external subjects, and other authentication secrets.
-
-### POST /v1/tenants/{tenantId}/users
-
-Creates a membership for a user within a tenant. If the user does not exist, the endpoint creates the user with a generated password or returns 400, depending on policy.
-
-Request:
-
-```json
-{
-  "email": "user@company.com",
-  "roles": ["TENANT_USER"]
-}
-```
-
-### POST /v1/tenants/{tenantId}/users/remove
-
-Removes a membership for a user within a tenant. The user record persists; only the tenant association is deleted.
-
-Request:
-
-```json
-{
-  "email": "user@company.com"
-}
-```
-
-Response 200:
-
-```json
-{
-  "tenantId": "tenant-1",
-  "userId": "user-123",
-  "email": "user@company.com",
-  "removedAt": "2026-01-28T12:01:00Z"
-}
-```
-
 ## Client management (admin)
 
-### POST /v1/tenants/{tenantId}/clients
+### POST /v1/admin/tenants/{tenantId}/clients
 
 Creates a client for token exchange. The response includes the generated client secret. The secret is returned once; subsequent reads do not expose it.
 
@@ -669,7 +620,7 @@ Request:
 
 ## Role management (admin)
 
-### POST /v1/tenants/{tenantId}/roles
+### PUT /v1/admin/tenants/{tenantId}/roles/{roleName}
 
 Creates a role and its permissions.
 
@@ -677,11 +628,12 @@ Request:
 
 ```json
 {
-  "name": "CODEQ_ADMIN",
   "permissions": ["codeq:admin","codeq:claim","codeq:result"]
 }
 ```
 
-## Backward compatibility
+## Identity V2 cutover
 
-All endpoints added after the initial release are additive. Existing endpoints retain their paths and payload shapes. The server accepts legacy tokens and supports lookup responses that omit fields added later, but includes those fields when the data is available.
+Old tenant, membership, role, and client admin aliases are intentionally
+removed. Consumers must use the canonical explicit-target routes; the cutover
+does not delete stored identity or access data.

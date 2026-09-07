@@ -19,6 +19,8 @@ var (
 	ErrInvalidArgument = errors.New("invalid argument")
 	// ErrTenantConflict indicates a deterministic tenant ID already has different metadata.
 	ErrTenantConflict = errors.New("tenant definition conflicts with existing tenant")
+	// ErrTenantInvariant indicates persisted data does not contain exactly the authoritative MASTER.
+	ErrTenantInvariant = errors.New("tenant inventory violates the MASTER invariant")
 	// ErrRoleConflict preserves an existing role whose immutable definition differs.
 	ErrRoleConflict = errors.New("role already exists with different permissions")
 	// ErrRoleNotFound indicates that an exact tenant role does not exist.
@@ -35,6 +37,8 @@ var (
 	ErrMembershipPageStale = errors.New("membership page changed; restart pagination")
 	// ErrManagedClientConflict preserves an existing reserved client definition.
 	ErrManagedClientConflict = errors.New("managed client already exists with a different definition")
+	// ErrClientConflict preserves an existing application and its credential.
+	ErrClientConflict = errors.New("client already exists")
 	// ErrNotFound is returned when a user cannot be located in storage.
 	ErrNotFound = errors.New("user not found")
 	// ErrInvalidOob signals that the out-of-band code is unknown or expired.

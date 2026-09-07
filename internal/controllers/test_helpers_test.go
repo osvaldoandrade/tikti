@@ -146,18 +146,10 @@ func (f *fakeUserService) GetAllUsers(ctx context.Context) ([]*domain.User, erro
 }
 
 type fakeTenantService struct {
-	createFn        func(context.Context, domain.TenantCreateReq) (*domain.TenantResp, error)
 	createWithIDFn  func(context.Context, string, domain.TenantCreateReq) (*domain.TenantResp, bool, error)
 	getFn           func(context.Context, string) (*domain.TenantResp, error)
 	listFn          func(context.Context, uint64, int64) (*domain.TenantsPage, error)
 	ensureDefaultFn func(context.Context) (*domain.TenantResp, error)
-}
-
-func (f *fakeTenantService) Create(ctx context.Context, req domain.TenantCreateReq) (*domain.TenantResp, error) {
-	if f.createFn != nil {
-		return f.createFn(ctx, req)
-	}
-	return nil, nil
 }
 
 func (f *fakeTenantService) CreateWithID(

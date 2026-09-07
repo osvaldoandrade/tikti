@@ -4,7 +4,7 @@ This document specifies the Tikti command-line interface. The CLI is a client th
 
 ## Purpose and scope
 
-The CLI provides four categories of functionality. It authenticates a user and manages the local session context, including base URLs, API keys, and tokens. It exposes administrative operations: tenant creation, user membership management, role and client configuration, and API key rotation. It manages SAML 2.0 federation lifecycle: IdP registration, SP metadata retrieval, and SP key rotation. It supports token exchange and local inspection of tokens and JWKS for integration debugging.
+The CLI provides four categories of functionality. It authenticates a user and manages the local session context, including base URLs, API keys, and tokens. It exposes administrative operations for tenant, role, client, and API-key configuration. It manages SAML 2.0 federation lifecycle: IdP registration, SP metadata retrieval, and SP key rotation. It supports token exchange and local inspection of tokens and JWKS for integration debugging. Global users and tenant access are administered through Code Admin Identity V2, not through a duplicate Tikti membership command.
 
 The CLI does not depend on environment variables for operation. It supports interactive initialization and command flags. It persists configuration locally in a file at a fixed path and never prints secrets unless the operator requests it. Network requests are idempotent where the HTTP method allows it and return machine-parseable output for automation.
 
@@ -71,7 +71,7 @@ The CLI includes the profile's idToken in the Authorization header when calling 
 
 ## User administration commands
 
-The CLI exposes a `user` command group for user lifecycle operations. These commands require an admin token and operate either globally (user creation) or within a tenant (membership and status). The CLI makes the scope explicit via flags so the operator does not apply a change across tenants by mistake.
+The CLI exposes a `user` command group for account lifecycle operations. These commands require an admin token and operate globally; tenant access belongs to Code Admin Identity V2.
 
 `user create` creates a user with email, password, and a role. This maps to `POST /v1/accounts/signUp` and uses the admin token in the Authorization header. The CLI never prints the password after submission.
 
@@ -105,18 +105,16 @@ tikti-cli user delete --confirm
 
 The CLI requires `--confirm` for destructive actions. The output includes the user id and affected tenants when the server provides them.
 
-## Membership and role commands
+## Role commands
 
-The CLI exposes `membership` and `role` command groups for managing tenant memberships and roles. These commands send and receive JSON as defined in `04_api_spec.md` and require explicit tenant targeting.
+The CLI exposes a `role` command group for managing tenant roles through the canonical explicit-target API.
 
 ```bash
-tikti-cli membership add --tenant tenant-1 --email user@company.com --roles TENANT_USER
-tikti-cli membership remove --tenant tenant-1 --email user@company.com
 tikti-cli role create --tenant tenant-1 --name CODEQ_ADMIN \
    --permissions codeq:admin,codeq:claim,codeq:result
 ```
 
-Tenant, role and client reads, plus membership commands, require the profile's
+Tenant, role and client reads require the profile's
 scoped RS256 `accessToken`, send the API key only in `X-API-Key`, and never
 append it to the URL. If no access token is stored, the CLI stops locally and
 instructs the operator to exchange one for the target tenant. The server remains
@@ -130,7 +128,7 @@ The CLI exposes a `revoke` command group for revoking access. Revocation invalid
 
 ### Status-based revocation
 
-Suspending a user or removing a membership prevents future token exchange. This is implemented via `user suspend` and `membership remove`. Issued tokens remain valid until they expire, but renewal is blocked. This is sufficient for operations with token lifetimes between 900 and 3600 seconds.
+Suspending a user prevents future token exchange. Tenant access revocation is performed through Code Admin Identity V2. Issued tokens remain valid until they expire unless their global token version is revoked.
 
 ### Token-version revocation
 
@@ -168,7 +166,7 @@ When a client secret is generated, the CLI prints it once and stores it only if 
 
 ## SAML federation commands
 
-The CLI exposes a `saml` command group for managing the SAML 2.0 federation lifecycle. These commands generate SP metadata, register and inspect IdP trust records, refresh IdP metadata, manage email-domain discovery, create manual test AuthnRequests, and rotate SP signing keys. They are part of the standard admin toolset alongside tenant, membership, role, client, and token commands.
+The CLI exposes a `saml` command group for managing the SAML 2.0 federation lifecycle. These commands generate SP metadata, register and inspect IdP trust records, refresh IdP metadata, manage email-domain discovery, create manual test AuthnRequests, and rotate SP signing keys. They are part of the standard admin toolset alongside tenant, role, client, and token commands.
 
 ### SP metadata generation
 
@@ -343,4 +341,4 @@ The operator exports the SP metadata XML and uploads it to the IdP admin console
 
 ## Command surface
 
-The CLI includes these command groups: `init`, `auth`, `token`, `tenant`, `user`, `membership`, `role`, `client`, `apikey`, `jwks`, `saml`, `revoke`, and `config`. The `saml` group contains `sp metadata`, `sp rotate`, `idp register`, `idp update`, `idp remove`, `idp list`, `idp show`, `idp fetch`, `domain add`, `domain remove`, and `test` subcommands.
+The CLI includes these command groups: `init`, `auth`, `token`, `tenant`, `user`, `role`, `client`, `apikey`, `jwks`, `saml`, `revoke`, and `config`. The `saml` group contains `sp metadata`, `sp rotate`, `idp register`, `idp update`, `idp remove`, `idp list`, `idp show`, `idp fetch`, `domain add`, `domain remove`, and `test` subcommands.

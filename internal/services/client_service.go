@@ -104,8 +104,8 @@ func (s *clientService) Create(ctx context.Context, tenantID string, req domain.
 	return &domain.ClientResp{
 		ClientId:          client.Id,
 		Type:              string(client.Type),
-		AllowedGrantTypes: client.AllowedGrantTypes,
-		DefaultScopes:     client.DefaultScopes,
+		AllowedGrantTypes: append([]string{}, client.AllowedGrantTypes...),
+		DefaultScopes:     append([]string{}, client.DefaultScopes...),
 		Secret:            secret,
 	}, nil
 }
@@ -176,8 +176,8 @@ func (s *clientService) Get(ctx context.Context, tenantID string, clientID strin
 	return &domain.ClientResp{
 		ClientId:          client.Id,
 		Type:              string(client.Type),
-		AllowedGrantTypes: client.AllowedGrantTypes,
-		DefaultScopes:     client.DefaultScopes,
+		AllowedGrantTypes: append([]string{}, client.AllowedGrantTypes...),
+		DefaultScopes:     append([]string{}, client.DefaultScopes...),
 	}, nil
 }
 
@@ -191,8 +191,8 @@ func (s *clientService) List(ctx context.Context, tenantID string) ([]*domain.Cl
 		out = append(out, &domain.ClientResp{
 			ClientId:          c.Id,
 			Type:              string(c.Type),
-			AllowedGrantTypes: c.AllowedGrantTypes,
-			DefaultScopes:     c.DefaultScopes,
+			AllowedGrantTypes: append([]string{}, c.AllowedGrantTypes...),
+			DefaultScopes:     append([]string{}, c.DefaultScopes...),
 		})
 	}
 	return out, nil

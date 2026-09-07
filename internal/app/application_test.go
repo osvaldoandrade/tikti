@@ -50,7 +50,7 @@ func TestValidateWorkloadIdentityRuntimeConfig(t *testing.T) {
 	}
 }
 
-func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
+func TestSetupMappingsRegistersIdentityV2TenantRoutes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	SetupMappings(engine, &config.Config{}, nil, nil, nil, nil, nil, nil, nil, saml.NewRedisStore(nil), nil)
@@ -58,16 +58,19 @@ func TestSetupMappingsRegistersTenantCreateRoutes(t *testing.T) {
 	for _, route := range engine.Routes() {
 		routes[route.Method+" "+route.Path] = true
 	}
-	for _, route := range []string{"POST /v1/tenants", "PUT /v1/tenants/:tenantId"} {
+	for _, route := range []string{
+		"GET /v1/admin/identity/tenant-inventory",
+		"GET /v1/admin/identity/tenants/:tenantId",
+		"PUT /v1/admin/identity/tenants/:tenantId",
+	} {
 		if !routes[route] {
 			t.Fatalf("missing route %s", route)
 		}
 	}
 	for _, test := range []struct{ name, method, key, header, target, want string }{
-		{name: "query rejected", method: http.MethodPut, key: "secret", target: "/v1/tenants/bereia?key=secret", want: "Invalid or missing API key"},
-		{name: "empty key rejected", method: http.MethodPut, header: "secret", target: "/v1/tenants/bereia", want: "Invalid or missing API key"},
-		{name: "header passes middleware", method: http.MethodPut, key: "secret", header: "secret", target: "/v1/tenants/bereia", want: "missing or invalid bearer token"},
-		{name: "legacy POST query", method: http.MethodPost, key: "secret", target: "/v1/tenants?key=secret", want: "Invalid or missing API key"},
+		{name: "query rejected", method: http.MethodPut, key: "secret", target: "/v1/admin/identity/tenants/bereia?key=secret", want: "Invalid or missing API key"},
+		{name: "empty key rejected", method: http.MethodPut, header: "secret", target: "/v1/admin/identity/tenants/bereia", want: "Invalid or missing API key"},
+		{name: "header passes middleware", method: http.MethodPut, key: "secret", header: "secret", target: "/v1/admin/identity/tenants/bereia", want: "missing or invalid bearer token"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := gin.New()
@@ -101,9 +104,6 @@ func TestProtectedRoutesRejectQueryAPIKeyBeforeControllers(t *testing.T) {
 		"/v1/accounts/delete",
 		"/v1/accounts/sendOobCode",
 		"/v1/accounts/resetPassword",
-		"/v1/tenants",
-		"/v1/tenants/bereia/roles",
-		"/v1/tenants/bereia/clients",
 	} {
 		t.Run(path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, path+"?key=secret", strings.NewReader(`[`))
@@ -181,8 +181,7 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	}
 	if !routes["PUT /v1/admin/tenants/:tenantId/roles/:roleName"] ||
 		!routes["GET /v1/admin/tenants/:tenantId/roles/:roleName"] ||
-		!routes["GET /v1/admin/tenants/:tenantId/roles"] ||
-		!routes["POST /v1/tenants/:tenantId/roles"] {
+		!routes["GET /v1/admin/tenants/:tenantId/roles"] {
 		t.Fatalf("role routes missing: %+v", routes)
 	}
 	token := func(scope, tenant, subject string) string {
@@ -219,10 +218,10 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 		{name: "Bereia local", method: http.MethodPut, target: "/v1/admin/tenants/bereia/roles/bereia-read", auth: bereia, key: "secret", want: http.StatusCreated},
 		{name: "Storifly local", method: http.MethodPut, target: "/v1/admin/tenants/storifly/roles/storifly-admin", auth: storifly, key: "secret", want: http.StatusCreated},
 		{name: "platform cross tenant", method: http.MethodPut, target: "/v1/admin/tenants/storifly/roles/platform", auth: platform, key: "secret", want: http.StatusCreated},
-		{name: "legacy POST query", method: http.MethodPost, target: "/v1/tenants/bereia/roles?key=secret", want: http.StatusUnauthorized},
+		{name: "removed legacy POST", method: http.MethodPost, target: "/v1/tenants/bereia/roles", want: http.StatusNotFound},
 	}
 	for _, test := range tests {
-		if rec := request(test.method, test.target, test.auth, test.key); rec.Code != test.want || test.name == "legacy POST query" && !strings.Contains(rec.Body.String(), "Invalid or missing API key") {
+		if rec := request(test.method, test.target, test.auth, test.key); rec.Code != test.want {
 			t.Fatalf("%s: response=%d %s", test.name, rec.Code, rec.Body.String())
 		}
 	}

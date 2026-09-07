@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -35,22 +36,24 @@ func (c *clientController) Create(ctx *gin.Context) {
 	})
 	result := <-ch
 	if err, ok := result.(error); ok {
-		switch err {
-		case domain.ErrInvalidTenant, domain.ErrInvalidArgument:
+		switch {
+		case errors.Is(err, domain.ErrInvalidTenant), errors.Is(err, domain.ErrInvalidArgument):
 			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		case domain.ErrNotFound:
+		case errors.Is(err, domain.ErrNotFound):
 			ctx.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		case errors.Is(err, domain.ErrClientConflict), errors.Is(err, domain.ErrManagedClientConflict):
+			ctx.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		default:
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "could not create client"})
 		}
 		return
 	}
-	ctx.JSON(http.StatusOK, result)
+	ctx.JSON(http.StatusCreated, result)
 }
 
 func (c *clientController) Get(ctx *gin.Context) {
 	tenantID := ctx.Param("tenantId")
-	if !requireLegacyCodeAdminTenantRead(ctx, c.cfg, tenantID) {
+	if _, ok := requireTenantIAMRead(ctx, c.cfg, tenantID); !ok {
 		return
 	}
 	clientID := ctx.Param("clientId")
@@ -74,7 +77,7 @@ func (c *clientController) Get(ctx *gin.Context) {
 
 func (c *clientController) List(ctx *gin.Context) {
 	tenantID := ctx.Param("tenantId")
-	if !requireLegacyCodeAdminTenantRead(ctx, c.cfg, tenantID) {
+	if _, ok := requireTenantIAMRead(ctx, c.cfg, tenantID); !ok {
 		return
 	}
 	ch := runCommandAsync(func(cctx context.Context) (interface{}, error) {

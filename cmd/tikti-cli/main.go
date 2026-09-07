@@ -77,7 +77,6 @@ func main() {
 	root.AddCommand(apiKeyCmd(&profileName, &outputJSON))
 	root.AddCommand(userCmd(&profileName, &outputJSON))
 	root.AddCommand(tenantCmd(&profileName, &outputJSON))
-	root.AddCommand(membershipCmd(&profileName, &outputJSON))
 	root.AddCommand(roleCmd(&profileName, &outputJSON))
 	root.AddCommand(clientCmd(&profileName, &outputJSON))
 	root.AddCommand(revokeCmd(&profileName, &outputJSON))
@@ -465,8 +464,11 @@ func tenantCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if strings.TrimSpace(slug) == "" {
+				return errors.New("tenant slug required")
+			}
 			body := map[string]any{"name": name, "slug": slug}
-			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants", token, prof.ApiKey, body)
+			resp, err := doJSONWithAPIKey(http.MethodPut, prof.BaseURL+"/v1/admin/identity/tenants/"+slug, token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -495,7 +497,7 @@ func tenantCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/id/"+id, token, prof.ApiKey, nil)
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/admin/identity/tenants/"+id, token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}
@@ -504,74 +506,6 @@ func tenantCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	}
 	get.Flags().String("tenant", "", "Tenant id")
 	cmd.AddCommand(get)
-	return cmd
-}
-
-func membershipCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var tenant, email, roles string
-	cmd := &cobra.Command{Use: "membership", Short: "Membership operations"}
-	add := &cobra.Command{
-		Use:   "add",
-		Short: "Add user to tenant",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			prof, err := loadProfile(*profileName)
-			if err != nil {
-				return err
-			}
-			if tenant == "" {
-				tenant = prof.TenantId
-			}
-			if tenant == "" {
-				return errors.New("tenant id required")
-			}
-			token, err := tenantAdministrationAccessToken(prof)
-			if err != nil {
-				return err
-			}
-			body := map[string]any{"email": email, "roles": splitCSV(roles)}
-			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/users", token, prof.ApiKey, body)
-			if err != nil {
-				return err
-			}
-			return printResult(*outputJSON, resp)
-		},
-	}
-	add.Flags().StringVar(&tenant, "tenant", "", "Tenant id")
-	add.Flags().StringVar(&email, "email", "", "User email")
-	add.Flags().StringVar(&roles, "roles", "", "Comma-separated roles")
-	cmd.AddCommand(add)
-	remove := &cobra.Command{
-		Use:   "remove",
-		Short: "Remove user from tenant",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			prof, err := loadProfile(*profileName)
-			if err != nil {
-				return err
-			}
-			if tenant == "" {
-				tenant = prof.TenantId
-			}
-			if tenant == "" {
-				return errors.New("tenant id required")
-			}
-			token, err := tenantAdministrationAccessToken(prof)
-			if err != nil {
-				return err
-			}
-			if email == "" {
-				email = prompt("Email", "", false)
-			}
-			body := map[string]any{"email": email}
-			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/users/remove", token, prof.ApiKey, body)
-			if err != nil {
-				return err
-			}
-			return printResult(*outputJSON, resp)
-		},
-	}
-	remove.Flags().StringVar(&tenant, "tenant", "", "Tenant id")
-	remove.Flags().StringVar(&email, "email", "", "User email")
-	cmd.AddCommand(remove)
 	return cmd
 }
 
@@ -596,8 +530,11 @@ func roleCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body := map[string]any{"name": name, "permissions": splitCSV(perms)}
-			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/roles", token, prof.ApiKey, body)
+			if strings.TrimSpace(name) == "" {
+				return errors.New("role name required")
+			}
+			body := map[string]any{"permissions": splitCSV(perms)}
+			resp, err := doJSONWithAPIKey(http.MethodPut, prof.BaseURL+"/v1/admin/tenants/"+tenant+"/roles/"+name, token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -626,7 +563,7 @@ func roleCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/roles", token, prof.ApiKey, nil)
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/admin/tenants/"+tenant+"/roles", token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}
@@ -665,7 +602,7 @@ func clientCmd(profileName *string, outputJSON *bool) *cobra.Command {
 				"allowedGrantTypes": splitCSV(grants),
 				"defaultScopes":     splitCSV(scopes),
 			}
-			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/tenants/"+tenant+"/clients", token, prof.ApiKey, body)
+			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/admin/tenants/"+tenant+"/clients", token, prof.ApiKey, body)
 			if err != nil {
 				return err
 			}
@@ -696,7 +633,7 @@ func clientCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/clients", token, prof.ApiKey, nil)
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/admin/tenants/"+tenant+"/clients", token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}
@@ -723,7 +660,7 @@ func clientCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/tenants/"+tenant+"/clients/"+clientID, token, prof.ApiKey, nil)
+			resp, err := doJSONWithAPIKey(http.MethodGet, prof.BaseURL+"/v1/admin/tenants/"+tenant+"/clients/"+clientID, token, prof.ApiKey, nil)
 			if err != nil {
 				return err
 			}

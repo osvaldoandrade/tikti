@@ -21,28 +21,28 @@ func TestCLIProductionSourcesDoNotEmbedQueryAPIKeys(t *testing.T) {
 	}
 }
 
-func TestLegacyReadCommandsUseHeaderAPIKeyAndScopedAccessToken(t *testing.T) {
+func TestAdminReadCommandsUseCanonicalRoutesAndScopedAccessToken(t *testing.T) {
 	tests := []struct {
 		name string
 		path string
 		run  func(*string, *bool) error
 	}{
-		{name: "tenant get", path: "/v1/tenants/id/bereia", run: func(profile *string, outputJSON *bool) error {
+		{name: "tenant get", path: "/v1/admin/identity/tenants/bereia", run: func(profile *string, outputJSON *bool) error {
 			command := tenantCmd(profile, outputJSON)
 			command.SetArgs([]string{"get", "--tenant", "bereia"})
 			return command.Execute()
 		}},
-		{name: "role list", path: "/v1/tenants/bereia/roles", run: func(profile *string, outputJSON *bool) error {
+		{name: "role list", path: "/v1/admin/tenants/bereia/roles", run: func(profile *string, outputJSON *bool) error {
 			command := roleCmd(profile, outputJSON)
 			command.SetArgs([]string{"list", "--tenant", "bereia"})
 			return command.Execute()
 		}},
-		{name: "client list", path: "/v1/tenants/bereia/clients", run: func(profile *string, outputJSON *bool) error {
+		{name: "client list", path: "/v1/admin/tenants/bereia/clients", run: func(profile *string, outputJSON *bool) error {
 			command := clientCmd(profile, outputJSON)
 			command.SetArgs([]string{"list", "--tenant", "bereia"})
 			return command.Execute()
 		}},
-		{name: "client get", path: "/v1/tenants/bereia/clients/code-admin-api", run: func(profile *string, outputJSON *bool) error {
+		{name: "client get", path: "/v1/admin/tenants/bereia/clients/code-admin-api", run: func(profile *string, outputJSON *bool) error {
 			command := clientCmd(profile, outputJSON)
 			command.SetArgs([]string{"get", "--tenant", "bereia", "--client-id", "code-admin-api"})
 			return command.Execute()
@@ -88,7 +88,7 @@ func TestLegacyReadCommandsUseHeaderAPIKeyAndScopedAccessToken(t *testing.T) {
 	}
 }
 
-func TestLegacyReadCommandsFailLocallyWithoutScopedAccessToken(t *testing.T) {
+func TestAdminReadCommandsFailLocallyWithoutScopedAccessToken(t *testing.T) {
 	tests := []struct {
 		name string
 		run  func(*string, *bool) error
@@ -138,67 +138,6 @@ func TestLegacyReadCommandsFailLocallyWithoutScopedAccessToken(t *testing.T) {
 				t.Fatalf("unsafe request count = %d", requestCount)
 			}
 		})
-	}
-}
-
-func TestMembershipCommandUsesHeaderAPIKeyAndScopedAccessToken(t *testing.T) {
-	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		requestCount++
-		if req.URL.Path != "/v1/tenants/bereia/users" || req.URL.RawQuery != "" {
-			t.Errorf("request URL = %s?%s", req.URL.Path, req.URL.RawQuery)
-		}
-		if req.Header.Get("X-API-Key") != "api-key" {
-			t.Errorf("X-API-Key = %q", req.Header.Get("X-API-Key"))
-		}
-		if req.Header.Get("Authorization") != "Bearer scoped-access-token" {
-			t.Errorf("Authorization = %q", req.Header.Get("Authorization"))
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"tenantId":"bereia","email":"u@example.com"}`))
-	}))
-	defer server.Close()
-
-	original := loadProfileFunc
-	loadProfileFunc = func(string) (*profileEntry, error) {
-		return &profileEntry{
-			BaseURL: server.URL, ApiKey: "api-key", TenantId: "bereia",
-			IdToken: "legacy-id-token", AccessToken: "scoped-access-token",
-		}, nil
-	}
-	t.Cleanup(func() { loadProfileFunc = original })
-
-	profile, outputJSON := "", true
-	command := membershipCmd(&profile, &outputJSON)
-	command.SetArgs([]string{"add", "--email", "u@example.com", "--roles", "reader"})
-	if err := command.Execute(); err != nil {
-		t.Fatalf("membership add: %v", err)
-	}
-	if requestCount != 1 {
-		t.Fatalf("request count = %d, want 1", requestCount)
-	}
-}
-
-func TestMembershipCommandFailsLocallyWithoutScopedAccessToken(t *testing.T) {
-	requestCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requestCount++ }))
-	defer server.Close()
-
-	original := loadProfileFunc
-	loadProfileFunc = func(string) (*profileEntry, error) {
-		return &profileEntry{BaseURL: server.URL, ApiKey: "api-key", TenantId: "bereia", IdToken: "legacy-id-token"}, nil
-	}
-	t.Cleanup(func() { loadProfileFunc = original })
-
-	profile, outputJSON := "", true
-	command := membershipCmd(&profile, &outputJSON)
-	command.SetArgs([]string{"remove", "--email", "u@example.com"})
-	err := command.Execute()
-	if err == nil || !strings.Contains(err.Error(), "scoped access token") {
-		t.Fatalf("error = %v, want scoped access token guidance", err)
-	}
-	if requestCount != 0 {
-		t.Fatalf("unsafe request count = %d", requestCount)
 	}
 }
 
@@ -269,30 +208,30 @@ func TestRevokeCommandUsesExplicitGlobalContractAndHeaderAPIKey(t *testing.T) {
 
 func TestAdminMutationCommandsUseHeaderAPIKeyAndScopedAccessToken(t *testing.T) {
 	tests := []struct {
-		name, path string
-		run        func(*string, *bool) error
+		name, method, path string
+		run                func(*string, *bool) error
 	}{
-		{name: "user create", path: "/v1/accounts/signUp", run: func(profile *string, outputJSON *bool) error {
+		{name: "user create", method: http.MethodPost, path: "/v1/accounts/signUp", run: func(profile *string, outputJSON *bool) error {
 			command := userCmd(profile, outputJSON)
 			command.SetArgs([]string{"create", "--email", "u@example.com", "--password", "password"})
 			return command.Execute()
 		}},
-		{name: "user suspend", path: "/v1/accounts/status", run: func(profile *string, outputJSON *bool) error {
+		{name: "user suspend", method: http.MethodPost, path: "/v1/accounts/status", run: func(profile *string, outputJSON *bool) error {
 			command := userCmd(profile, outputJSON)
 			command.SetArgs([]string{"suspend", "--email", "u@example.com"})
 			return command.Execute()
 		}},
-		{name: "tenant create", path: "/v1/tenants", run: func(profile *string, outputJSON *bool) error {
+		{name: "tenant create", method: http.MethodPut, path: "/v1/admin/identity/tenants/bereia", run: func(profile *string, outputJSON *bool) error {
 			command := tenantCmd(profile, outputJSON)
 			command.SetArgs([]string{"create", "--name", "Bereia", "--slug", "bereia"})
 			return command.Execute()
 		}},
-		{name: "role create", path: "/v1/tenants/bereia/roles", run: func(profile *string, outputJSON *bool) error {
+		{name: "role create", method: http.MethodPut, path: "/v1/admin/tenants/bereia/roles/reader", run: func(profile *string, outputJSON *bool) error {
 			command := roleCmd(profile, outputJSON)
 			command.SetArgs([]string{"create", "--tenant", "bereia", "--name", "reader", "--permissions", "read"})
 			return command.Execute()
 		}},
-		{name: "client create", path: "/v1/tenants/bereia/clients", run: func(profile *string, outputJSON *bool) error {
+		{name: "client create", method: http.MethodPost, path: "/v1/admin/tenants/bereia/clients", run: func(profile *string, outputJSON *bool) error {
 			command := clientCmd(profile, outputJSON)
 			command.SetArgs([]string{"create", "--tenant", "bereia", "--client-id", "worker"})
 			return command.Execute()
@@ -304,8 +243,8 @@ func TestAdminMutationCommandsUseHeaderAPIKeyAndScopedAccessToken(t *testing.T) 
 			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 				calls++
-				if request.URL.Path != test.path || request.URL.RawQuery != "" {
-					t.Errorf("request URL = %s?%s, want %s", request.URL.Path, request.URL.RawQuery, test.path)
+				if request.Method != test.method || request.URL.Path != test.path || request.URL.RawQuery != "" {
+					t.Errorf("request = %s %s?%s, want %s %s", request.Method, request.URL.Path, request.URL.RawQuery, test.method, test.path)
 				}
 				if request.Header.Get("X-API-Key") != "api-key" || request.Header.Get("Authorization") != "Bearer scoped-access-token" {
 					t.Errorf("request headers = %v", request.Header)

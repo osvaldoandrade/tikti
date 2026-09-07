@@ -163,7 +163,7 @@ func TestUserAdminController_RevokeRejectsUnsupportedTenantScopeBeforeService(t 
 	}
 }
 
-func TestLegacyAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) {
+func TestAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cfg, key := roleAccessConfig(t)
 	cfg.JwtSecret = "legacy-secret"
@@ -186,14 +186,6 @@ func TestLegacyAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) 
 			return jwt.MapClaims{"sub": "user-1"}, nil
 		},
 	}
-	tenantSvc := &fakeTenantService{createFn: func(context.Context, domain.TenantCreateReq) (*domain.TenantResp, error) {
-		calls["tenant"]++
-		return &domain.TenantResp{Id: "new-tenant"}, nil
-	}}
-	roleSvc := &fakeRoleService{createFn: func(context.Context, string, domain.RoleCreateReq) (*domain.RoleResp, error) {
-		calls["role"]++
-		return &domain.RoleResp{Name: "reader"}, nil
-	}}
 	clientSvc := &fakeClientService{createFn: func(context.Context, string, domain.ClientCreateReq) (*domain.ClientResp, error) {
 		calls["client"]++
 		return &domain.ClientResp{ClientId: "client-1"}, nil
@@ -205,8 +197,6 @@ func TestLegacyAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) 
 	router.POST("/status", adminUser.SetStatus)
 	router.POST("/revoke", adminUser.Revoke)
 	router.POST("/validate", NewValidateController(userSvc, cfg).Handle)
-	router.POST("/tenants", NewTenantController(tenantSvc, cfg).Create)
-	router.POST("/tenants/:tenantId/roles", NewRoleController(roleSvc, cfg).Create)
 	router.POST("/tenants/:tenantId/clients", NewClientController(clientSvc, cfg).Create)
 
 	bearer := func(claims jwt.MapClaims) string {
@@ -237,8 +227,6 @@ func TestLegacyAdminMutationsRejectUnscopedAuthorityBeforeService(t *testing.T) 
 		{name: "status raw platform token", path: "/status", authorization: platformToken, call: "status", body: map[string]any{"email": "u@example.com", "status": "ACTIVE"}, want: http.StatusUnauthorized},
 		{name: "revoke tenant admin", path: "/revoke", authorization: localAdmin, call: "revoke", body: map[string]any{"email": "u@example.com", "scope": "global"}, want: http.StatusForbidden},
 		{name: "validate platform without provenance", path: "/validate", authorization: platformWithoutProvenance, call: "validate", body: map[string]any{"token": "candidate", "audience": "workload"}, want: http.StatusForbidden},
-		{name: "tenant create tenant admin", path: "/tenants", authorization: localAdmin, call: "tenant", body: domain.TenantCreateReq{Name: "New", Slug: "new-tenant"}, want: http.StatusForbidden},
-		{name: "role create foreign tenant", path: "/tenants/bereia/roles", authorization: foreignAdmin, call: "role", body: domain.RoleCreateReq{Name: "reader", Permissions: []string{"read"}}, want: http.StatusForbidden},
 		{name: "client create foreign tenant", path: "/tenants/bereia/clients", authorization: foreignAdmin, call: "client", body: domain.ClientCreateReq{ClientId: "client-1"}, want: http.StatusForbidden},
 	}
 	for _, test := range tests {
@@ -272,35 +260,35 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	clientCtrl := NewClientController(clientSvc, cfg)
 
 	r := gin.New()
-	r.POST("/tenants", tenantCtrl.Create)
+	r.PUT("/tenants/:tenantId", tenantCtrl.CreateWithID)
 	r.GET("/tenants", tenantCtrl.List)
-	r.GET("/tenants/id/:id", tenantCtrl.Get)
+	r.GET("/tenants/:tenantId", tenantCtrl.Get)
 	r.GET("/tenants/:tenantId/users", memberCtrl.List)
 	r.POST("/tenants/:tenantId/users", memberCtrl.Create)
 	r.POST("/tenants/:tenantId/users/remove", memberCtrl.Remove)
-	r.POST("/tenants/:tenantId/roles", roleCtrl.Create)
-	r.GET("/tenants/:tenantId/roles", roleCtrl.List)
+	r.PUT("/tenants/:tenantId/roles/:roleName", roleCtrl.Put)
+	r.GET("/tenants/:tenantId/roles", roleCtrl.ListAdmin)
 	r.POST("/tenants/:tenantId/clients", clientCtrl.Create)
 	r.GET("/tenants/:tenantId/clients/:clientId", clientCtrl.Get)
 	r.GET("/tenants/:tenantId/clients", clientCtrl.List)
 
-	rec := performJSON(t, r, http.MethodPost, "/tenants", nil, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("tenant create bad req: expected 400, got %d", rec.Code)
+	rec := performJSON(t, r, http.MethodPut, "/tenants/t1", nil, admin)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("tenant create missing media type: expected 415, got %d", rec.Code)
 	}
-	tenantSvc.createFn = func(ctx context.Context, req domain.TenantCreateReq) (*domain.TenantResp, error) {
-		return nil, domain.ErrInvalidArgument
+	tenantSvc.createWithIDFn = func(ctx context.Context, tenantID string, req domain.TenantCreateReq) (*domain.TenantResp, bool, error) {
+		return nil, false, domain.ErrInvalidArgument
 	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants", domain.TenantCreateReq{Name: "n", Slug: "s"}, admin)
+	rec = performJSON(t, r, http.MethodPut, "/tenants/t1", domain.TenantCreateReq{Name: "n", Slug: "s"}, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("tenant create err: expected 400, got %d", rec.Code)
 	}
-	tenantSvc.createFn = func(ctx context.Context, req domain.TenantCreateReq) (*domain.TenantResp, error) {
-		return &domain.TenantResp{Id: "t1"}, nil
+	tenantSvc.createWithIDFn = func(ctx context.Context, tenantID string, req domain.TenantCreateReq) (*domain.TenantResp, bool, error) {
+		return &domain.TenantResp{Id: tenantID}, true, nil
 	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants", domain.TenantCreateReq{Name: "n", Slug: "s"}, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("tenant create ok: expected 200, got %d", rec.Code)
+	rec = performJSON(t, r, http.MethodPut, "/tenants/t1", domain.TenantCreateReq{Name: "n", Slug: "s"}, admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("tenant create ok: expected 201, got %d", rec.Code)
 	}
 
 	rec = performJSON(t, r, http.MethodGet, "/tenants?pageSize=0", nil, admin)
@@ -334,28 +322,28 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 	}
 
 	tenantSvc.getFn = func(ctx context.Context, tenantID string) (*domain.TenantResp, error) { return nil, domain.ErrNotFound }
-	rec = performJSON(t, r, http.MethodGet, "/tenants/id/t1", nil, admin)
+	rec = performJSON(t, r, http.MethodGet, "/tenants/t1", nil, admin)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("tenant get not found: expected 404, got %d", rec.Code)
 	}
 	tenantSvc.getFn = func(ctx context.Context, tenantID string) (*domain.TenantResp, error) {
 		return nil, domain.ErrInvalidArgument
 	}
-	rec = performJSON(t, r, http.MethodGet, "/tenants/id/t1", nil, admin)
+	rec = performJSON(t, r, http.MethodGet, "/tenants/t1", nil, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("tenant get bad req: expected 400, got %d", rec.Code)
 	}
 	tenantSvc.getFn = func(ctx context.Context, tenantID string) (*domain.TenantResp, error) {
 		return nil, errors.New("tenant-get-fail")
 	}
-	rec = performJSON(t, r, http.MethodGet, "/tenants/id/t1", nil, admin)
+	rec = performJSON(t, r, http.MethodGet, "/tenants/t1", nil, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("tenant get default err: expected 400, got %d", rec.Code)
 	}
 	tenantSvc.getFn = func(ctx context.Context, tenantID string) (*domain.TenantResp, error) {
 		return &domain.TenantResp{Id: tenantID}, nil
 	}
-	rec = performJSON(t, r, http.MethodGet, "/tenants/id/t1", nil, admin)
+	rec = performJSON(t, r, http.MethodGet, "/tenants/t1", nil, admin)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("tenant get ok: expected 200, got %d", rec.Code)
 	}
@@ -412,40 +400,40 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 		t.Fatalf("membership remove ok: expected 200, got %d", rec.Code)
 	}
 
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/roles", nil, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("role create bad req: expected 400, got %d", rec.Code)
+	rec = performJSON(t, r, http.MethodPut, "/tenants/t1/roles/R1", nil, admin)
+	if rec.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("role create missing media type: expected 415, got %d", rec.Code)
 	}
-	roleSvc.createFn = func(ctx context.Context, tenantID string, req domain.RoleCreateReq) (*domain.RoleResp, error) {
-		return nil, domain.ErrInvalidTenant
+	roleSvc.createWithNameFn = func(ctx context.Context, tenantID, roleName string, req domain.RolePutReq) (*domain.RoleResp, bool, error) {
+		return nil, false, domain.ErrInvalidTenant
 	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/roles", domain.RoleCreateReq{Name: "R1"}, admin)
+	rec = performJSON(t, r, http.MethodPut, "/tenants/t1/roles/R1", domain.RolePutReq{Permissions: []string{}}, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("role create err: expected 400, got %d", rec.Code)
 	}
-	roleSvc.createFn = func(ctx context.Context, tenantID string, req domain.RoleCreateReq) (*domain.RoleResp, error) {
-		return &domain.RoleResp{Name: req.Name}, nil
+	roleSvc.createWithNameFn = func(ctx context.Context, tenantID, roleName string, req domain.RolePutReq) (*domain.RoleResp, bool, error) {
+		return &domain.RoleResp{Name: roleName}, true, nil
 	}
-	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/roles", domain.RoleCreateReq{Name: "R1"}, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("role create ok: expected 200, got %d", rec.Code)
+	rec = performJSON(t, r, http.MethodPut, "/tenants/t1/roles/R1", domain.RolePutReq{Permissions: []string{}}, admin)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("role create ok: expected 201, got %d", rec.Code)
 	}
 
-	roleSvc.listFn = func(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
+	roleSvc.listCanonicalFn = func(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
 		return nil, domain.ErrInvalidTenant
 	}
 	rec = performJSON(t, r, http.MethodGet, "/tenants/t1/roles", nil, admin)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("role list err: expected 400, got %d", rec.Code)
 	}
-	roleSvc.listFn = func(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
+	roleSvc.listCanonicalFn = func(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
 		return nil, errors.New("role-list-fail")
 	}
 	rec = performJSON(t, r, http.MethodGet, "/tenants/t1/roles", nil, admin)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("role list default err: expected 400, got %d", rec.Code)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("role list default err: expected 500, got %d", rec.Code)
 	}
-	roleSvc.listFn = func(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
+	roleSvc.listCanonicalFn = func(ctx context.Context, tenantID string) ([]*domain.RoleResp, error) {
 		return []*domain.RoleResp{{Name: "R1"}}, nil
 	}
 	rec = performJSON(t, r, http.MethodGet, "/tenants/t1/roles", nil, admin)
@@ -475,8 +463,8 @@ func TestTenantMembershipRoleClientControllers_Handle(t *testing.T) {
 		return &domain.ClientResp{ClientId: req.ClientId}, nil
 	}
 	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/clients", domain.ClientCreateReq{ClientId: "c1"}, admin)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("client create ok: expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("client create ok: expected 201, got %d", rec.Code)
 	}
 
 	clientSvc.getFn = func(ctx context.Context, tenantID string, clientID string) (*domain.ClientResp, error) {

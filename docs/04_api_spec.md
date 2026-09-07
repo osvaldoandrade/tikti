@@ -669,11 +669,16 @@ Error cases:
 
 ## Tenant management (admin)
 
-These endpoints support multi-tenant operations. They require an ADMIN token.
+These endpoints support explicit-target multi-tenant operations. They require
+the API key in `X-API-Key` and an RS256 access token with the documented scope,
+role, and issuance provenance.
 
-### POST /v1/tenants
+### PUT /v1/admin/identity/tenants/{tenantId}
 
-Creates a tenant with a generated UUID. This existing behavior is unchanged.
+Creates a tenant without overwrite. `tenantId` and `slug` must be identical
+1–63 byte canonical DNS labels (lowercase ASCII letters, digits, or internal
+hyphens, beginning and ending alphanumeric). `name` is trimmed to 1–128 Unicode
+characters; the 4096-byte JSON body accepts exactly one `name` and one `slug`.
 
 Request:
 
@@ -684,7 +689,11 @@ Request:
 }
 ```
 
-Response 200:
+Creation returns `201`; an identical replay returns `200` with the stored
+`createdAt` and current status. Different metadata returns `409` without any
+overwrite.
+
+Response:
 
 ```json
 {
@@ -696,15 +705,8 @@ Response 200:
 }
 ```
 
-### PUT /v1/tenants/{tenantId}
-
-Creates without overwrite. `tenantId` and `slug` must be identical 1–63 byte
-canonical DNS labels (lowercase ASCII letters, digits, or internal hyphens,
-beginning and ending alphanumeric). `name` is trimmed to 1–128 Unicode
-characters; the 4096-byte JSON body accepts exactly one `name` and one `slug`.
-
 ```http
-PUT /v1/tenants/bereia
+PUT /v1/admin/identity/tenants/bereia
 X-API-Key: API_KEY
 Authorization: Bearer PLATFORM_ADMIN_ACCESS_TOKEN
 Content-Type: application/json
@@ -712,9 +714,7 @@ Content-Type: application/json
 {"name":"Bereia","slug":"bereia"}
 ```
 
-Creation returns `201`; an identical replay returns `200` with the stored
-`createdAt` and current status. Different metadata returns `409` without any
-overwrite. Malformed, duplicate, case-variant, unknown, or invalid fields
+Malformed, duplicate, case-variant, unknown, or invalid fields
 return `400`; over 4096 bytes returns `413`; missing or non-JSON `Content-Type`
 returns `415`.
 
@@ -723,21 +723,20 @@ The access token must be RS256-signed and contain a non-empty subject, the
 `tikti_platform_privilege=platform-admin`. The service API key is accepted only
 in the `X-API-Key` header.
 
-### GET /v1/tenants/id/{tenantId}
+### GET /v1/admin/identity/tenants/{tenantId}
 
 Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 
-### GET /v1/tenants
+### GET /v1/admin/identity/tenant-inventory
 
 Lists the tenant directory for global administrators. The response contains
 tenant identity, slug, lifecycle status, and creation time without credentials
 or authentication secrets.
 
-The Code Admin compatibility reads `GET /v1/tenants`,
-`GET /v1/tenants/id/{tenantId}`, `GET /v1/tenants/{tenantId}/roles`, and both
-legacy client GET routes accept the API key only in `X-API-Key`. A `key` query
-parameter is rejected even when the correct header is present. Existing callers
-that already use the header retain their paths and response contracts.
+All Identity V2 reads accept the API key only in `X-API-Key`; a `key` query
+parameter is rejected even when the correct header is present. The inventory
+projects `local-tenant` as the unique `MASTER` named `Code Foundry`, first in
+the result, followed by alphabetically ordered `WORKLOAD` tenants.
 
 Query parameters:
 
@@ -761,20 +760,12 @@ Response 200:
 }
 ```
 
-## Membership management (admin)
+## Membership storage contract (internal admin)
 
-The compatibility routes `GET|POST /v1/tenants/{tenantId}/users` and
-`POST /v1/tenants/{tenantId}/users/remove` require the API key exclusively in
+The internal exact-target membership API requires the API key exclusively in
 `X-API-Key` and a strict RS256 bearer for the configured issuer and Code Admin
-audience. Query parameter `key` is rejected, including when the correct header
-is also present. A tenant-local bearer may read with
-`code-admin:identity:read` or `code-admin:identity:write` and may mutate only
-with `code-admin:identity:write`; in both cases its signed `tid` must exactly
-match the path tenant. Cross-tenant access requires
-`code-admin:tenants:admin`, persisted `ADMIN` role, and
-`tikti_platform_privilege=platform-admin`. HS256 identity tokens, role-only
-tokens, missing subjects, scope suffixes, and foreign `tid` values are denied
-before a membership service call.
+audience. Workload-facing directory and access administration is exposed by
+Code Admin Identity V2; Tikti no longer exposes email-based membership routes.
 
 `GET /v1/admin/tenants/{tenantId}/memberships/{userId}` accepts a single 1–128 character ASCII user ID segment (`[A-Za-z0-9._:-]`), except for the complete dot-segments `.` and `..`. Those aliases return 400 before any storage read; dots embedded in an otherwise valid ID remain supported.
 
@@ -782,74 +773,9 @@ before a membership service call.
 
 The v2 write atomically stores identical v2 and compatibility projections on a single Redis/Kvrocks node. Every server and bootstrap legacy writer, including processes started with the v2 write route disabled, permanently rejects create, update, and delete with a membership conflict whenever the target pair has either v2 marker; no route flag restores an unguarded legacy path. Legacy-only pairs remain writable for compatibility. Roll out this guard to the entire server and bootstrap fleet while the v2 route is still disabled. Roll back route exposure by disabling the v2 write flag while retaining the guarded image; do not restore an older unguarded image or manually delete one projection until an audited reconciliation proves no v2-owned pair remains.
 
-### GET /v1/tenants/{tenantId}/users
-
-Lists the users that are members of the tenant under the compatibility
-authorization contract above. The response never includes passwords, token
-versions, external subjects, or other authentication secrets.
-
-Query parameters:
-
-- `pageSize`: optional, from 1 to 200; defaults to 50.
-- `pageToken`: optional opaque cursor returned by the previous page.
-
-Response 200:
-
-```json
-{
-  "users": [
-    {
-      "id": "user-123",
-      "email": "user@company.com",
-      "roles": ["TENANT_USER"],
-      "status": "ACTIVE",
-      "authSource": "PASSWORD",
-      "createdAt": "2026-01-28T12:00:00Z"
-    }
-  ],
-  "nextPageToken": ""
-}
-```
-
-### POST /v1/tenants/{tenantId}/users
-
-Creates a membership for a user within a tenant. If the user does not exist, the endpoint creates the user with a generated password or returns 400, depending on policy.
-
-Request:
-
-```json
-{
-  "email": "user@company.com",
-  "roles": ["TENANT_USER"]
-}
-```
-
-### POST /v1/tenants/{tenantId}/users/remove
-
-Removes a membership for a user within a tenant. The user record persists; only the tenant association is deleted.
-
-Request:
-
-```json
-{
-  "email": "user@company.com"
-}
-```
-
-Response 200:
-
-```json
-{
-  "tenantId": "tenant-1",
-  "userId": "user-123",
-  "email": "user@company.com",
-  "removedAt": "2026-01-28T12:01:00Z"
-}
-```
-
 ## Client management (admin)
 
-### POST /v1/tenants/{tenantId}/clients
+### POST /v1/admin/tenants/{tenantId}/clients
 
 Creates a client for token exchange. The response includes the generated client secret. The secret is returned once; subsequent reads do not expose it.
 
@@ -865,23 +791,15 @@ Request:
 ```
 
 ## Role management (admin)
-`PUT /v1/admin/tenants/{tenantId}/roles/{roleName}` creates an immutable tenant role from the exact body `{"permissions":[...]}`; it requires `X-API-Key` plus an RS256 bearer with provenance-bound `code-admin:tenants:admin`, or `code-admin:identity:write` with matching `tid`, and accepts 1–500 unique scope strings of 1–128 characters (`[A-Za-z0-9._:/*-]`). Create returns 201, an identical replay 200, and a conflicting definition 409. The legacy POST below uses the same strict platform-or-exact-tenant authority.
+`PUT /v1/admin/tenants/{tenantId}/roles/{roleName}` creates an immutable tenant role from the exact body `{"permissions":[...]}`; it requires `X-API-Key` plus an RS256 bearer with provenance-bound `code-admin:tenants:admin`, or `code-admin:identity:write` with matching `tid`, and accepts 1–500 unique scope strings of 1–128 characters (`[A-Za-z0-9._:/*-]`). Create returns 201, an identical replay 200, and a conflicting definition 409.
 
-`GET /v1/admin/tenants/{tenantId}/roles/{roleName}` and `GET /v1/admin/tenants/{tenantId}/roles` require `X-API-Key` in the header and a strict RS256 bearer with a non-empty `sub`. Provenance-bound `code-admin:tenants:admin` may read any target tenant; otherwise the bearer needs `code-admin:identity:read` or `code-admin:identity:write` and an exact matching `tid`. Tenant IDs use the 1–63 character lowercase DNS-label grammar and role names use the published 1–128 character role grammar. Exact lookup returns 200 or `404 {"error":"role not found"}`; list returns at most 500 roles in a 200 JSON array sorted by role name. Both reads fail closed with 500 when a stored Redis value is empty or malformed, its hash field differs from the embedded role name, or tenant ownership, permission count, or permission grammar violate the immutable role contract; the legacy GET remains available for legacy projections. Read audit records contain only bounded actor, target tenant, role, request ID, and outcome metadata, never permissions, credentials, or the API key. Query-string API keys are rejected.
+`GET /v1/admin/tenants/{tenantId}/roles/{roleName}` and `GET /v1/admin/tenants/{tenantId}/roles` require `X-API-Key` in the header and a strict RS256 bearer with a non-empty `sub`. Provenance-bound `code-admin:tenants:admin` may read any target tenant; otherwise the bearer needs `code-admin:identity:read` or `code-admin:identity:write` and an exact matching `tid`. Tenant IDs use the 1–63 character lowercase DNS-label grammar and role names use the published 1–128 character role grammar. Exact lookup returns 200 or `404 {"error":"role not found"}`; list returns at most 500 roles in a 200 JSON array sorted by role name. Both reads fail closed with 500 when a stored Redis value is empty or malformed, its hash field differs from the embedded role name, or tenant ownership, permission count, or permission grammar violate the immutable role contract. Read audit records contain only bounded actor, target tenant, role, request ID, and outcome metadata, never permissions, credentials, or the API key. Query-string API keys are rejected.
 
-### POST /v1/tenants/{tenantId}/roles
+## Identity V2 cutover
 
-Creates a role and its permissions.
-
-Request:
-
-```json
-{
-  "name": "CODEQ_ADMIN",
-  "permissions": ["codeq:admin","codeq:claim","codeq:result"]
-}
-```
-
-## Backward compatibility
-
-All endpoints added after the initial release are additive. Existing endpoints retain their paths and payload shapes. The server accepts legacy tokens and supports lookup responses that omit fields added later, but includes those fields when the data is available.
+The removed `/v1/tenants`, `/v1/tenants/{tenantId}/users`,
+`/v1/tenants/{tenantId}/roles`, and `/v1/tenants/{tenantId}/clients` admin
+aliases are intentionally not retained. Consumers must use the canonical
+explicit-target endpoints above. This cutover changes only the HTTP surface;
+stored identities, memberships, roles, clients, and SAML configuration are not
+deleted.

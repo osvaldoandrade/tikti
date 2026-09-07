@@ -47,6 +47,13 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	roleAdmin.GET("", roleCtrl.ListAdmin)
 	roleAdmin.GET("/:roleName", roleCtrl.Get)
 	roleAdmin.PUT("/:roleName", roleCtrl.Put)
+	clientCtrl := controllers.NewClientController(clientService, cfg)
+	if clientService != nil {
+		clientAdmin := v1.Group("/admin/tenants/:tenantId/clients", utils.RequiredApiKeyHeader(cfg.ApiKey))
+		clientAdmin.GET("", clientCtrl.List)
+		clientAdmin.POST("", clientCtrl.Create)
+		clientAdmin.GET("/:clientId", clientCtrl.Get)
+	}
 	if (cfg.TenantScopedTokenClaimsV1 || cfg.TenantTargetDiscoveryV2) && clientService != nil {
 		managedClient := controllers.NewManagedAudienceClientController(clientService, cfg)
 		managedAdmin := v1.Group("/admin/tenants/:tenantId/clients", utils.RequiredApiKeyHeader(cfg.ApiKey))
@@ -54,23 +61,12 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		managedAdmin.PUT("/code-admin-api:ensure/", managedClient.Ensure)
 	}
 	tenantCtrl := controllers.NewTenantController(tenantService, cfg)
-	tenantProvisioning := v1.Group("/tenants")
-	tenantProvisioning.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
-	tenantProvisioning.PUT("/:tenantId", tenantCtrl.CreateWithID)
-	memberCtrl := controllers.NewMembershipController(membershipService, cfg)
-	clientCtrl := controllers.NewClientController(clientService, cfg)
-	legacyMembershipAdmin := v1.Group("/tenants/:tenantId/users", utils.RequiredApiKeyHeader(cfg.ApiKey))
-	legacyMembershipAdmin.GET("", memberCtrl.List)
-	legacyMembershipAdmin.POST("", memberCtrl.Create)
-	legacyMembershipAdmin.POST("/remove", memberCtrl.Remove)
+	identityAdmin := v1.Group("/admin/identity", utils.RequiredApiKeyHeader(cfg.ApiKey))
+	identityAdmin.GET("/tenant-inventory", tenantCtrl.List)
+	identityAdmin.GET("/tenants/:tenantId", tenantCtrl.Get)
+	identityAdmin.PUT("/tenants/:tenantId", tenantCtrl.CreateWithID)
 	tenantOOB := v1.Group("/tenants/:tenantId/oob", utils.RequiredApiKeyHeader(cfg.ApiKey))
 	tenantOOB.POST("/send", controllers.RequireTenantOOBOrchestratorAuthority(cfg), controllers.NewOobDispatchController(userService).Handle)
-	legacyCodeAdminReads := v1.Group("/", utils.RequiredApiKeyHeader(cfg.ApiKey))
-	legacyCodeAdminReads.GET("/tenants", tenantCtrl.List)
-	legacyCodeAdminReads.GET("/tenants/id/:id", tenantCtrl.Get)
-	legacyCodeAdminReads.GET("/tenants/:tenantId/roles", roleCtrl.List)
-	legacyCodeAdminReads.GET("/tenants/:tenantId/clients", clientCtrl.List)
-	legacyCodeAdminReads.GET("/tenants/:tenantId/clients/:clientId", clientCtrl.Get)
 
 	protected := v1.Group("/")
 	protected.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
@@ -86,9 +82,6 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		protected.POST("/accounts/delete", controllers.NewDeleteController(userService, cfg).Handle)
 		protected.POST("/accounts/sendOobCode", controllers.NewOobSendController(userService, cfg).Handle)
 		protected.POST("/accounts/resetPassword", controllers.NewOobResetController(userService, cfg).Handle)
-		protected.POST("/tenants", tenantCtrl.Create)
-		protected.POST("/tenants/:tenantId/roles", roleCtrl.Create)
-		protected.POST("/tenants/:tenantId/clients", clientCtrl.Create)
 	}
 
 	if samlStore != nil {
