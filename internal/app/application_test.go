@@ -127,6 +127,10 @@ func (applicationWorkloadAccountService) Session(context.Context, string, domain
 	return nil, domain.ErrWorkloadTokenInvalid
 }
 
+func (applicationWorkloadAccountService) Delete(context.Context, string, domain.WorkloadAccountCredentials) error {
+	return domain.ErrWorkloadTokenInvalid
+}
+
 func TestSetupMappingsRegistersExactWorkloadAccountEdgeAliases(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -140,8 +144,10 @@ func TestSetupMappingsRegistersExactWorkloadAccountEdgeAliases(t *testing.T) {
 	for _, route := range []string{
 		"POST /v1/workloads/accounts/register",
 		"POST /v1/workloads/accounts/session",
+		"POST /v1/workloads/accounts/delete",
 		"POST /identity/v1/workloads/accounts/register",
 		"POST /identity/v1/workloads/accounts/session",
+		"POST /identity/v1/workloads/accounts/delete",
 	} {
 		if !routes[route] {
 			t.Fatalf("missing exact workload-account route %s", route)
@@ -155,6 +161,7 @@ func TestSetupMappingsRegistersExactWorkloadAccountEdgeAliases(t *testing.T) {
 	for _, path := range []string{
 		"/identity/v1/workloads/accounts/register",
 		"/identity/v1/workloads/accounts/session",
+		"/identity/v1/workloads/accounts/delete",
 	} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")

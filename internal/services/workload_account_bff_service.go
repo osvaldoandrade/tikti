@@ -35,11 +35,16 @@ type workloadAccountTokenService interface {
 	TokenExchange(context.Context, domain.TokenExchangeReq) (*domain.TokenExchangeResp, error)
 }
 
+type workloadAccountDeletionStore interface {
+	Delete(context.Context, string, string, string) error
+}
+
 // WorkloadAccountBFFService is the secretless, workload-authenticated account
 // boundary used by tenant BFFs such as bereia-api.
 type WorkloadAccountBFFService interface {
 	Register(context.Context, string, domain.WorkloadAccountCredentials) (*domain.WorkloadAccountRegistrationResp, bool, error)
 	Session(context.Context, string, domain.WorkloadAccountCredentials) (*domain.WorkloadAccountSessionResp, error)
+	Delete(context.Context, string, domain.WorkloadAccountCredentials) error
 }
 
 type workloadAccountBFFService struct {
@@ -48,6 +53,7 @@ type workloadAccountBFFService struct {
 	memberships workloadAccountMembershipReader
 	writer      MembershipV2WriteService
 	tokens      workloadAccountTokenService
+	deletion    workloadAccountDeletionStore
 	clients     map[string]config.WorkloadAccountBFFClientConfig
 	now         func() time.Time
 }
@@ -58,6 +64,7 @@ func NewWorkloadAccountBFFService(
 	memberships workloadAccountMembershipReader,
 	writer MembershipV2WriteService,
 	tokens workloadAccountTokenService,
+	deletion workloadAccountDeletionStore,
 	clients []config.WorkloadAccountBFFClientConfig,
 ) WorkloadAccountBFFService {
 	bySubject := make(map[string]config.WorkloadAccountBFFClientConfig, len(clients))
@@ -68,8 +75,49 @@ func NewWorkloadAccountBFFService(
 	}
 	return &workloadAccountBFFService{
 		verifier: verifier, users: users, memberships: memberships, writer: writer,
-		tokens: tokens, clients: bySubject, now: time.Now,
+		tokens: tokens, deletion: deletion, clients: bySubject, now: time.Now,
 	}
+}
+
+func (s *workloadAccountBFFService) Delete(
+	ctx context.Context,
+	projectedToken string,
+	credentials domain.WorkloadAccountCredentials,
+) error {
+	client, err := s.authorize(ctx, projectedToken)
+	if err != nil {
+		return err
+	}
+	credentials, err = validWorkloadAccountCredentials(credentials)
+	if err != nil {
+		return err
+	}
+	if s.users == nil || s.memberships == nil || s.deletion == nil {
+		return domain.ErrWorkloadAccountUnavailable
+	}
+	user, err := s.users.FindByEmail(ctx, credentials.Email)
+	if err != nil {
+		return domain.ErrWorkloadAccountUnavailable
+	}
+	if user == nil || user.Status != domain.UserStatusActive || user.AuthSource != domain.AuthSourcePassword ||
+		!utils.VerifyPassword(user.Password, credentials.Password) {
+		return domain.ErrInvalidCreds
+	}
+	membership, err := s.memberships.Get(ctx, client.TenantID, user.Id)
+	if err != nil {
+		return domain.ErrWorkloadAccountUnavailable
+	}
+	if !validWorkloadAccountMembership(membership, client, user.Id) {
+		return domain.ErrWorkloadBindingDenied
+	}
+	if err := s.deletion.Delete(ctx, client.TenantID, user.Id, user.Email); err != nil {
+		if errors.Is(err, domain.ErrInvalidArgument) || errors.Is(err, domain.ErrNotFound) ||
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return domain.ErrWorkloadAccountUnavailable
+	}
+	return nil
 }
 
 func (s *workloadAccountBFFService) Register(

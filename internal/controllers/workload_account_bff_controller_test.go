@@ -21,6 +21,11 @@ type workloadAccountControllerService struct {
 	err         error
 }
 
+func (f *workloadAccountControllerService) Delete(_ context.Context, token string, credentials domain.WorkloadAccountCredentials) error {
+	f.token, f.credentials = token, credentials
+	return f.err
+}
+
 func (f *workloadAccountControllerService) Register(_ context.Context, token string, credentials domain.WorkloadAccountCredentials) (*domain.WorkloadAccountRegistrationResp, bool, error) {
 	f.token, f.credentials = token, credentials
 	if f.err != nil {
@@ -53,6 +58,7 @@ func TestWorkloadAccountBFFControllerContract(t *testing.T) {
 		{name: "register created", path: "/v1/workloads/accounts/register", created: true, want: http.StatusCreated},
 		{name: "register replay", path: "/v1/workloads/accounts/register", want: http.StatusOK},
 		{name: "session", path: "/v1/workloads/accounts/session", want: http.StatusOK},
+		{name: "delete", path: "/v1/workloads/accounts/delete", want: http.StatusNoContent},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service := &workloadAccountControllerService{created: test.created}
@@ -60,6 +66,7 @@ func TestWorkloadAccountBFFControllerContract(t *testing.T) {
 			engine := gin.New()
 			engine.POST("/v1/workloads/accounts/register", controller.Register)
 			engine.POST("/v1/workloads/accounts/session", controller.Session)
+			engine.POST("/v1/workloads/accounts/delete", controller.Delete)
 			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(`{"email":"reader@example.com","password":"correct horse battery staple"}`))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Authorization", "Bearer projected-token")

@@ -59,6 +59,19 @@ func (c *workloadAccountBFFController) Session(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, result)
 }
 
+func (c *workloadAccountBFFController) Delete(ctx *gin.Context) {
+	prepareWorkloadAccountResponse(ctx)
+	token, credentials, ok := workloadAccountRequest(ctx)
+	if !ok {
+		return
+	}
+	if err := c.service.Delete(ctx.Request.Context(), token, credentials); err != nil {
+		writeWorkloadAccountError(ctx, err)
+		return
+	}
+	ctx.Status(http.StatusNoContent)
+}
+
 func prepareWorkloadAccountResponse(ctx *gin.Context) {
 	ctx.Header("Cache-Control", "no-store")
 	ctx.Header("Pragma", "no-cache")
