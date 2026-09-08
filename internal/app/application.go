@@ -153,6 +153,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 			membershipRepo,
 			nil,
 			userService,
+			repository.NewWorkloadAccountDeletionRepo(redisClient),
 			cfg.WorkloadAccountBFF.Clients,
 			directoryRepo,
 		)
