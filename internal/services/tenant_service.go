@@ -15,7 +15,6 @@ type TenantService interface {
 	CreateWithID(ctx context.Context, tenantID string, req domain.TenantCreateReq) (*domain.TenantResp, bool, error)
 	Get(ctx context.Context, tenantID string) (*domain.TenantResp, error)
 	List(ctx context.Context, offset uint64, pageSize int64) (*domain.TenantsPage, error)
-	EnsureDefault(ctx context.Context) (*domain.TenantResp, error)
 	IsTenantActive(ctx context.Context, tenantID string) (bool, error)
 }
 
@@ -26,6 +25,9 @@ type TenantService interface {
 func (s *tenantService) IsTenantActive(ctx context.Context, tenantID string) (bool, error) {
 	if !validDNSLabel(tenantID) {
 		return false, domain.ErrInvalidArgument
+	}
+	if tenantID == domain.RetiredDefaultTenantID {
+		return false, nil
 	}
 	tenant, err := s.repo.Get(ctx, tenantID)
 	if err != nil {
@@ -57,6 +59,7 @@ func (s *tenantService) CreateWithID(
 ) (*domain.TenantResp, bool, error) {
 	req.Name = tenantname.Normalize(req.Name)
 	if !validDNSLabel(tenantID) || !validTenantName(req.Name) || req.Slug != tenantID ||
+		tenantID == domain.RetiredDefaultTenantID ||
 		tenantID == domain.MasterTenantID && req.Name != domain.MasterTenantName ||
 		tenantID != domain.MasterTenantID && tenantname.ReservedMaster(req.Name) {
 		return nil, false, domain.ErrInvalidArgument
@@ -81,6 +84,9 @@ func (s *tenantService) Get(ctx context.Context, tenantID string) (*domain.Tenan
 	if strings.TrimSpace(tenantID) == "" {
 		return nil, domain.ErrInvalidArgument
 	}
+	if tenantID == domain.RetiredDefaultTenantID {
+		return nil, domain.ErrNotFound
+	}
 	tenant, err := s.repo.Get(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -103,7 +109,7 @@ func validTenantName(value string) bool {
 }
 
 func validStoredTenant(tenant *domain.Tenant) bool {
-	return tenant != nil && validDNSLabel(tenant.Id) && tenant.Slug == tenant.Id && tenantname.Valid(tenant.Name) &&
+	return tenant != nil && tenant.Id != domain.RetiredDefaultTenantID && validDNSLabel(tenant.Id) && tenant.Slug == tenant.Id && tenantname.Valid(tenant.Name) &&
 		(tenant.Id == domain.MasterTenantID || !tenantname.ReservedMaster(tenant.Name))
 }
 
@@ -136,15 +142,4 @@ func (s *tenantService) List(ctx context.Context, offset uint64, pageSize int64)
 		items = append(items, *tenantResponse(&tenant))
 	}
 	return &domain.TenantsPage{Tenants: items, NextPageToken: next}, nil
-}
-
-func (s *tenantService) EnsureDefault(ctx context.Context) (*domain.TenantResp, error) {
-	t, err := s.repo.EnsureDefault(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if t == nil {
-		return nil, domain.ErrNotFound
-	}
-	return tenantResponse(t), nil
 }

@@ -90,7 +90,7 @@ func (c *exactMembershipPageTokenCodec) mac(payload []byte) []byte {
 }
 
 func validExactMembershipPageToken(value exactMembershipPageToken) bool {
-	return value.Version == exactMembershipPageTokenVersion && canonicalTenantIdentity(value.Tenant) &&
+	return value.Version == exactMembershipPageTokenVersion && activeTenantIdentity(value.Tenant) &&
 		validMembershipSnapshotDigest(value.Digest) && canonicalUserIdentity(value.After) &&
 		value.PageSize >= 1 && value.PageSize <= exactMembershipListPageMax
 }

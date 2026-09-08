@@ -134,7 +134,7 @@ func unmanagedClientPayload(tenantID string, client *domain.Client) (string, []b
 		return "", nil, domain.ErrInvalidArgument
 	}
 	clientID := strings.TrimSpace(client.Id)
-	if tenantID == "" || clientID == "" || client.ManagedBy != "" {
+	if !activeTenantIdentity(tenantID) || clientID == "" || client.ManagedBy != "" {
 		return "", nil, domain.ErrInvalidArgument
 	}
 	client.Id = clientID
@@ -242,6 +242,9 @@ func (r *clientRepo) EnsureManagedAudience(
 }
 
 func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
+	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
+		return nil, domain.ErrInvalidTenant
+	}
 	values, err := managedClientGetScript.Eval(ctx, r.client, []string{
 		clientsKey(tenantID), managedClientsKey(tenantID),
 	}, clientID).StringSlice()
@@ -276,6 +279,9 @@ func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) 
 }
 
 func (r *clientRepo) List(ctx context.Context, tenantID string) ([]*domain.Client, error) {
+	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
+		return nil, domain.ErrInvalidTenant
+	}
 	var clientsCommand, markersCommand *redis.StringStringMapCmd
 	_, err := r.client.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 		clientsCommand = pipe.HGetAll(ctx, clientsKey(tenantID))
@@ -364,7 +370,7 @@ func adoptableLegacyManagedAudienceClient(legacy, desired *domain.Client) bool {
 }
 
 func validManagedAudienceClient(tenantID string, client *domain.Client) bool {
-	return canonicalTenantIdentity(tenantID) &&
+	return activeTenantIdentity(tenantID) &&
 		(domain.IsManagedCodeAdminAudience(tenantID, client) || domain.IsManagedWorkloadAccountAudience(tenantID, client)) &&
 		scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes)
 }

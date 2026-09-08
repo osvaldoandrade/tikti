@@ -57,7 +57,7 @@ func NewWorkloadAccountDeletionRepo(client *redis.Client) WorkloadAccountDeletio
 }
 
 func (r *workloadAccountDeletionRepo) Delete(ctx context.Context, tenantID, userID, email string) error {
-	if !canonicalTenantIdentity(tenantID) || !canonicalMembershipV2UserID(userID) || email == "" {
+	if !activeTenantIdentity(tenantID) || !canonicalMembershipV2UserID(userID) || email == "" {
 		return domain.ErrInvalidArgument
 	}
 	if r == nil || r.client == nil {

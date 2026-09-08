@@ -55,7 +55,7 @@ func NewExactMembershipListReader(client *redis.Client, tenants ExactTenantRepos
 }
 
 func (r *exactMembershipListReader) ListExact(ctx context.Context, tenantID, encodedToken string, pageSize int) (*domain.MembershipIdentitiesPage, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
 	if pageSize < 1 || pageSize > exactMembershipListPageMax {

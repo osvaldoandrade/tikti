@@ -142,6 +142,19 @@ func TestAdminServiceRejectsInvalidInputWithoutReplacingExistingTrust(t *testing
 	}
 }
 
+func TestAdminServiceRejectsRetiredDefaultTenant(t *testing.T) {
+	service := NewAdminService(newAdminTestStore(t), MetadataHTTPFetcher{}, "https://code-foundry.example", nil)
+	if _, err := service.Get(context.Background(), "default"); !errors.Is(err, ErrAdminInvalidInput) {
+		t.Fatalf("Get default = %v", err)
+	}
+	if _, err := service.Put(context.Background(), "default", PutIdPConfiguration{}); !errors.Is(err, ErrAdminInvalidInput) {
+		t.Fatalf("Put default = %v", err)
+	}
+	if err := service.Delete(context.Background(), "default"); !errors.Is(err, ErrAdminInvalidInput) {
+		t.Fatalf("Delete default = %v", err)
+	}
+}
+
 func TestMetadataHTTPFetcherRejectsSSRFAndInsecureURLs(t *testing.T) {
 	fetcher := MetadataHTTPFetcher{}
 	for _, rawURL := range []string{

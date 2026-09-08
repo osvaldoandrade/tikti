@@ -567,7 +567,7 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 
 func canonicalFederatedUser(input *domain.User) (*domain.User, error) {
 	if input == nil || !canonicalUserIdentity(input.Id) || input.AuthSource != domain.AuthSourceSAML ||
-		!validExternalSubject(input.ExternalSubject) || input.CompanyId == nil || !canonicalTenantIdentity(*input.CompanyId) ||
+		!validExternalSubject(input.ExternalSubject) || input.CompanyId == nil || !activeTenantIdentity(*input.CompanyId) ||
 		!canonicalEmail(input.Email) || !validUserStatus(input.Status) || input.TokenVersion < 0 {
 		return nil, domain.ErrInvalidArgument
 	}

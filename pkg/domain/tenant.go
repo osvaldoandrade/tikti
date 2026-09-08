@@ -6,8 +6,9 @@ type TenantStatus string
 type TenantType string
 
 const (
-	MasterTenantID   = "local-tenant"
-	MasterTenantName = "Code Foundry"
+	MasterTenantID         = "local-tenant"
+	MasterTenantName       = "Code Foundry"
+	RetiredDefaultTenantID = "default"
 )
 
 const (

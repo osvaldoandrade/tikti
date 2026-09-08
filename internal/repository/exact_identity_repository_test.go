@@ -66,7 +66,7 @@ func TestTenantRepo_GetExact_ValidAndMissing(t *testing.T) {
 }
 
 func TestTenantRepo_GetExact_RejectsInvalidInputAndStorage(t *testing.T) {
-	for _, tenantID := range []string{"", "Tenant", "-tenant", "tenant-", "tênant", strings.Repeat("t", 64)} {
+	for _, tenantID := range []string{"", "Tenant", "-tenant", "tenant-", "tênant", "default", strings.Repeat("t", 64)} {
 		_, legacy := newTenantRepoForTest(t)
 		if got, err := legacy.(ExactTenantRepository).GetExact(context.Background(), tenantID); got != nil || !errors.Is(err, domain.ErrInvalidTenant) {
 			t.Fatalf("input %q = %+v, %v", tenantID, got, err)

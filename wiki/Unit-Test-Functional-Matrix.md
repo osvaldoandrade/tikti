@@ -125,7 +125,7 @@ Legend: `Matrix ID` is the identifier in the test plan. `PF Profile` is the func
 | `internal/repository/tenant_repository.go:NewTenantRepo` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/repository/tenant_repository.go:Create` | `M-REPO-TENANT-Create` | `PF-12` | `CF-12-01..06` | Create/update persistence with propagated errors |
 | `internal/repository/tenant_repository.go:Get` | `M-REPO-TENANT-Get` | `PF-13` | `CF-13-01..05` | Get/List/Ensure with not-found and success paths |
-| `internal/repository/tenant_repository.go:EnsureDefault` | `M-REPO-TENANT-EnsureDefault` | `PF-13` | `CF-13-01..05` | Get/List/Ensure with not-found and success paths |
+| `internal/repository/tenant_repository.go:RetireLegacyDefault` | `M-REPO-TENANT-RetireLegacyDefault` | `PF-13` | `CF-13-01..05` | Idempotent registry retirement with historical data preserved |
 | `internal/repository/user_repository.go:UpdateUser` | `M-REPO-USER-UpdateUser` | `PF-12` | `CF-12-01..06` | Create/update persistence with propagated errors |
 | `internal/repository/user_repository.go:DeleteByEmail` | `M-REPO-USER-DeleteByEmail` | `PF-14` | `CF-14-01..04` | Idempotent delete + failure paths |
 | `internal/repository/user_repository.go:SetStatus` | `M-REPO-USER-SetStatus` | `PF-15` | `CF-15-01..05` | Status/tokenVersion updated correctly |
@@ -152,7 +152,6 @@ Legend: `Matrix ID` is the identifier in the test plan. `PF Profile` is the func
 | `internal/services/tenant_service.go:NewTenantService` | `M-CTOR` | `PF-01` | `CF-01-01..03` | Valid instance without panic |
 | `internal/services/tenant_service.go:Create` | `M-SVC-TENANT-Create` | `PF-21` | `CF-21-01..05` | Tenant create/get/default according to rules |
 | `internal/services/tenant_service.go:Get` | `M-SVC-TENANT-Get` | `PF-21` | `CF-21-01..05` | Tenant create/get/default according to rules |
-| `internal/services/tenant_service.go:EnsureDefault` | `M-SVC-TENANT-EnsureDefault` | `PF-21` | `CF-21-01..05` | Tenant create/get/default according to rules |
 | `internal/services/user_service.go:SignIn` | `M-SVC-USER-SignIn` | `PF-22` | `CF-22-01..07` | Basic auth and lookup according to SPEC |
 | `internal/services/user_service.go:SignInWithOobCode` | `M-SVC-USER-SignInWithOobCode` | `PF-23` | `CF-23-01..08` | OOB email/password flow according to SPEC |
 | `internal/services/user_service.go:Lookup` | `M-SVC-USER-Lookup` | `PF-22` | `CF-22-01..07` | Basic auth and lookup according to SPEC |

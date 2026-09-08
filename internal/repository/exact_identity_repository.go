@@ -36,7 +36,7 @@ var (
 )
 
 func (r *tenantRepo) GetExact(ctx context.Context, tenantID string) (*domain.Tenant, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
 	value, err := r.client.HGet(ctx, tenantsHash, tenantID).Result()
@@ -134,6 +134,10 @@ func canonicalTenantIdentity(value string) bool {
 		}
 	}
 	return true
+}
+
+func activeTenantIdentity(value string) bool {
+	return value != domain.RetiredDefaultTenantID && canonicalTenantIdentity(value)
 }
 
 func canonicalUserIdentity(value string) bool {

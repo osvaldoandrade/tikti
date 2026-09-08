@@ -72,8 +72,8 @@ func TestRepository_ErrorBranches_WithClosedRedisClient(t *testing.T) {
 	if _, _, err := tr.List(ctx, 0, 10); err == nil {
 		t.Fatalf("expected tenant list error")
 	}
-	if _, err := tr.EnsureDefault(ctx); err == nil {
-		t.Fatalf("expected tenant ensure default error")
+	if _, err := tr.RetireLegacyDefault(ctx); err == nil {
+		t.Fatalf("expected tenant retirement error")
 	}
 
 	// user repository

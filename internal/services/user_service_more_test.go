@@ -497,6 +497,9 @@ func TestUserService_TokenExchangeAndAccessValidation(t *testing.T) {
 	clientSvc := &mockClientService{}
 	tenant := "t1"
 	svc := NewUserService(repo, membership, roleSvc, clientSvc, "secret", "https://issuer", "tikti", makePEMKey(t), "kid-1").(*userService)
+	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{TenantID: "default"}); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("retired tenant exchange = %v", err)
+	}
 
 	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{Audience: "a"}); err != domain.ErrInvalidToken {
 		t.Fatalf("expected ErrInvalidToken, got %v", err)

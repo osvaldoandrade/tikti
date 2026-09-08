@@ -390,7 +390,7 @@ func TestIdentityDirectoryBackfillSkipsForeignSAMLMembershipWithoutDeletingLegac
 		t.Fatalf("home assignment = %#v, %v", home, err)
 	}
 	foreign, err := repo.GetAccessAssignment(ctx, "default", domain.AccessPrincipalUser, user.Id)
-	if err != nil || foreign != nil {
+	if !errors.Is(err, domain.ErrInvalidArgument) || foreign != nil {
 		t.Fatalf("foreign assignment = %#v, %v", foreign, err)
 	}
 	if !client.HExists(ctx, membershipsKey("default"), user.Id).Val() {

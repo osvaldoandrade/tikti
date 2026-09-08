@@ -35,7 +35,7 @@ func NewExactMembershipReader(client *redis.Client, tenants ExactTenantRepositor
 }
 
 func (r *exactMembershipReader) GetExact(ctx context.Context, tenantID, userID string) (*domain.MembershipIdentity, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
 	if userID == "." || userID == ".." || !canonicalUserIdentity(userID) {

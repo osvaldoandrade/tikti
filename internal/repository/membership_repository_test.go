@@ -115,6 +115,24 @@ func TestMembershipRepo_ListTenantIDsByUser_NotFoundReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestMembershipRepoRetiredDefaultHasNoAuthority(t *testing.T) {
+	rdb, repo := newMembershipRepoForTest(t)
+	ctx := context.Background()
+	if err := rdb.SAdd(ctx, membershipsByUserPrefix+"legacy-user", "default", "bereia").Err(); err != nil {
+		t.Fatal(err)
+	}
+	tenants, err := repo.ListTenantIDsByUser(ctx, "legacy-user")
+	if err != nil || !reflect.DeepEqual(tenants, []string{"bereia"}) {
+		t.Fatalf("active tenants = %v, %v", tenants, err)
+	}
+	if err := repo.Create(ctx, &domain.Membership{TenantId: "default", UserId: "legacy-user"}); !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("retired membership create = %v", err)
+	}
+	if membership, err := repo.Get(ctx, "default", "legacy-user"); membership != nil || !errors.Is(err, domain.ErrInvalidTenant) {
+		t.Fatalf("retired membership read = %#v, %v", membership, err)
+	}
+}
+
 func TestMembershipRepo_ListTenantIDsByUser_RedisNilReturnsEmpty(t *testing.T) {
 	rdb, repo := newMembershipRepoForTest(t)
 	ctx := context.Background()

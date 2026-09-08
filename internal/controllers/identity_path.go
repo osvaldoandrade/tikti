@@ -1,8 +1,15 @@
 package controllers
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/osvaldoandrade/tikti/pkg/domain"
+)
 
 func canonicalTenantIDPath(value string) bool {
+	if value == domain.RetiredDefaultTenantID {
+		return false
+	}
 	if len(value) < 1 || len(value) > 63 || value[0] == '-' || value[len(value)-1] == '-' {
 		return false
 	}

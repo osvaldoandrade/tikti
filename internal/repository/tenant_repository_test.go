@@ -191,24 +191,29 @@ func TestTenantRepoListRejectsPersistedUnsafeOrMasterSpoofedNames(t *testing.T) 
 	}
 }
 
-func TestTenantRepo_EnsureDefault(t *testing.T) {
-	_, repo := newTenantRepoForTest(t)
+func TestTenantRepo_RetireLegacyDefaultIsIdempotentAndPreservesRelatedData(t *testing.T) {
+	rdb, repo := newTenantRepoForTest(t)
 	ctx := context.Background()
-	tr := repo.(*tenantRepo)
-
-	def, err := tr.EnsureDefault(ctx)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+	legacy := `{"id":"default","slug":"default","name":"Default","status":"ACTIVE","createdAt":"2026-01-01T00:00:00Z"}`
+	if err := rdb.HSet(ctx, tenantsHash, "default", legacy).Err(); err != nil {
+		t.Fatal(err)
 	}
-	if def == nil || def.Id != "default" {
-		t.Fatalf("unexpected default tenant: %+v", def)
+	if err := rdb.HSet(ctx, membershipsKey("default"), "legacy-user", `{"tenantId":"default"}`).Err(); err != nil {
+		t.Fatal(err)
 	}
 
-	def2, err := tr.EnsureDefault(ctx)
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+	retired, err := repo.RetireLegacyDefault(ctx)
+	if err != nil || !retired {
+		t.Fatalf("retire legacy default: retired=%v err=%v", retired, err)
 	}
-	if def2 == nil || def2.Id != "default" {
-		t.Fatalf("unexpected default tenant: %+v", def2)
+	if rdb.HExists(ctx, tenantsHash, "default").Val() {
+		t.Fatal("legacy default tenant remains registered")
+	}
+	if !rdb.HExists(ctx, membershipsKey("default"), "legacy-user").Val() {
+		t.Fatal("retirement deleted historical membership data")
+	}
+	retired, err = repo.RetireLegacyDefault(ctx)
+	if err != nil || retired {
+		t.Fatalf("idempotent replay: retired=%v err=%v", retired, err)
 	}
 }

@@ -275,6 +275,9 @@ func (s *userService) Lookup(ctx context.Context, req domain.LookupReq) (*domain
 
 // TokenExchange exchanges an idToken for a scoped RS256 access token.
 func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchangeReq) (result *domain.TokenExchangeResp, resultErr error) {
+	if strings.TrimSpace(req.TenantID) == domain.RetiredDefaultTenantID {
+		return nil, domain.ErrInvalidTenant
+	}
 	discoveryMetricMode := requestedTenantDiscoveryMode(req)
 	if discoveryMetricMode != "" && s.tenantDiscoveryMetrics != nil {
 		defer func() {
@@ -1136,7 +1139,7 @@ func (s *userService) listTenantIDs(ctx context.Context, userID string) []string
 	if s.directoryAccess != nil && userID != "" {
 		ids, exceeded, err := s.directoryAccess.ListEffectiveTenantIDs(ctx, userID, maximumMembershipsScanned)
 		if err == nil && !exceeded {
-			return ids
+			return withoutRetiredDefaultTenant(ids)
 		}
 		return nil
 	}
@@ -1150,6 +1153,7 @@ func (s *userService) listTenantIDs(ctx context.Context, userID string) []string
 	if len(ids) == 0 {
 		return nil
 	}
+	ids = withoutRetiredDefaultTenant(ids)
 	sort.Strings(ids)
 	return ids
 }
@@ -1162,7 +1166,21 @@ func (s *userService) resolveTenantID(ctx context.Context, u *domain.User) strin
 	if len(ids) > 0 {
 		return ids[0]
 	}
-	return derefString(u.CompanyId)
+	tenantID := derefString(u.CompanyId)
+	if tenantID == domain.RetiredDefaultTenantID {
+		return ""
+	}
+	return tenantID
+}
+
+func withoutRetiredDefaultTenant(ids []string) []string {
+	active := ids[:0]
+	for _, tenantID := range ids {
+		if tenantID != domain.RetiredDefaultTenantID {
+			active = append(active, tenantID)
+		}
+	}
+	return active
 }
 
 func containsString(list []string, v string) bool {
@@ -1482,7 +1500,7 @@ func (s *userService) issueIDTokenWithPlatformPrivilegeUntil(u *domain.User, amr
 		"iat":    nowUnix,
 	}
 	if u.CompanyId != nil {
-		if tid := strings.TrimSpace(*u.CompanyId); tid != "" {
+		if tid := strings.TrimSpace(*u.CompanyId); tid != "" && tid != domain.RetiredDefaultTenantID {
 			claims["tid"] = tid
 		}
 	}

@@ -430,7 +430,7 @@ func (r *identityDirectoryRepo) ListDirectoryUsers(ctx context.Context, search, 
 // effective access to the target tenant. Its cursor may therefore contain only
 // an already-visible member; it never carries a global directory position.
 func (r *identityDirectoryRepo) ListTenantDirectoryUsers(ctx context.Context, tenantID, search, token string, limit int) (*domain.DirectoryUserPage, error) {
-	if r == nil || r.client == nil || !canonicalTenantIdentity(tenantID) || limit < 1 || limit > directoryMaximumPageSize {
+	if r == nil || r.client == nil || !activeTenantIdentity(tenantID) || limit < 1 || limit > directoryMaximumPageSize {
 		return nil, domain.ErrInvalidArgument
 	}
 	search = normalizeDirectorySearch(search)
@@ -984,7 +984,7 @@ func (r *identityDirectoryRepo) changeGroupMember(ctx context.Context, groupID, 
 
 func (r *identityDirectoryRepo) PutAccessAssignment(ctx context.Context, tenantID string, principalType domain.AccessPrincipalType, principalID string, roles []string, ifMatch string) (*domain.AccessAssignment, bool, error) {
 	roles, err := canonicalDirectoryRoles(roles)
-	if err != nil || !canonicalTenantIdentity(tenantID) || !canonicalPrincipal(principalType, principalID) || r == nil || r.client == nil {
+	if err != nil || !activeTenantIdentity(tenantID) || !canonicalPrincipal(principalType, principalID) || r == nil || r.client == nil {
 		return nil, false, domain.ErrInvalidArgument
 	}
 	key, field, reverse := assignmentsKey(tenantID), assignmentField(principalType, principalID), principalTenantsKey(principalType, principalID)
@@ -1071,7 +1071,7 @@ func (r *identityDirectoryRepo) PutAccessAssignment(ctx context.Context, tenantI
 }
 
 func (r *identityDirectoryRepo) DeleteAccessAssignment(ctx context.Context, tenantID string, principalType domain.AccessPrincipalType, principalID, ifMatch string) (bool, error) {
-	if !canonicalTenantIdentity(tenantID) || !canonicalPrincipal(principalType, principalID) || r == nil || r.client == nil {
+	if !activeTenantIdentity(tenantID) || !canonicalPrincipal(principalType, principalID) || r == nil || r.client == nil {
 		return false, domain.ErrInvalidArgument
 	}
 	key, field, reverse := assignmentsKey(tenantID), assignmentField(principalType, principalID), principalTenantsKey(principalType, principalID)
@@ -1111,14 +1111,14 @@ func (r *identityDirectoryRepo) DeleteAccessAssignment(ctx context.Context, tena
 }
 
 func (r *identityDirectoryRepo) GetAccessAssignment(ctx context.Context, tenantID string, principalType domain.AccessPrincipalType, principalID string) (*domain.AccessAssignment, error) {
-	if !canonicalTenantIdentity(tenantID) || !canonicalPrincipal(principalType, principalID) || r == nil || r.client == nil {
+	if !activeTenantIdentity(tenantID) || !canonicalPrincipal(principalType, principalID) || r == nil || r.client == nil {
 		return nil, domain.ErrInvalidArgument
 	}
 	return r.readAssignment(ctx, tenantID, principalType, principalID)
 }
 
 func (r *identityDirectoryRepo) ListAccessAssignments(ctx context.Context, tenantID, token string, limit int) (*domain.AccessAssignmentPage, error) {
-	if r == nil || r.client == nil || !canonicalTenantIdentity(tenantID) || limit < 1 || limit > directoryMaximumPageSize {
+	if r == nil || r.client == nil || !activeTenantIdentity(tenantID) || limit < 1 || limit > directoryMaximumPageSize {
 		return nil, domain.ErrInvalidArgument
 	}
 	after, err := decodeDirectoryCursor(token, "assignments", tenantID)
@@ -1214,6 +1214,9 @@ func (r *identityDirectoryRepo) ListEffectiveTenantIDs(ctx context.Context, user
 		if !canonicalTenantIdentity(tenantID) {
 			return nil, false, domain.ErrDirectoryInvariant
 		}
+		if tenantID == domain.RetiredDefaultTenantID {
+			continue
+		}
 		set[tenantID] = struct{}{}
 	}
 	for _, groupID := range groups {
@@ -1231,6 +1234,9 @@ func (r *identityDirectoryRepo) ListEffectiveTenantIDs(ctx context.Context, user
 		for _, tenantID := range groupTenants {
 			if !canonicalTenantIdentity(tenantID) {
 				return nil, false, domain.ErrDirectoryInvariant
+			}
+			if tenantID == domain.RetiredDefaultTenantID {
+				continue
 			}
 			set[tenantID] = struct{}{}
 		}
@@ -1250,7 +1256,7 @@ func (r *identityDirectoryRepo) ListEffectiveTenantIDs(ctx context.Context, user
 }
 
 func (r *identityDirectoryRepo) GetEffectiveTenantRoles(ctx context.Context, userID, tenantID string) ([]string, []domain.AccessProvenance, error) {
-	if !canonicalUserIdentity(userID) || !canonicalTenantIdentity(tenantID) || r == nil || r.client == nil {
+	if !canonicalUserIdentity(userID) || !activeTenantIdentity(tenantID) || r == nil || r.client == nil {
 		return nil, nil, domain.ErrInvalidArgument
 	}
 	user, err := r.GetDirectoryUser(ctx, userID)
@@ -1525,6 +1531,9 @@ func (r *identityDirectoryRepo) backfillAssignments(ctx context.Context) (int, e
 		}
 		if !canonicalTenantIdentity(tenantID) {
 			return 0, domain.ErrDirectoryInvariant
+		}
+		if tenantID == domain.RetiredDefaultTenantID {
+			continue
 		}
 		memberships, scanErr := scanHashBounded(ctx, r.client, key, directoryMaximumAssignments)
 		if scanErr != nil {

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 var (
@@ -59,7 +61,7 @@ func (s *AdminService) Get(ctx context.Context, tenantID string) (IdPConfigurati
 	if s == nil || s.store == nil {
 		return IdPConfiguration{}, ErrAdminUnavailable
 	}
-	if !adminTenantPattern.MatchString(tenantID) {
+	if !validAdminTenantID(tenantID) {
 		return IdPConfiguration{}, fmt.Errorf("%w: tenantId is invalid", ErrAdminInvalidInput)
 	}
 	record, err := s.store.GetIdP(ctx, tenantID)
@@ -76,7 +78,7 @@ func (s *AdminService) Put(ctx context.Context, tenantID string, input PutIdPCon
 	if s == nil || s.store == nil {
 		return IdPConfiguration{}, ErrAdminUnavailable
 	}
-	if !adminTenantPattern.MatchString(tenantID) {
+	if !validAdminTenantID(tenantID) {
 		return IdPConfiguration{}, fmt.Errorf("%w: tenantId is invalid", ErrAdminInvalidInput)
 	}
 	metadataURL := strings.TrimSpace(input.MetadataURL)
@@ -127,7 +129,7 @@ func (s *AdminService) Delete(ctx context.Context, tenantID string) error {
 	if s == nil || s.store == nil {
 		return ErrAdminUnavailable
 	}
-	if !adminTenantPattern.MatchString(tenantID) {
+	if !validAdminTenantID(tenantID) {
 		return fmt.Errorf("%w: tenantId is invalid", ErrAdminInvalidInput)
 	}
 	if err := s.store.DeleteIdP(ctx, tenantID); err != nil {
@@ -136,6 +138,10 @@ func (s *AdminService) Delete(ctx context.Context, tenantID string) error {
 	}
 	s.observeAdminChange("delete", "success")
 	return nil
+}
+
+func validAdminTenantID(tenantID string) bool {
+	return tenantID != domain.RetiredDefaultTenantID && adminTenantPattern.MatchString(tenantID)
 }
 
 func (s *AdminService) project(record IdPRecord) IdPConfiguration {

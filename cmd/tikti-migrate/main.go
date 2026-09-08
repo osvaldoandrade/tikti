@@ -19,8 +19,6 @@ const (
 	usersHashV2      = "users_v2"
 	legacyUsersHash  = "users"
 	userByEmailKeyNS = "userByEmail:"
-	membershipsNS    = "memberships:"
-	membershipsByUsr = "membershipsByUser:"
 )
 
 type stats struct {
@@ -35,14 +33,12 @@ func main() {
 		redisAddr     string
 		redisPassword string
 		redisDB       int
-		defaultTenant string
 		dryRun        bool
 	)
 
 	flag.StringVar(&redisAddr, "redis-addr", "localhost:6379", "Redis host:port")
 	flag.StringVar(&redisPassword, "redis-password", "", "Redis password")
 	flag.IntVar(&redisDB, "redis-db", 0, "Redis DB")
-	flag.StringVar(&defaultTenant, "default-tenant", "default", "Tenant id to attach memberships")
 	flag.BoolVar(&dryRun, "dry-run", false, "Scan and report without writing")
 	flag.Parse()
 
@@ -110,12 +106,6 @@ func main() {
 			}
 			st.migrated++
 		}
-
-		if !dryRun {
-			if err := ensureMembership(ctx, client, defaultTenant, u); err != nil {
-				log.Printf("membership error for %s: %v", u.Email, err)
-			}
-		}
 	}
 
 	fmt.Printf("legacy users: %d\n", st.total)
@@ -137,31 +127,4 @@ func parseUser(emailKey string, payload string) (*domain.User, bool) {
 		return nil, false
 	}
 	return &u, true
-}
-
-func ensureMembership(ctx context.Context, client *redis.Client, tenantID string, u *domain.User) error {
-	if tenantID == "" || u == nil || u.Id == "" {
-		return nil
-	}
-	key := membershipsNS + tenantID
-	existing, err := client.HGet(ctx, key, u.Id).Result()
-	if err == nil && existing != "" {
-		return nil
-	}
-	roles := []string{}
-	if u.Role != "" {
-		roles = append(roles, string(u.Role))
-	}
-	m := domain.Membership{
-		Id:        uuid.NewString(),
-		TenantId:  tenantID,
-		UserId:    u.Id,
-		Roles:     roles,
-		CreatedAt: time.Now().UTC(),
-	}
-	data, _ := json.Marshal(m)
-	if err := client.HSet(ctx, key, u.Id, data).Err(); err != nil {
-		return err
-	}
-	return client.SAdd(ctx, membershipsByUsr+u.Id, tenantID).Err()
 }

@@ -49,7 +49,7 @@ func (r *roleRepo) Create(ctx context.Context, tenantID string, role *domain.Rol
 		return domain.ErrInvalidArgument
 	}
 	roleName := strings.TrimSpace(role.Name)
-	if tenantID == "" || roleName == "" {
+	if !activeTenantIdentity(tenantID) || roleName == "" {
 		return domain.ErrInvalidArgument
 	}
 	role.Name = roleName
@@ -80,6 +80,9 @@ func (r *roleRepo) CreateIfAbsent(ctx context.Context, tenantID string, role *do
 }
 
 func (r *roleRepo) Get(ctx context.Context, tenantID string, name string) (*domain.Role, error) {
+	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
+		return nil, domain.ErrInvalidTenant
+	}
 	val, err := r.client.HGet(ctx, rolesKey(tenantID), name).Result()
 	if err == redis.Nil {
 		return nil, nil
@@ -98,7 +101,7 @@ func (r *roleRepo) Get(ctx context.Context, tenantID string, name string) (*doma
 }
 
 func (r *roleRepo) GetExact(ctx context.Context, tenantID string, name string) (*domain.Role, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
 	if !canonicalMembershipRoleName(name) {
@@ -115,7 +118,7 @@ func (r *roleRepo) GetExact(ctx context.Context, tenantID string, name string) (
 }
 
 func (r *roleRepo) GetManyExact(ctx context.Context, tenantID string, names []string) ([]*domain.Role, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
 	if len(names) < 1 || len(names) > membershipV2RoleMax {
@@ -156,6 +159,9 @@ func decodeExactRoleBatch(tenantID string, names []string, values []interface{})
 }
 
 func (r *roleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, error) {
+	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
+		return nil, domain.ErrInvalidTenant
+	}
 	vals, err := r.client.HGetAll(ctx, rolesKey(tenantID)).Result()
 	if err != nil {
 		return nil, err
@@ -172,7 +178,7 @@ func (r *roleRepo) List(ctx context.Context, tenantID string) ([]*domain.Role, e
 }
 
 func (r *roleRepo) ListExact(ctx context.Context, tenantID string) ([]*domain.Role, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
 	values, err := r.client.HGetAll(ctx, rolesKey(tenantID)).Result()
@@ -199,7 +205,7 @@ func decodeExactRole(tenantID, name, value string) (*domain.Role, error) {
 }
 
 func exactRoleDefinition(tenantID, name string, role *domain.Role) bool {
-	return role != nil && canonicalTenantIdentity(tenantID) && canonicalMembershipRoleName(name) &&
+	return role != nil && activeTenantIdentity(tenantID) && canonicalMembershipRoleName(name) &&
 		role.Name == name && role.Scope == domain.RoleScopeTenant && role.TenantId == tenantID &&
 		role.ResourceId == "" && scopepolicy.ValidCanonicalPermissions(role.Permissions)
 }

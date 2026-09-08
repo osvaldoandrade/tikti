@@ -79,7 +79,7 @@ func (h *Handler) Discover(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Known domain — redirect to the login handler.
-	if !adminTenantPattern.MatchString(tid) {
+	if !validAdminTenantID(tid) {
 		renderDiscover(w, discoverData{Error: "Workspace not found."})
 		return
 	}

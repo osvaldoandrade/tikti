@@ -73,7 +73,7 @@ func NewMembershipV2Repo(client *redis.Client) MembershipV2Repository {
 }
 
 func (r *membershipV2Repo) Ensure(ctx context.Context, tenantID, userID string, roles []string) (*domain.Membership, bool, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, false, domain.ErrInvalidTenant
 	}
 	if !canonicalMembershipV2UserID(userID) || !validMembershipV2Roles(roles) {
@@ -119,7 +119,7 @@ func (r *membershipV2Repo) Ensure(ctx context.Context, tenantID, userID string, 
 }
 
 func (r *membershipV2Repo) GetExact(ctx context.Context, tenantID, userID string) (*domain.Membership, error) {
-	if !canonicalTenantIdentity(tenantID) {
+	if !activeTenantIdentity(tenantID) {
 		return nil, domain.ErrInvalidTenant
 	}
 	if !canonicalMembershipV2UserID(userID) {
@@ -164,7 +164,7 @@ func decodeMembershipV2(tenantID, userID, value string) (*domain.Membership, boo
 	if len(value) < 1 || len(value) > membershipV2PayloadMax ||
 		!decodeExactObject(value, exactMembershipFields, &membership) ||
 		membership.Id != membershipV2ID(tenantID, userID) || membership.TenantId != tenantID || membership.UserId != userID ||
-		!canonicalTenantIdentity(membership.TenantId) || !canonicalMembershipV2UserID(membership.UserId) ||
+		!activeTenantIdentity(membership.TenantId) || !canonicalMembershipV2UserID(membership.UserId) ||
 		!validMembershipV2Roles(membership.Roles) || membership.CreatedAt.IsZero() {
 		return nil, false
 	}

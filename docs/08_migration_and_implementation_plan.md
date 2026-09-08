@@ -1,6 +1,6 @@
 # 08 Migration and Implementation Plan
 
-This document defines a staged plan to evolve Tikti from a single-tenant, HS256-only system into a multi-tenant, RS256-capable identity provider with codeQ support and SAML 2.0 federation. Each stage is an independent unit of work with acceptance criteria. The plan maintains backward compatibility at every step.
+This document records the staged evolution of Tikti from a single-tenant, HS256-only system into a multi-tenant, RS256-capable identity provider with codeQ support and SAML 2.0 federation. Current security and tenancy invariants take precedence over superseded compatibility behavior.
 
 ## Stage 0: Baseline hardening
 
@@ -30,7 +30,7 @@ Acceptance criteria: the JWKS endpoint returns a valid key set. RS256 tokens val
 
 This stage splits identity from membership and enforces tenant boundaries.
 
-Add Tenant and Membership entities with their respective storage. Introduce the `userByEmail` index to enforce global email uniqueness. Update user creation to assign a membership within a default tenant.
+Add Tenant and Membership entities with their respective storage. Introduce the `userByEmail` index to enforce global email uniqueness. User creation and tenant access are independent operations; creating a user never creates a tenant membership.
 
 Acceptance criteria: users can belong to multiple tenants. Email uniqueness is enforced globally. Membership is required for tenant-scoped operations.
 
@@ -54,7 +54,7 @@ Acceptance criteria: exchange returns RS256 tokens with `aud`, `scope`, and `tid
 
 This stage migrates legacy data into the multi-tenant layout.
 
-Create a default tenant (`tenantId=default`). For each user in the legacy `users` hash, create a user record (if not present), a `userByEmail:{email}` index entry, and a membership in the default tenant.
+For each user in the legacy `users` hash, create a user record (if not present) and a `userByEmail:{email}` index entry. Preserve existing explicit memberships for a separate, auditable access backfill; never manufacture tenant access.
 
 Pseudo-code:
 
@@ -62,13 +62,18 @@ Pseudo-code:
 for each (email, userJson) in HGETALL users:
   userId = userJson.id
   SET userByEmail:{email} userId
-  HSET users userId userJson
-  HSET memberships:default userId membershipJson
+  HSET users_v2 userId userJson
 ```
 
 Complexity: O(n) for n users. Each iteration performs a constant number of Redis operations.
 
-Acceptance criteria: all existing users can still sign in. Memberships exist for the default tenant. Lookup returns `tenantId` for migrated users.
+Acceptance criteria: all eligible existing users can still sign in, email uniqueness remains global, and migration creates no implicit access assignment.
+
+### Legacy `default` tenant retirement
+
+`local-tenant` is the immutable Code Foundry MASTER tenant. `default` is a permanently reserved legacy ID, not a second platform tenant. Tikti startup idempotently removes only the obsolete `default` entry from the tenant registry. Creation, lookup, inventory, membership, role, client, SAML and token authority all reject that ID.
+
+Historical tenant-scoped records are retained without authority so rollback is explicit and recoverable; they are not copied to `local-tenant`, because doing so would silently grant MASTER access. Rolling back to an image that predates retirement recreates the legacy registry entry and therefore requires a security review before use. No Environment, cluster resource or recurring cost is created by this migration.
 
 ## Stage 7: Authorization enforcement
 

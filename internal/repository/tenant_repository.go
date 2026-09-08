@@ -20,7 +20,7 @@ type TenantRepository interface {
 	CreateIfAbsent(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error)
 	Get(ctx context.Context, tenantID string) (*domain.Tenant, error)
 	List(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error)
-	EnsureDefault(ctx context.Context) (*domain.Tenant, error)
+	RetireLegacyDefault(ctx context.Context) (bool, error)
 }
 
 type tenantRepo struct {
@@ -34,6 +34,9 @@ func NewTenantRepo(rdb *redis.Client) TenantRepository {
 }
 
 func (r *tenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
+	if tenant == nil || tenant.Id == domain.RetiredDefaultTenantID {
+		return domain.ErrInvalidArgument
+	}
 	prepareTenant(tenant)
 	data, err := json.Marshal(tenant)
 	if err != nil {
@@ -43,6 +46,9 @@ func (r *tenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
 }
 
 func (r *tenantRepo) CreateIfAbsent(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error) {
+	if tenant == nil || tenant.Id == domain.RetiredDefaultTenantID {
+		return nil, false, domain.ErrInvalidArgument
+	}
 	prepareTenant(tenant)
 	data, err := json.Marshal(tenant)
 	if err != nil {
@@ -72,6 +78,9 @@ func prepareTenant(tenant *domain.Tenant) {
 }
 
 func (r *tenantRepo) Get(ctx context.Context, tenantID string) (*domain.Tenant, error) {
+	if tenantID == domain.RetiredDefaultTenantID {
+		return nil, nil
+	}
 	val, err := r.client.HGet(ctx, tenantsHash, tenantID).Result()
 	if err == redis.Nil {
 		return nil, nil
@@ -106,6 +115,9 @@ func (r *tenantRepo) List(ctx context.Context, offset uint64, pageSize int64) ([
 		var tenant domain.Tenant
 		if err := json.Unmarshal([]byte(value), &tenant); err != nil {
 			return nil, "", err
+		}
+		if tenant.Id == domain.RetiredDefaultTenantID {
+			continue
 		}
 		if !tenantname.Valid(tenant.Name) {
 			return nil, "", domain.ErrTenantInvariant
@@ -153,23 +165,11 @@ func (r *tenantRepo) List(ctx context.Context, offset uint64, pageSize int64) ([
 	return page, next, nil
 }
 
-func (r *tenantRepo) EnsureDefault(ctx context.Context) (*domain.Tenant, error) {
-	const defaultTenantID = "default"
-	existing, err := r.Get(ctx, defaultTenantID)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		return existing, nil
-	}
-	t := &domain.Tenant{
-		Id:     defaultTenantID,
-		Slug:   "default",
-		Name:   "Default",
-		Status: domain.TenantStatusActive,
-	}
-	if err := r.Create(ctx, t); err != nil {
-		return nil, err
-	}
-	return t, nil
+// RetireLegacyDefault removes only the obsolete tenant registry entry. The
+// tenant's historical memberships and assignments remain untouched for an
+// explicit, auditable rollback, but every runtime authority path rejects the
+// reserved ID.
+func (r *tenantRepo) RetireLegacyDefault(ctx context.Context) (bool, error) {
+	removed, err := r.client.HDel(ctx, tenantsHash, domain.RetiredDefaultTenantID).Result()
+	return removed == 1, err
 }

@@ -21,7 +21,7 @@ type fakeTenantRepo struct {
 	createAbsentFn  func(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error)
 	getFn           func(ctx context.Context, tenantID string) (*domain.Tenant, error)
 	listFn          func(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error)
-	ensureDefaultFn func(ctx context.Context) (*domain.Tenant, error)
+	retireDefaultFn func(ctx context.Context) (bool, error)
 }
 
 func (f *fakeTenantRepo) CreateIfAbsent(ctx context.Context, tenant *domain.Tenant) (*domain.Tenant, bool, error) {
@@ -52,11 +52,11 @@ func (f *fakeTenantRepo) List(ctx context.Context, offset uint64, pageSize int64
 	return []domain.Tenant{}, "", nil
 }
 
-func (f *fakeTenantRepo) EnsureDefault(ctx context.Context) (*domain.Tenant, error) {
-	if f.ensureDefaultFn != nil {
-		return f.ensureDefaultFn(ctx)
+func (f *fakeTenantRepo) RetireLegacyDefault(ctx context.Context) (bool, error) {
+	if f.retireDefaultFn != nil {
+		return f.retireDefaultFn(ctx)
 	}
-	return nil, nil
+	return false, nil
 }
 
 func TestNewTenantService(t *testing.T) {
@@ -120,6 +120,7 @@ func TestTenantService_CreateWithIDValidation(t *testing.T) {
 		{name: "format control", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Code\u200bFoundry", Slug: "bereia"}},
 		{name: "bidi control", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Code\u202eFoundry", Slug: "bereia"}},
 		{name: "embedded control", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Bereia\nAdmin", Slug: "bereia"}},
+		{name: "retired default id", tenantID: "default", req: domain.TenantCreateReq{Name: "Default", Slug: "default"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -327,30 +328,17 @@ func TestTenantServiceRejectsMasterNameSpoofing(t *testing.T) {
 	}
 }
 
-func TestTenantService_EnsureDefault(t *testing.T) {
-	repoErr := errors.New("repo-fail")
-	svc := NewTenantService(&fakeTenantRepo{ensureDefaultFn: func(ctx context.Context) (*domain.Tenant, error) {
-		return nil, repoErr
-	}})
-	if _, err := svc.EnsureDefault(context.Background()); !errors.Is(err, repoErr) {
-		t.Fatalf("expected repo error, got %v", err)
-	}
-
-	svc = NewTenantService(&fakeTenantRepo{ensureDefaultFn: func(ctx context.Context) (*domain.Tenant, error) {
-		return nil, nil
-	}})
-	if _, err := svc.EnsureDefault(context.Background()); err != domain.ErrNotFound {
-		t.Fatalf("expected ErrNotFound, got %v", err)
-	}
-
-	svc = NewTenantService(&fakeTenantRepo{ensureDefaultFn: func(ctx context.Context) (*domain.Tenant, error) {
+func TestTenantService_RetiredDefaultIsNeverActive(t *testing.T) {
+	reads := 0
+	svc := NewTenantService(&fakeTenantRepo{getFn: func(context.Context, string) (*domain.Tenant, error) {
+		reads++
 		return &domain.Tenant{Id: "default", Slug: "default", Name: "Default", Status: domain.TenantStatusActive}, nil
 	}})
-	resp, err := svc.EnsureDefault(context.Background())
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
+	active, err := svc.IsTenantActive(context.Background(), "default")
+	if err != nil || active || reads != 0 {
+		t.Fatalf("retired tenant authority: active=%v reads=%d err=%v", active, reads, err)
 	}
-	if resp.Id != "default" {
-		t.Fatalf("unexpected resp: %+v", resp)
+	if _, err := svc.Get(context.Background(), "default"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("retired tenant get: %v", err)
 	}
 }

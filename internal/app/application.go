@@ -59,6 +59,14 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 
 	userRepo := repository.NewRedisRepo(redisClient)
 	tenantRepo := repository.NewTenantRepo(redisClient)
+	retiredDefault, err := tenantRepo.RetireLegacyDefault(context.Background())
+	if err != nil {
+		_ = redisClient.Close()
+		return nil, fmt.Errorf("retire legacy default tenant: %w", err)
+	}
+	if retiredDefault {
+		log.Printf("identity migration: retired legacy tenant id=%s", domain.RetiredDefaultTenantID)
+	}
 	membershipRepo := repository.NewMembershipRepo(redisClient)
 	roleRepo := repository.NewRoleRepo(redisClient)
 	clientRepo := repository.NewClientRepo(redisClient)
@@ -164,8 +172,6 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	setupStorageSTSMappings(engine, cfg, storageSTSController)
 	setupObjectStorageBrowserMappings(engine, cfg, storageAdminController)
 	setupIdentityDirectoryMappings(engine, cfg, directoryService, userService)
-
-	_, _ = tenantService.EnsureDefault(context.Background())
 
 	return &Application{
 		Config:                cfg,

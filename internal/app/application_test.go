@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -362,6 +363,47 @@ func TestNewApplicationAndWorkloadVerifier(t *testing.T) {
 		if (err != nil) != test.wantErr || !test.wantErr && (verifier == nil) != test.nilVerifier {
 			t.Fatalf("%s: verifier=%T err=%v", test.name, verifier, err)
 		}
+	}
+}
+
+func TestNewApplicationRetiresOnlyLegacyDefaultTenant(t *testing.T) {
+	server := miniredis.RunT(t)
+	seed := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = seed.Close() })
+	ctx := context.Background()
+	for _, tenant := range []domain.Tenant{
+		{Id: domain.MasterTenantID, Slug: domain.MasterTenantID, Name: domain.MasterTenantName, Status: domain.TenantStatusActive, CreatedAt: time.Now().UTC()},
+		{Id: domain.RetiredDefaultTenantID, Slug: domain.RetiredDefaultTenantID, Name: "Default", Status: domain.TenantStatusActive, CreatedAt: time.Now().UTC()},
+	} {
+		payload, err := json.Marshal(tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = seed.HSet(ctx, "tenants", tenant.Id, payload).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := seed.Set(ctx, "identity:v2:backfill:complete", "v1", 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := seed.HSet(ctx, "memberships:default", "legacy-user", `{"tenantId":"default"}`).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	application, err := NewApplication(&config.Config{RedisAddr: server.Addr()})
+	if err != nil {
+		t.Fatalf("application startup: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Redis.Close() })
+	if seed.HExists(ctx, "tenants", domain.RetiredDefaultTenantID).Val() {
+		t.Fatal("legacy default tenant remains registered")
+	}
+	if !seed.HExists(ctx, "memberships:default", "legacy-user").Val() {
+		t.Fatal("historical membership was deleted")
+	}
+	page, err := application.TenantSvc.List(ctx, 0, 20)
+	if err != nil || len(page.Tenants) != 1 || page.Tenants[0].Id != domain.MasterTenantID {
+		t.Fatalf("tenant inventory = %#v, %v", page, err)
 	}
 }
 

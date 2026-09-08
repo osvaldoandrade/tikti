@@ -8,6 +8,7 @@ import (
 func TestCanonicalIdentityPaths(t *testing.T) {
 	for value, want := range map[string]bool{
 		"local-tenant": true,
+		"default":      false,
 		"tenant_1":     false,
 		"-tenant":      false,
 		"tenant-":      false,

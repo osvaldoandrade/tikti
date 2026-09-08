@@ -81,7 +81,7 @@ go build -o tikti-migrate ./cmd/tikti-migrate
 
 ## CLI
 
-The CLI stores connection profiles in `~/.tikti/config.yaml`. Each profile holds a base URL, API key, and default tenant.
+The CLI stores connection profiles in `~/.tikti/config.yaml`. Each profile holds a base URL, API key, and preferred tenant.
 
 Install from source (requires `go` and `git`):
 
@@ -106,7 +106,7 @@ npm install -g @osvaldoandrade/tikti-cli@latest
 After installation, initialize a profile and begin issuing commands:
 
 ```bash
-./tikti-cli init --base-url http://localhost:8080 --api-key my_api_key --tenant default
+./tikti-cli init --base-url http://localhost:8080 --api-key my_api_key --tenant local-tenant
 ./tikti-cli auth login --email admin@example.com
 ./tikti-cli token exchange --audience codeq-worker --event-types render_video
 ./tikti-cli token show --type worker
@@ -243,12 +243,14 @@ The `tid` is extracted from the URL path in `/saml/login/{tid}`, never from the 
 
 ## Migration
 
-The migration tool moves user records from the `users` hash to `users_v2` with a `userByEmail` index and creates default tenant memberships. Run with `--dry-run` first to preview changes:
+The migration tool moves user records from the `users` hash to `users_v2` with a `userByEmail` index. It never manufactures tenant access; assignments must be explicit. Run with `--dry-run` first to preview changes:
 
 ```bash
-./tikti-migrate --redis-addr localhost:6379 --default-tenant default --dry-run
-./tikti-migrate --redis-addr localhost:6379 --default-tenant default
+./tikti-migrate --redis-addr localhost:6379 --dry-run
+./tikti-migrate --redis-addr localhost:6379
 ```
+
+`local-tenant` is the immutable Code Foundry MASTER tenant. The obsolete tenant ID `default` is reserved and rejected by every runtime authority path. On startup Tikti idempotently removes a historical `default` entry from the tenant registry while retaining related records without authority for an explicit rollback.
 
 When SAML federation is enabled, migration `0007_saml_user_fields` adds the `authSource` field (values: `password`, `saml`; default: `password`) and the `externalSubject` field (default: empty string) to every user record. Existing users retain `authSource=password`. Users provisioned through SAML JIT receive `authSource=saml` and an `externalSubject` set to the IdP's `NameID`.
 

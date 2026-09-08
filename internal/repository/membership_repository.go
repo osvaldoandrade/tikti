@@ -87,6 +87,12 @@ func NewMembershipRepo(rdb *redis.Client) MembershipRepository {
 }
 
 func (r *membershipRepo) Create(ctx context.Context, membership *domain.Membership) error {
+	if membership == nil {
+		return domain.ErrInvalidArgument
+	}
+	if !activeTenantIdentity(strings.TrimSpace(membership.TenantId)) {
+		return domain.ErrInvalidTenant
+	}
 	if membership.CreatedAt.IsZero() {
 		membership.CreatedAt = time.Now()
 	}
@@ -111,6 +117,9 @@ func (r *membershipRepo) Create(ctx context.Context, membership *domain.Membersh
 }
 
 func (r *membershipRepo) Get(ctx context.Context, tenantID string, userID string) (*domain.Membership, error) {
+	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
+		return nil, domain.ErrInvalidTenant
+	}
 	val, err := r.client.HGet(ctx, membershipsKey(tenantID), userID).Result()
 	if err == redis.Nil {
 		return nil, nil
@@ -129,6 +138,9 @@ func (r *membershipRepo) Get(ctx context.Context, tenantID string, userID string
 }
 
 func (r *membershipRepo) GetExact(ctx context.Context, tenantID string, userID string) (*domain.Membership, error) {
+	if !activeTenantIdentity(tenantID) {
+		return nil, domain.ErrInvalidTenant
+	}
 	value, err := r.client.HGet(ctx, membershipsKey(tenantID), userID).Result()
 	if err == redis.Nil {
 		return nil, nil
@@ -147,6 +159,9 @@ func (r *membershipRepo) GetExact(ctx context.Context, tenantID string, userID s
 }
 
 func (r *membershipRepo) ListByTenant(ctx context.Context, tenantID string, cursor uint64, count int64) ([]*domain.Membership, uint64, error) {
+	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
+		return nil, 0, domain.ErrInvalidTenant
+	}
 	values, nextCursor, err := r.client.HScan(ctx, membershipsKey(tenantID), cursor, "", count).Result()
 	if err == redis.Nil {
 		return []*domain.Membership{}, 0, nil
@@ -173,7 +188,13 @@ func (r *membershipRepo) ListTenantIDsByUser(ctx context.Context, userID string)
 	if err != nil {
 		return nil, err
 	}
-	return vals, nil
+	active := vals[:0]
+	for _, tenantID := range vals {
+		if tenantID != domain.RetiredDefaultTenantID {
+			active = append(active, tenantID)
+		}
+	}
+	return active, nil
 }
 
 func (r *membershipRepo) ListTenantIDsByUserExact(ctx context.Context, userID string) ([]string, error) {
@@ -232,6 +253,9 @@ func (r *membershipRepo) ListTenantIDsByUserExactBounded(
 		if !canonicalMembershipTenantID(tenantID) {
 			return nil, false, errStoredMembershipContract
 		}
+		if tenantID == domain.RetiredDefaultTenantID {
+			continue
+		}
 		values = append(values, tenantID)
 	}
 	sort.Strings(values)
@@ -239,6 +263,9 @@ func (r *membershipRepo) ListTenantIDsByUserExactBounded(
 }
 
 func (r *membershipRepo) Delete(ctx context.Context, tenantID string, userID string) error {
+	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
+		return domain.ErrInvalidTenant
+	}
 	status, err := r.client.Eval(ctx, membershipLegacyDeleteV2GuardScript, []string{
 		membershipV2Key(tenantID), membershipV2ByUserKey(userID), membershipsKey(tenantID), membershipsByUserPrefix + userID,
 	}, userID, tenantID).Text()
