@@ -79,7 +79,7 @@ config:
     rateLimits:
       login: {requests: 5, windowSeconds: 60}
       oobSignIn: {requests: 10, windowSeconds: 60}
-      tokenExchange: {requests: 5, windowSeconds: 60}
+      tokenExchange: {requests: 10, windowSeconds: 60}
       lookup: {requests: 60, windowSeconds: 60}
       oob: {requests: 3, windowSeconds: 3600}
       saml: {requests: 10, windowSeconds: 60}

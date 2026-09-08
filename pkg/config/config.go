@@ -77,7 +77,10 @@ func DefaultAuthenticationRateLimits() AuthenticationRateLimitsConfig {
 	return AuthenticationRateLimitsConfig{
 		Login:         RateLimitConfig{Requests: 5, WindowSeconds: 60},
 		OOBSignIn:     RateLimitConfig{Requests: 10, WindowSeconds: 60},
-		TokenExchange: RateLimitConfig{Requests: 5, WindowSeconds: 60},
+		// A cross-tenant Console session exchanges both the selected-tenant token
+		// and the principal-tenant Identity token. Ten requests preserve the
+		// reviewed five logical session starts per user and minute.
+		TokenExchange: RateLimitConfig{Requests: 10, WindowSeconds: 60},
 		Lookup:        RateLimitConfig{Requests: 60, WindowSeconds: 60},
 		OOB:           RateLimitConfig{Requests: 3, WindowSeconds: 3600},
 		SAML:          RateLimitConfig{Requests: 10, WindowSeconds: 60},

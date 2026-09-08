@@ -573,6 +573,15 @@ http:
 	}
 }
 
+func TestTokenExchangeBudgetCoversFiveDualTenantConsoleSessions(t *testing.T) {
+	const exchangesPerSession = 2
+	const expectedSessionsPerMinute = 5
+	limit := DefaultAuthenticationRateLimits().TokenExchange
+	if limit.WindowSeconds != 60 || limit.Requests < exchangesPerSession*expectedSessionsPerMinute {
+		t.Fatalf("token exchange limit = %+v, want at least %d requests per 60s", limit, exchangesPerSession*expectedSessionsPerMinute)
+	}
+}
+
 func TestSAMLConfig_RequiresKeysWhenEnabled(t *testing.T) {
 	path := writeTempConfig(t, `
 saml:
