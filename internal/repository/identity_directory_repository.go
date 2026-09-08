@@ -124,7 +124,10 @@ func (r *identityDirectoryRepo) AllowAuthenticationAttempt(
 	}
 	digest := sha256.Sum256([]byte(bucket + "\x00" + subject))
 	key := authenticationAttemptPrefix + hex.EncodeToString(digest[:])
-	count, err := authenticationAttemptScript.Run(ctx, r.client, []string{key}, window.Milliseconds()).Int64()
+	// Kvrocks 2.7 prefixes cache misses with "ERR NOSCRIPT", which go-redis v8
+	// does not recognize for its automatic EVAL fallback. Execute the bounded
+	// atomic counter directly, just like the directory backfill scripts.
+	count, err := authenticationAttemptScript.Eval(ctx, r.client, []string{key}, window.Milliseconds()).Int64()
 	if err != nil {
 		return false, err
 	}

@@ -65,6 +65,22 @@ func TestAuthenticationAttemptLimiterUsesOpaqueIndependentExpiringBuckets(t *tes
 	}
 }
 
+func TestAuthenticationAttemptLimiterDoesNotDependOnRedisScriptCache(t *testing.T) {
+	client, repo := newIdentityDirectoryForTest(t)
+	hook := &rejectEvalSHAHook{}
+	client.AddHook(hook)
+
+	allowed, err := repo.AllowAuthenticationAttempt(
+		context.Background(), "saml:login:ip", "203.0.113.10", 10, time.Minute,
+	)
+	if err != nil || !allowed {
+		t.Fatalf("authentication attempt without script cache allowed=%v err=%v", allowed, err)
+	}
+	if hook.calls != 0 {
+		t.Fatalf("authentication attempt issued %d EVALSHA commands", hook.calls)
+	}
+}
+
 func TestIdentityDirectoryUserIndexIsBoundedSafeAndNormalized(t *testing.T) {
 	client, repo := newIdentityDirectoryForTest(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
