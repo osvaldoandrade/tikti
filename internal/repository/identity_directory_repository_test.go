@@ -464,6 +464,32 @@ func TestIdentityDirectoryBackfillHasSingleDistributedOwner(t *testing.T) {
 	}
 }
 
+func TestIdentityDirectoryBackfillDoesNotDependOnRedisScriptCache(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+	user := domain.User{
+		Id: "user-no-script-cache", Email: "no-script-cache@example.com", Password: "hash",
+		Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now().UTC(),
+	}
+	raw, _ := json.Marshal(user)
+	if err := client.HSet(ctx, legacyUsersHash, user.Email, raw).Err(); err != nil {
+		t.Fatal(err)
+	}
+	hook := &rejectEvalSHAHook{}
+	client.AddHook(hook)
+
+	result, err := NewIdentityDirectoryRepository(client).Backfill(ctx)
+	if err != nil || result == nil || result.UsersIndexed != 1 {
+		t.Fatalf("backfill without script cache = %#v, %v", result, err)
+	}
+	if hook.calls != 0 {
+		t.Fatalf("backfill issued %d EVALSHA commands", hook.calls)
+	}
+}
+
 var errBackfillInterrupted = errors.New("backfill interrupted")
 
 type interruptDirectoryPipelineHook struct {
@@ -477,6 +503,22 @@ type pauseFirstHScanHook struct {
 	entered chan struct{}
 	release chan struct{}
 }
+
+type rejectEvalSHAHook struct{ calls int }
+
+func (h *rejectEvalSHAHook) BeforeProcess(ctx context.Context, command redis.Cmder) (context.Context, error) {
+	if command.Name() == "evalsha" {
+		h.calls++
+		return ctx, errors.New("ERR NOSCRIPT No matching script. Please use EVAL")
+	}
+	return ctx, nil
+}
+
+func (*rejectEvalSHAHook) AfterProcess(context.Context, redis.Cmder) error { return nil }
+func (*rejectEvalSHAHook) BeforeProcessPipeline(ctx context.Context, _ []redis.Cmder) (context.Context, error) {
+	return ctx, nil
+}
+func (*rejectEvalSHAHook) AfterProcessPipeline(context.Context, []redis.Cmder) error { return nil }
 
 func (h *pauseFirstHScanHook) BeforeProcess(ctx context.Context, command redis.Cmder) (context.Context, error) {
 	if command.Name() == "hscan" {

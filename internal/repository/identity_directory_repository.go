@@ -1357,7 +1357,7 @@ func (r *identityDirectoryRepo) Backfill(ctx context.Context) (*domain.IdentityB
 		if releaseLease {
 			releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			_, _ = releaseDirectoryBackfillLeaseScript.Run(
+			_, _ = releaseDirectoryBackfillLeaseScript.Eval(
 				releaseCtx, r.client, []string{directoryBackfillLock}, owner,
 			).Result()
 		}
@@ -1371,7 +1371,7 @@ func (r *identityDirectoryRepo) Backfill(ctx context.Context) (*domain.IdentityB
 	if err != nil {
 		return nil, err
 	}
-	committed, err := completeDirectoryBackfillScript.Run(
+	committed, err := completeDirectoryBackfillScript.Eval(
 		leaseCtx,
 		r.client,
 		[]string{directoryBackfillLock, directoryBackfillMarker},
@@ -1416,7 +1416,7 @@ func (r *identityDirectoryRepo) renewDirectoryBackfillLease(
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			renewed, err := renewDirectoryBackfillLeaseScript.Run(
+			renewed, err := renewDirectoryBackfillLeaseScript.Eval(
 				ctx,
 				r.client,
 				[]string{directoryBackfillLock},
