@@ -340,6 +340,48 @@ func TestIdentityDirectoryBackfillReplaysLegacyAndV2Duplicates(t *testing.T) {
 	}
 }
 
+func TestIdentityDirectoryBackfillSkipsForeignSAMLMembershipWithoutDeletingLegacyData(t *testing.T) {
+	client, repo := newIdentityDirectoryForTest(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	homeTenantID := "bereia"
+	user := domain.User{
+		Id: "saml-user-1", Email: "saml-user@example.com", Role: domain.RoleCompanyEmployee,
+		Status: domain.UserStatusActive, CreatedAt: now, AuthSource: domain.AuthSourceSAML,
+		ExternalSubject: "saml-subject-1", CompanyId: &homeTenantID,
+	}
+	userRaw, _ := json.Marshal(user)
+	if err := client.HSet(ctx, legacyUsersHash, user.Email, userRaw).Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, tenantID := range []string{homeTenantID, "default"} {
+		membership := domain.Membership{
+			Id: "membership-" + tenantID, TenantId: tenantID, UserId: user.Id,
+			Roles: []string{"reader"}, CreatedAt: now,
+		}
+		raw, _ := json.Marshal(membership)
+		if err := client.HSet(ctx, membershipsKey(tenantID), user.Id, raw).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	result, err := repo.Backfill(ctx)
+	if err != nil || result.UsersIndexed != 1 || result.AssignmentsCopied != 1 {
+		t.Fatalf("backfill = %#v, %v", result, err)
+	}
+	home, err := repo.GetAccessAssignment(ctx, homeTenantID, domain.AccessPrincipalUser, user.Id)
+	if err != nil || home == nil || !slices.Equal(home.Roles, []string{"reader"}) {
+		t.Fatalf("home assignment = %#v, %v", home, err)
+	}
+	foreign, err := repo.GetAccessAssignment(ctx, "default", domain.AccessPrincipalUser, user.Id)
+	if err != nil || foreign != nil {
+		t.Fatalf("foreign assignment = %#v, %v", foreign, err)
+	}
+	if !client.HExists(ctx, membershipsKey("default"), user.Id).Val() {
+		t.Fatal("backfill deleted the legacy foreign membership")
+	}
+}
+
 func TestIdentityDirectoryBackfillResumesAfterInterruptedBatch(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

@@ -1561,6 +1561,7 @@ func (r *identityDirectoryRepo) backfillAssignments(ctx context.Context) (int, e
 		}
 		return pairs[i].tenant < pairs[j].tenant
 	})
+	copied := 0
 	for _, key := range pairs {
 		existing, readErr := r.GetAccessAssignment(ctx, key.tenant, domain.AccessPrincipalUser, key.user)
 		if readErr != nil {
@@ -1572,11 +1573,29 @@ func (r *identityDirectoryRepo) backfillAssignments(ctx context.Context) (int, e
 		if existing != nil {
 			continue
 		}
-		if _, _, err = r.PutAccessAssignment(ctx, key.tenant, domain.AccessPrincipalUser, key.user, values[key].roles, ""); err != nil {
-			return 0, err
+		user, readErr := r.GetDirectoryUser(ctx, key.user)
+		if readErr != nil {
+			return 0, readErr
+		}
+		if user == nil {
+			return 0, domain.ErrNotFound
+		}
+		// A historical password-to-SAML conversion can leave memberships in
+		// tenants other than the immutable SAML home tenant. Preserve that
+		// legacy record for rollback, but never promote it into cross-tenant
+		// Identity V2 authority.
+		if user.AuthSource == domain.AuthSourceSAML && user.HomeTenantID != key.tenant {
+			continue
+		}
+		_, created, putErr := r.PutAccessAssignment(ctx, key.tenant, domain.AccessPrincipalUser, key.user, values[key].roles, "")
+		if putErr != nil {
+			return 0, putErr
+		}
+		if created {
+			copied++
 		}
 	}
-	return len(pairs), nil
+	return copied, nil
 }
 
 func scanHashBounded(ctx context.Context, client *redis.Client, key string, maximum int) (map[string]string, error) {
