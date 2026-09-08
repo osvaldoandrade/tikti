@@ -157,9 +157,11 @@ If the new metadata fails to parse the existing record is left untouched.`,
 // readMetadata fetches metadata from a URL or reads it from a file.
 func readMetadata(url, file string) ([]byte, error) {
 	if file != "" {
+		// #nosec G304 -- file is an explicit local administrator CLI argument.
 		return os.ReadFile(file)
 	}
-	resp, err := http.Get(url) //nolint:gosec // URL is admin-supplied
+	// #nosec G107 -- URL is an explicit administrator-selected IdP metadata source.
+	resp, err := http.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
@@ -229,6 +231,7 @@ func mergeCerts(old, new [][]byte) [][]byte {
 
 // loadAttrMap reads a JSON attribute-map file.
 func loadAttrMap(path string) (map[string][]string, error) {
+	// #nosec G304 -- path is an explicit local administrator CLI argument.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

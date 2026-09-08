@@ -132,7 +132,6 @@ func TestAuthContractSpec_TokenExchange_ResponseShape(t *testing.T) {
 		Scopes:     []string{"codeq:claim"},
 		EventTypes: []string{"render_video"},
 		TTLSeconds: 3600,
-		Subject:    "worker-1",
 	}, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())

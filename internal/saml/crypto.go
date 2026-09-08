@@ -195,10 +195,12 @@ func (kh *KeyHolder) watch(ctx context.Context, keyPath, certPath string) {
 
 // loadKeyPair reads PEM files from disk and returns a validated keyPair.
 func loadKeyPair(keyPath, certPath string) (*keyPair, error) {
+	// #nosec G304 -- both paths are operator-owned process configuration.
 	keyPEM, err := os.ReadFile(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("saml: read key %s: %w", keyPath, err)
 	}
+	// #nosec G304 -- both paths are operator-owned process configuration.
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return nil, fmt.Errorf("saml: read cert %s: %w", certPath, err)

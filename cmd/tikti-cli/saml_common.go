@@ -78,7 +78,7 @@ func newRedisStore(addr string) (saml.Store, func(), error) {
 	}
 	rdb := redis.NewClient(&redis.Options{Addr: addr})
 	store := saml.NewRedisStore(rdb)
-	cleanup := func() { rdb.Close() }
+	cleanup := func() { _ = rdb.Close() }
 	return store, cleanup, nil
 }
 
@@ -87,5 +87,6 @@ func newRedisStore(addr string) (saml.Store, func(), error) {
 type defaultHTTPGetter struct{}
 
 func (defaultHTTPGetter) Get(url string) (*http.Response, error) {
-	return http.Get(url) //nolint:gosec // URL is admin-supplied
+	// #nosec G107 -- URL is an explicit administrator-selected IdP metadata source.
+	return http.Get(url)
 }

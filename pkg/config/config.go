@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -46,12 +47,41 @@ type Config struct {
 
 // HTTPConfig defines the public server boundary.
 type HTTPConfig struct {
-	AllowedOrigins           []string `yaml:"allowedOrigins"`
-	ReadHeaderTimeoutSeconds int      `yaml:"readHeaderTimeoutSeconds"`
-	ReadTimeoutSeconds       int      `yaml:"readTimeoutSeconds"`
-	WriteTimeoutSeconds      int      `yaml:"writeTimeoutSeconds"`
-	IdleTimeoutSeconds       int      `yaml:"idleTimeoutSeconds"`
-	MaxHeaderBytes           int      `yaml:"maxHeaderBytes"`
+	AllowedOrigins           []string                       `yaml:"allowedOrigins"`
+	TrustedProxyCIDRs        []string                       `yaml:"trustedProxyCIDRs"`
+	ReadHeaderTimeoutSeconds int                            `yaml:"readHeaderTimeoutSeconds"`
+	ReadTimeoutSeconds       int                            `yaml:"readTimeoutSeconds"`
+	WriteTimeoutSeconds      int                            `yaml:"writeTimeoutSeconds"`
+	IdleTimeoutSeconds       int                            `yaml:"idleTimeoutSeconds"`
+	MaxHeaderBytes           int                            `yaml:"maxHeaderBytes"`
+	RateLimits               AuthenticationRateLimitsConfig `yaml:"rateLimits"`
+}
+
+// AuthenticationRateLimitsConfig defines Redis-backed security limits. A
+// deployment may tighten these defaults but cannot loosen the reviewed maxima.
+type AuthenticationRateLimitsConfig struct {
+	Login         RateLimitConfig `yaml:"login"`
+	OOBSignIn     RateLimitConfig `yaml:"oobSignIn"`
+	TokenExchange RateLimitConfig `yaml:"tokenExchange"`
+	Lookup        RateLimitConfig `yaml:"lookup"`
+	OOB           RateLimitConfig `yaml:"oob"`
+	SAML          RateLimitConfig `yaml:"saml"`
+}
+
+type RateLimitConfig struct {
+	Requests      int `yaml:"requests"`
+	WindowSeconds int `yaml:"windowSeconds"`
+}
+
+func DefaultAuthenticationRateLimits() AuthenticationRateLimitsConfig {
+	return AuthenticationRateLimitsConfig{
+		Login:         RateLimitConfig{Requests: 5, WindowSeconds: 60},
+		OOBSignIn:     RateLimitConfig{Requests: 10, WindowSeconds: 60},
+		TokenExchange: RateLimitConfig{Requests: 5, WindowSeconds: 60},
+		Lookup:        RateLimitConfig{Requests: 60, WindowSeconds: 60},
+		OOB:           RateLimitConfig{Requests: 3, WindowSeconds: 3600},
+		SAML:          RateLimitConfig{Requests: 10, WindowSeconds: 60},
+	}
 }
 
 // ForwardAuthConfig defines credentials accepted only by the edge
@@ -252,8 +282,8 @@ func (s SAMLConfig) Validate() error {
 	for index, administrator := range s.PlatformAdministrators {
 		tenantID := strings.TrimSpace(administrator.TenantID)
 		email := strings.TrimSpace(administrator.Email)
-		if tenantID != administrator.TenantID || !canonicalTenantID(tenantID) {
-			return fmt.Errorf("saml: platformAdministrators[%d].tenantId must be canonical", index)
+		if tenantID != administrator.TenantID || tenantID != "local-tenant" {
+			return fmt.Errorf("saml: platformAdministrators[%d].tenantId must be the immutable MASTER tenant local-tenant", index)
 		}
 		if email != administrator.Email || email != strings.ToLower(email) || !canonicalPlatformAdministratorEmail(email) {
 			return fmt.Errorf("saml: platformAdministrators[%d].email must be a canonical lowercase address", index)
@@ -270,13 +300,50 @@ func (s SAMLConfig) Validate() error {
 	if s.SP.SigningCertPath == "" {
 		return fmt.Errorf("saml: signingCertPath is required when SAML is enabled")
 	}
-	if s.SP.EntityID == "" {
-		return fmt.Errorf("saml: entityID is required when SAML is enabled")
+	if !validSAMLHTTPSURL(s.SP.EntityID) {
+		return fmt.Errorf("saml: entityID must be an absolute HTTPS URL without credentials, query, or fragment")
 	}
-	if s.SP.ACSURL == "" {
-		return fmt.Errorf("saml: acsURL is required when SAML is enabled")
+	if !validSAMLHTTPSURL(s.SP.ACSURL) {
+		return fmt.Errorf("saml: acsURL must be an absolute HTTPS URL without credentials, query, or fragment")
+	}
+	if s.SP.SLOURL != "" && !validSAMLHTTPSURL(s.SP.SLOURL) {
+		return fmt.Errorf("saml: sloURL must be an absolute HTTPS URL without credentials, query, or fragment")
+	}
+	if s.ACS.DeliveryMode != "cookie" {
+		return fmt.Errorf("saml: acs.deliveryMode must be cookie")
+	}
+	if !s.ACS.CookieSecure || !s.ACS.CookieHTTPOnly {
+		return fmt.Errorf("saml: the identity cookie must be Secure and HttpOnly")
+	}
+	if s.ACS.CookieDomain != "" {
+		return fmt.Errorf("saml: acs.cookieDomain must be empty so the identity cookie is host-only")
+	}
+	if s.ACS.CookieSameSite != "Lax" && s.ACS.CookieSameSite != "Strict" {
+		return fmt.Errorf("saml: the identity cookie SameSite must be Lax or Strict")
+	}
+	if s.ACS.SessionTTL < 1 || s.ACS.SessionTTL > 3600 {
+		return fmt.Errorf("saml: acs.sessionTTL must be between 1 and 3600 seconds")
+	}
+	if !validSAMLPostLoginURL(s.ACS.PostLoginURL) {
+		return fmt.Errorf("saml: acs.postLoginURL must be a local absolute path without query, fragment, or backslash")
 	}
 	return nil
+}
+
+func validSAMLHTTPSURL(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && parsed.Scheme == "https" && parsed.Host != "" && parsed.User == nil &&
+		parsed.RawQuery == "" && parsed.Fragment == ""
+}
+
+func validSAMLPostLoginURL(raw string) bool {
+	if raw == "" || raw != strings.TrimSpace(raw) || len(raw) > 2048 || raw[0] != '/' ||
+		strings.HasPrefix(raw, "//") || strings.Contains(raw, `\`) {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	return err == nil && !parsed.IsAbs() && parsed.Host == "" && parsed.User == nil &&
+		parsed.RawQuery == "" && parsed.Fragment == ""
 }
 
 func canonicalPlatformAdministratorEmail(value string) bool {
@@ -295,8 +362,63 @@ func canonicalPlatformAdministratorEmail(value string) bool {
 	return true
 }
 
+func applyRateLimitDefault(target *RateLimitConfig, fallback RateLimitConfig) {
+	if target.Requests == 0 {
+		target.Requests = fallback.Requests
+	}
+	if target.WindowSeconds == 0 {
+		target.WindowSeconds = fallback.WindowSeconds
+	}
+}
+
+func validateAuthenticationRateLimits(actual, maximum AuthenticationRateLimitsConfig) error {
+	limits := []struct {
+		name    string
+		actual  RateLimitConfig
+		maximum RateLimitConfig
+	}{
+		{name: "login", actual: actual.Login, maximum: maximum.Login},
+		{name: "oobSignIn", actual: actual.OOBSignIn, maximum: maximum.OOBSignIn},
+		{name: "tokenExchange", actual: actual.TokenExchange, maximum: maximum.TokenExchange},
+		{name: "lookup", actual: actual.Lookup, maximum: maximum.Lookup},
+		{name: "oob", actual: actual.OOB, maximum: maximum.OOB},
+		{name: "saml", actual: actual.SAML, maximum: maximum.SAML},
+	}
+	for _, limit := range limits {
+		if limit.actual.Requests < 1 || limit.actual.Requests > limit.maximum.Requests ||
+			limit.actual.WindowSeconds < limit.maximum.WindowSeconds || limit.actual.WindowSeconds > 86400 {
+			return fmt.Errorf("http.rateLimits.%s weakens or exceeds the reviewed security bounds", limit.name)
+		}
+	}
+	return nil
+}
+
+func normalizeTrustedProxyCIDRs(values []string) ([]string, error) {
+	if len(values) > 16 {
+		return nil, fmt.Errorf("http.trustedProxyCIDRs supports at most 16 entries")
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, raw := range values {
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(raw))
+		if err != nil || prefix.Bits() == 0 {
+			return nil, fmt.Errorf("http.trustedProxyCIDRs contains an invalid or unbounded prefix")
+		}
+		prefix = prefix.Masked()
+		canonical := prefix.String()
+		if _, exists := seen[canonical]; exists {
+			return nil, fmt.Errorf("http.trustedProxyCIDRs contains a duplicate prefix")
+		}
+		seen[canonical] = struct{}{}
+		result = append(result, canonical)
+	}
+	sort.Strings(result)
+	return result, nil
+}
+
 // LoadConfig reads a YAML file, expands environment variables, and returns Config defaults.
 func LoadConfig(filePath string) (*Config, error) {
+	// #nosec G304 -- the process entrypoint supplies the operator-selected configuration path.
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
@@ -341,8 +463,8 @@ func LoadConfig(filePath string) (*Config, error) {
 	if c.RedisDB < 0 {
 		c.RedisDB = 0
 	}
-	if c.JwtSecret == "" {
-		c.JwtSecret = "supersecret"
+	if len(c.JwtSecret) < 32 || strings.TrimSpace(c.JwtSecret) != c.JwtSecret {
+		return nil, fmt.Errorf("jwtSecret must be an explicitly configured secret of at least 32 bytes")
 	}
 	if c.ApiKey == "" {
 		log.Println("WARNING: No API key set.")
@@ -445,6 +567,13 @@ func LoadConfig(filePath string) (*Config, error) {
 	if c.HTTP.MaxHeaderBytes == 0 {
 		c.HTTP.MaxHeaderBytes = 1 << 20
 	}
+	defaults := DefaultAuthenticationRateLimits()
+	applyRateLimitDefault(&c.HTTP.RateLimits.Login, defaults.Login)
+	applyRateLimitDefault(&c.HTTP.RateLimits.OOBSignIn, defaults.OOBSignIn)
+	applyRateLimitDefault(&c.HTTP.RateLimits.TokenExchange, defaults.TokenExchange)
+	applyRateLimitDefault(&c.HTTP.RateLimits.Lookup, defaults.Lookup)
+	applyRateLimitDefault(&c.HTTP.RateLimits.OOB, defaults.OOB)
+	applyRateLimitDefault(&c.HTTP.RateLimits.SAML, defaults.SAML)
 	if c.HTTP.ReadHeaderTimeoutSeconds < 1 || c.HTTP.ReadHeaderTimeoutSeconds > 2 ||
 		c.HTTP.ReadTimeoutSeconds < 1 || c.HTTP.ReadTimeoutSeconds > 60 ||
 		c.HTTP.WriteTimeoutSeconds < 1 || c.HTTP.WriteTimeoutSeconds > 120 ||
@@ -457,6 +586,14 @@ func LoadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 	c.HTTP.AllowedOrigins = origins
+	trustedProxyCIDRs, err := normalizeTrustedProxyCIDRs(c.HTTP.TrustedProxyCIDRs)
+	if err != nil {
+		return nil, err
+	}
+	c.HTTP.TrustedProxyCIDRs = trustedProxyCIDRs
+	if err := validateAuthenticationRateLimits(c.HTTP.RateLimits, defaults); err != nil {
+		return nil, err
+	}
 	c.ForwardAuth.AccessCookieName = strings.TrimSpace(c.ForwardAuth.AccessCookieName)
 	if strings.ContainsAny(c.ForwardAuth.AccessCookieName, " \t\r\n;,=") {
 		return nil, fmt.Errorf("forwardAuth.accessCookieName contains invalid characters")

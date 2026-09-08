@@ -18,11 +18,12 @@ type tenantScopedTokenAuthorization struct {
 }
 
 type tenantDiscoveryAuthorization struct {
-	tenantID          string
-	principalTenantID string
-	authorizedTenants []string
-	roles             []string
-	scopes            []string
+	tenantID           string
+	principalTenantID  string
+	directoryPrincipal bool
+	authorizedTenants  []string
+	roles              []string
+	scopes             []string
 }
 
 type tenantDiscoverySnapshot struct {
@@ -33,8 +34,8 @@ type tenantDiscoverySnapshot struct {
 const (
 	tenantFeatureAdministrationScope = "code-admin:features:write"
 	tenantIdentityWriteScope         = "code-admin:identity:write"
-	tenantSecretReadScope            = "code-admin:secrets:read"
-	tenantSecretWriteScope           = "code-admin:secrets:write"
+	tenantSecretReadScope            = "code-admin:secrets:read"  // #nosec G101 -- public authorization scope, not a credential.
+	tenantSecretWriteScope           = "code-admin:secrets:write" // #nosec G101 -- public authorization scope, not a credential.
 	maximumMembershipsScanned        = 500
 	maximumAuthorizedTenantTargets   = 100
 	maximumMembershipRoles           = 500
@@ -152,12 +153,17 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 	dynamicTargets bool,
 	metricMode string,
 	platformPrivilege string,
+	directoryPrincipal bool,
 ) (tenantDiscoveryAuthorization, error) {
+	homeValid := validSignedHome(user, home, signedRole, platformPrivilege)
+	if directoryPrincipal {
+		homeValid = validDirectoryPrincipalHome(user, home, signedRole, platformPrivilege)
+	}
 	if target == "" || strings.TrimSpace(target) != target || !validRoleTenantID(target) ||
-		!validSignedHome(user, home, signedRole, platformPrivilege) || s.clientSvc == nil {
+		!homeValid || s.clientSvc == nil {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
 	}
-	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode)
+	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode, directoryPrincipal, platformPrivilege)
 	if err != nil || !slices.Contains(discovery.authorizedTenants, target) {
 		return tenantDiscoveryAuthorization{}, domain.ErrInvalidTenant
 	}
@@ -185,6 +191,7 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 	}
 	roles, authority, err := s.targetAuthority(
 		ctx, user, target, home, signedRole, clientDefaults, dynamicTargets, discovery.authorizations, platformPrivilege,
+		directoryPrincipal,
 	)
 	if err != nil {
 		return tenantDiscoveryAuthorization{}, err
@@ -204,7 +211,7 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 		return tenantDiscoveryAuthorization{}, domain.ErrUnauthorizedScope
 	}
 	return tenantDiscoveryAuthorization{
-		tenantID: target, principalTenantID: home,
+		tenantID: target, principalTenantID: home, directoryPrincipal: directoryPrincipal,
 		authorizedTenants: discovery.authorizedTenants, roles: roles, scopes: effective,
 	}, nil
 }
@@ -231,7 +238,7 @@ func (s *userService) authorizedTenantTargets(
 	if dynamicTargets {
 		metricMode = "v2"
 	}
-	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode)
+	discovery, err := s.discoverTenantTargets(ctx, user, home, dynamicTargets, metricMode, false, "")
 	return discovery.authorizedTenants, err
 }
 
@@ -241,19 +248,42 @@ func (s *userService) discoverTenantTargets(
 	home string,
 	dynamicTargets bool,
 	metricMode string,
+	directoryPrincipal bool,
+	platformPrivilege string,
 ) (tenantDiscoverySnapshot, error) {
-	if user == nil || user.Status != domain.UserStatusActive || s.tenantRepo == nil || s.directoryAccess == nil && s.exactMembershipRepo == nil {
+	tenantLocalFederated := isTenantLocalFederatedPrincipal(user, home)
+	platformFederated := trustedFederatedPlatformPrincipal(user, home, platformPrivilege)
+	if user == nil || user.Status != domain.UserStatusActive || s.tenantRepo == nil ||
+		!tenantLocalFederated && s.directoryAccess == nil && s.exactMembershipRepo == nil {
 		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
 	homeTenant, err := s.tenantRepo.Get(ctx, home)
 	if err != nil || homeTenant == nil || homeTenant.Id != home || homeTenant.Status != domain.TenantStatusActive {
 		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
-	tenantIDs, exceeded, err := s.accessTenantIDs(ctx, user.Id)
-	if err != nil || exceeded {
-		if exceeded {
-			s.tenantDiscoveryMetrics.observeOmission(metricMode, "membership_limit")
+	var tenantIDs []string
+	if platformFederated {
+		tenants, next, listErr := s.tenantRepo.List(ctx, 0, maximumAuthorizedTenantTargets+1)
+		if listErr != nil || next != "" || len(tenants) > maximumAuthorizedTenantTargets {
+			s.tenantDiscoveryMetrics.observeOmission(metricMode, "target_limit")
+			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 		}
+		for _, tenant := range tenants {
+			if tenant.Status == domain.TenantStatusActive {
+				tenantIDs = append(tenantIDs, tenant.Id)
+			}
+		}
+	} else if !tenantLocalFederated {
+		var exceeded bool
+		tenantIDs, exceeded, err = s.accessTenantIDs(ctx, user.Id)
+		if err != nil || exceeded {
+			if exceeded {
+				s.tenantDiscoveryMetrics.observeOmission(metricMode, "membership_limit")
+			}
+			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
+		}
+	}
+	if directoryPrincipal && !slices.Contains(tenantIDs, home) {
 		return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 	}
 	allowed := map[string]struct{}{home: {}}
@@ -266,9 +296,13 @@ func (s *userService) discoverTenantTargets(
 				continue
 			}
 		}
-		roles, readErr := s.accessTenantRoles(ctx, user.Id, tenantID)
-		if readErr != nil {
-			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
+		var roles []string
+		if !platformFederated {
+			var readErr error
+			roles, readErr = s.accessTenantRoles(ctx, user.Id, tenantID)
+			if readErr != nil {
+				return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
+			}
 		}
 		if dynamicTargets && len(roles) > maximumDynamicMembershipRoles {
 			s.tenantDiscoveryMetrics.observeOmission(metricMode, "role_budget_exceeded")
@@ -282,7 +316,7 @@ func (s *userService) discoverTenantTargets(
 			s.tenantDiscoveryMetrics.observeOmission(metricMode, "tenant_inactive")
 			continue
 		}
-		if dynamicTargets && tenantID != home {
+		if dynamicTargets && !platformFederated && (tenantID != home || directoryPrincipal) {
 			client, clientErr := s.clientSvc.GetClient(ctx, tenantID, domain.CodeAdminAudienceClientID)
 			if clientErr != nil || !domain.IsManagedCodeAdminAudience(tenantID, client) ||
 				!scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes) {
@@ -290,7 +324,7 @@ func (s *userService) discoverTenantTargets(
 				continue
 			}
 		}
-		if dynamicTargets && tenantID != home {
+		if dynamicTargets && !platformFederated && (tenantID != home || directoryPrincipal) {
 			if len(roles) > maximumDiscoveryRoleLookups-resolvedRoleLookups {
 				s.tenantDiscoveryMetrics.observeOmission(metricMode, "role_budget_exceeded")
 				return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
@@ -318,6 +352,16 @@ func (s *userService) discoverTenantTargets(
 		authorizedTenants: result,
 		authorizations:    authorizations,
 	}, nil
+}
+
+func isTenantLocalFederatedPrincipal(user *domain.User, home string) bool {
+	return user != nil && user.AuthSource == domain.AuthSourceSAML && user.CompanyId != nil &&
+		strings.TrimSpace(*user.CompanyId) == home && strings.TrimSpace(user.ExternalSubject) != ""
+}
+
+func trustedFederatedPlatformPrincipal(user *domain.User, home, platformPrivilege string) bool {
+	return isTenantLocalFederatedPrincipal(user, home) && home == domain.MasterTenantID &&
+		user.Role == domain.RoleAdmin && platformPrivilege == domain.PlatformPrivilegeAdmin
 }
 
 func (s *userService) accessTenantIDs(ctx context.Context, userID string) ([]string, bool, error) {
@@ -392,8 +436,12 @@ func (s *userService) targetAuthority(
 	dynamicTargets bool,
 	authorizations map[string]tenantScopedTokenAuthorization,
 	platformPrivilege string,
+	directoryPrincipal bool,
 ) ([]string, []string, error) {
-	if target == home {
+	if target == home && !directoryPrincipal {
+		return nil, homeAuthority(user, signedRole, candidates, platformPrivilege), nil
+	}
+	if trustedFederatedPlatformPrincipal(user, home, platformPrivilege) {
 		return nil, homeAuthority(user, signedRole, candidates, platformPrivilege), nil
 	}
 	var authorization tenantScopedTokenAuthorization
@@ -431,13 +479,54 @@ func (s *userService) targetAuthority(
 			}
 		}
 	}
-	authority = append(authority, homeGlobalAuthority(user, signedRole, candidates, platformPrivilege)...)
+	if !directoryPrincipal {
+		authority = append(authority, homeGlobalAuthority(user, signedRole, candidates, platformPrivilege)...)
+	}
 	return authorization.roles, normalizePermissions(authority), nil
+}
+
+func (s *userService) resolveDiscoveryHome(
+	ctx context.Context,
+	user *domain.User,
+	signedHome string,
+	signedRole string,
+	platformPrivilege string,
+) (string, bool, error) {
+	if user == nil || user.Status != domain.UserStatusActive {
+		return "", false, domain.ErrInvalidTenant
+	}
+	if user.CompanyId != nil {
+		if !validSignedHome(user, signedHome, signedRole, platformPrivilege) {
+			return "", false, domain.ErrInvalidTenant
+		}
+		return signedHome, false, nil
+	}
+	// A global directory user has no legacy company membership and its signed
+	// ID token intentionally omits tid. Derive a stable principal from the
+	// server-authoritative effective assignments instead of accepting a caller-
+	// supplied home or silently manufacturing a default membership.
+	if signedHome != "" || signedRole != string(effectiveUserRole(user, platformPrivilege)) {
+		return "", false, domain.ErrInvalidTenant
+	}
+	tenantIDs, exceeded, err := s.accessTenantIDs(ctx, user.Id)
+	if err != nil || exceeded || len(tenantIDs) == 0 {
+		return "", false, domain.ErrInvalidTenant
+	}
+	home := tenantIDs[0]
+	if !validDirectoryPrincipalHome(user, home, signedRole, platformPrivilege) {
+		return "", false, domain.ErrInvalidTenant
+	}
+	return home, true, nil
 }
 
 func validSignedHome(user *domain.User, home, signedRole string, platformPrivilege ...string) bool {
 	return user != nil && user.Status == domain.UserStatusActive && validRoleTenantID(home) &&
 		user.CompanyId != nil && *user.CompanyId == home && signedRole == string(effectiveUserRole(user, platformPrivilege...))
+}
+
+func validDirectoryPrincipalHome(user *domain.User, home, signedRole string, platformPrivilege ...string) bool {
+	return user != nil && user.Status == domain.UserStatusActive && user.CompanyId == nil &&
+		validRoleTenantID(home) && signedRole == string(effectiveUserRole(user, platformPrivilege...))
 }
 
 func homeAuthority(user *domain.User, signedRole string, candidates []string, platformPrivilege ...string) []string {

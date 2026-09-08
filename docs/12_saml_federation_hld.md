@@ -451,7 +451,7 @@ tikti saml domain remove --domain EXAMPLE.COM
 
 **Gauges:** `tikti_saml_idp_cert_expiry_seconds{tid,subject}`, `tikti_saml_sp_cert_expiry_seconds`.
 
-**Audit log:** Each assertion decision emits one record with schema `{event:"saml.assertion", tid, requestID, nameID, issuer, decision:"accept|reject", reason, durationMs, ts}`. The sink is the existing Tikti audit writer **`[verify against repo]`**.
+**Audit log:** Each assertion decision emits one record with schema `{event:"saml.assertion", tid, requestID, subjectHash, issuer, decision:"accept|reject", reason, durationMs, ts}`. `subjectHash` is tenant-bound and the raw external subject is never logged. The sink is the existing Tikti audit writer.
 
 **Tracing:** Each inbound request creates one span carrying attributes `saml.tid`, `saml.issuer`, `saml.request_id`, and `saml.result`.
 
@@ -1331,8 +1331,7 @@ Target `saml_response_validation_duration_seconds{tid}` buckets cover the mean +
     "tid":           {"type":"string","minLength":1,"maxLength":64},
     "requestID":     {"type":"string","pattern":"^_[0-9a-f]{40}$"},
     "assertionID":   {"type":"string"},
-    "nameID":        {"type":"string"},
-    "nameIDFormat":  {"type":"string"},
+    "subjectHash":   {"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
     "issuer":        {"type":"string","format":"uri"},
     "audience":      {"type":"string","format":"uri"},
     "decision":      {"enum":["accept","reject"]},

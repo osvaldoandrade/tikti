@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
@@ -17,7 +18,37 @@ const (
 	platformTenantAdminScope = domain.PlatformTenantAdminScope
 	tenantIdentityReadScope  = "code-admin:identity:read"
 	tenantIdentityWriteScope = "code-admin:identity:write"
+	currentAdminClaimsKey    = "tikti.current-admin-claims"
 )
+
+// RequireCurrentAdminToken makes the mutable user record authoritative for
+// every administrative access token. Signature validation alone cannot honor
+// suspension, forced password rotation, SLO, or tokenVersion revocation.
+func RequireCurrentAdminToken(service services.UserService, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		parts := strings.Fields(c.GetHeader("Authorization"))
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid bearer token"})
+			c.Abort()
+			return
+		}
+		if service == nil || cfg == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "token authority is unavailable"})
+			c.Abort()
+			return
+		}
+		claims, err := service.ValidateAccessToken(
+			c.Request.Context(), parts[1], cfg.IssuerBaseURL, cfg.DefaultAudience,
+		)
+		if err != nil || claims == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			c.Abort()
+			return
+		}
+		c.Set(currentAdminClaimsKey, claims)
+		c.Next()
+	}
+}
 
 func requireTenantIAMWrite(c *gin.Context, cfg *config.Config, tenantID string) (jwt.MapClaims, bool) {
 	claims, ok := privilegedBearerClaims(c, cfg)
@@ -97,6 +128,14 @@ func requireTenantIdentityAuthority(c *gin.Context, cfg *config.Config, tenantID
 }
 
 func privilegedBearerClaims(c *gin.Context, cfg *config.Config) (jwt.MapClaims, bool) {
+	if value, exists := c.Get(currentAdminClaimsKey); exists {
+		claims, ok := value.(jwt.MapClaims)
+		if !ok || claims == nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			return nil, false
+		}
+		return claims, true
+	}
 	parts := strings.Fields(c.GetHeader("Authorization"))
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid bearer token"})

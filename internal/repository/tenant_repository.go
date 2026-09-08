@@ -11,6 +11,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 
+	"github.com/osvaldoandrade/tikti/internal/tenantname"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -89,6 +90,9 @@ func (r *tenantRepo) Get(ctx context.Context, tenantID string) (*domain.Tenant, 
 }
 
 func (r *tenantRepo) List(ctx context.Context, offset uint64, pageSize int64) ([]domain.Tenant, string, error) {
+	if pageSize < 1 || pageSize > 200 {
+		return nil, "", domain.ErrInvalidArgument
+	}
 	values, err := r.client.HGetAll(ctx, tenantsHash).Result()
 	if err != nil {
 		return nil, "", err
@@ -103,12 +107,15 @@ func (r *tenantRepo) List(ctx context.Context, offset uint64, pageSize int64) ([
 		if err := json.Unmarshal([]byte(value), &tenant); err != nil {
 			return nil, "", err
 		}
+		if !tenantname.Valid(tenant.Name) {
+			return nil, "", domain.ErrTenantInvariant
+		}
 		if tenant.Id == domain.MasterTenantID {
 			masterCount++
 			if tenant.Slug != domain.MasterTenantID {
 				return nil, "", domain.ErrTenantInvariant
 			}
-		} else if strings.EqualFold(strings.TrimSpace(tenant.Name), domain.MasterTenantName) {
+		} else if tenantname.ReservedMaster(tenant.Name) {
 			return nil, "", domain.ErrTenantInvariant
 		}
 		tenants = append(tenants, tenant)
@@ -133,7 +140,8 @@ func (r *tenantRepo) List(ctx context.Context, offset uint64, pageSize int64) ([
 	if offset >= uint64(len(tenants)) {
 		return []domain.Tenant{}, "", nil
 	}
-	end := offset + uint64(pageSize)
+	// pageSize is bounded to the positive range [1, 200] above.
+	end := offset + uint64(pageSize) // #nosec G115 -- validated positive bounded conversion.
 	if end > uint64(len(tenants)) {
 		end = uint64(len(tenants))
 	}

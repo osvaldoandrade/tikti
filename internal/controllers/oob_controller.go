@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -45,18 +46,24 @@ func (ctrl *oobSendController) Handle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {
-		return ctrl.userSvc.SendOob(ctx, req)
+	authContext := authenticationAPIRequestContext(c, ctrl.cfg)
+	ch := runCommandAsync(func(context.Context) (interface{}, error) {
+		return ctrl.userSvc.SendOob(authContext, req)
 	})
 	result := <-ch
 	if err, ok := result.(error); ok {
-		switch err {
-		case domain.ErrInvalidArgument:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		case domain.ErrNotFound:
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		switch {
+		case errors.Is(err, domain.ErrRateLimited):
+			c.Header("Retry-After", "3600")
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": domain.ErrRateLimited.Error()})
+		case errors.Is(err, domain.ErrInvalidArgument):
+			c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
+		case errors.Is(err, domain.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": domain.ErrNotFound.Error()})
+		case errors.Is(err, domain.ErrAuthenticationUnavailable):
+			writeAuthenticationUnavailable(c, http.StatusServiceUnavailable)
 		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			writeAuthenticationUnavailable(c)
 		}
 		return
 	}
@@ -82,13 +89,17 @@ func (ctrl *oobResetController) Handle(c *gin.Context) {
 	})
 	result := <-ch
 	if err, ok := result.(error); ok {
-		switch err {
-		case domain.ErrInvalidArgument:
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		case domain.ErrNotFound:
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		switch {
+		case errors.Is(err, domain.ErrInvalidArgument):
+			c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
+		case errors.Is(err, domain.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": domain.ErrNotFound.Error()})
+		case errors.Is(err, domain.ErrInvalidOob), errors.Is(err, domain.ErrInvalidCreds):
+			c.JSON(http.StatusUnauthorized, gin.H{"error": domain.ErrInvalidOob.Error()})
+		case errors.Is(err, domain.ErrAuthenticationUnavailable):
+			writeAuthenticationUnavailable(c, http.StatusServiceUnavailable)
 		default:
-			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+			writeAuthenticationUnavailable(c)
 		}
 		return
 	}

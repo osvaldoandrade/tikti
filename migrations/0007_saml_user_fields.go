@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	usersHash    = "users_v2"
-	scanCount    = 500
+	usersHash = "users_v2"
+	scanCount = 500
 )
 
 // Counter records the number of user records processed during migration 0007.
@@ -55,6 +55,7 @@ func Run(ctx context.Context, rdb redis.Cmdable, m *prometheus.CounterVec) error
 			u.AuthSource = domain.AuthSourcePassword
 			// externalSubject stays "" (its zero value)
 
+			// #nosec G117 -- persisted User.Password contains only a one-way password hash.
 			data, err := json.Marshal(&u)
 			if err != nil {
 				m.WithLabelValues("error").Inc()

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -109,6 +111,7 @@ func (s *AdminService) Put(ctx context.Context, tenantID string, input PutIdPCon
 		return IdPConfiguration{}, fmt.Errorf("%w: metadata validation failed: %v", ErrAdminInvalidInput, err)
 	}
 	record.TenantID = tenantID
+	record.Generation = uuid.NewString()
 	record.MetadataURL = metadataURL
 	record.AttributeMap = attributeMap
 	record.LastFetched = time.Now().UTC()

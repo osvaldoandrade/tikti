@@ -392,6 +392,12 @@ func TestTenantRoleClientControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("client create ok: expected 201, got %d", rec.Code)
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("one-time client secret response Cache-Control = %q, want no-store", got)
+	}
+	if got := rec.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("one-time client secret response Pragma = %q, want no-cache", got)
+	}
 
 	clientSvc.getFn = func(ctx context.Context, tenantID string, clientID string) (*domain.ClientResp, error) {
 		return nil, domain.ErrInvalidArgument

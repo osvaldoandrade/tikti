@@ -141,7 +141,7 @@ func TestUserRepo_UpdateDeleteSetStatusIncrementTokenVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("increment token version: %v", err)
 	}
-	if ver != 1 || got.TokenVersion != 1 {
+	if ver != 2 || got.TokenVersion != 2 {
 		t.Fatalf("unexpected token version: %d %+v", ver, got)
 	}
 	if _, _, err := r.IncrementTokenVersion(ctx, "missing@x.com"); err != domain.ErrNotFound {
@@ -158,6 +158,60 @@ func TestUserRepo_UpdateDeleteSetStatusIncrementTokenVersion(t *testing.T) {
 		t.Fatalf("expected removed user, got err=%v user=%+v", err, got)
 	}
 }
+
+func TestUserRepo_DeleteByEmailRemovesDirectoryRelationshipsAtomically(t *testing.T) {
+	rdb, users := newUserRepoForTest(t)
+	ctx := context.Background()
+	directory := NewIdentityDirectoryRepository(rdb)
+	user := &domain.User{
+		Id: "user-delete", Email: "delete@example.com", Password: "hash",
+		Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourceSAML, ExternalSubject: "external-delete",
+		CompanyId: testStringPointerRepository("bereia"), CreatedAt: time.Now().UTC(),
+	}
+	if err := users.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	if err := rdb.Set(ctx, samlSubjectKey("bereia", user.ExternalSubject), user.Id, 0).Err(); err != nil {
+		t.Fatal(err)
+	}
+	group, err := directory.CreateGroup(ctx, "Deletion contract", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = directory.PutGroupMember(ctx, group.ID, user.Id, IdentityETag(group.Version)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = directory.PutAccessAssignment(ctx, "bereia", domain.AccessPrincipalUser, user.Id, []string{"reader"}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = users.DeleteByEmail(ctx, user.Email); err != nil {
+		t.Fatal(err)
+	}
+	if remaining, readErr := directory.GetDirectoryUser(ctx, user.Id); readErr != nil || remaining != nil {
+		t.Fatalf("deleted directory user = %#v, %v", remaining, readErr)
+	}
+	detail, err := directory.GetGroupDetail(ctx, group.ID)
+	if err != nil || detail.MemberCount != 0 || len(detail.Members) != 0 {
+		t.Fatalf("group retained deleted user = %#v, %v", detail, err)
+	}
+	assignments, err := directory.ListAccessAssignments(ctx, "bereia", "", 50)
+	if err != nil || len(assignments.Assignments) != 0 {
+		t.Fatalf("direct assignment survived user deletion = %#v, %v", assignments, err)
+	}
+	for _, key := range []string{
+		userGroupsKey(user.Id),
+		principalTenantsKey(domain.AccessPrincipalUser, user.Id),
+		samlSubjectKey("bereia", user.ExternalSubject),
+	} {
+		if exists := rdb.Exists(ctx, key).Val(); exists != 0 {
+			t.Fatalf("deleted user relationship key %q still exists", key)
+		}
+	}
+}
+
+func testStringPointerRepository(value string) *string { return &value }
 
 func TestUserRepo_OobHelpersAndConsumption(t *testing.T) {
 	rdb, repo := newUserRepoForTest(t)
@@ -449,6 +503,52 @@ func TestUpsertFromSAML_UpdateSame(t *testing.T) {
 	}
 }
 
+func TestUpsertFromSAMLRoleChangeAdvancesTokenVersion(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+	created, _, err := repo.UpsertFromSAML(
+		ctx, "tenant-1", "role-change-subject", "role-change@example.com", "Role Change",
+		[]string{"COMPANY_ADMIN"}, domain.MergeStrategyExternalSubject,
+	)
+	if err != nil || created.Role != domain.RoleCompanyAdmin || created.TokenVersion != 0 {
+		t.Fatalf("created user=%#v err=%v", created, err)
+	}
+	downgraded, wasCreated, err := repo.UpsertFromSAML(
+		ctx, "tenant-1", "role-change-subject", "role-change@example.com", "Role Change",
+		[]string{"COMPANY_EMPLOYEE"}, domain.MergeStrategyExternalSubject,
+	)
+	if err != nil || wasCreated || downgraded.Role != domain.RoleCompanyEmployee || downgraded.TokenVersion != 1 {
+		t.Fatalf("downgraded user=%#v created=%t err=%v", downgraded, wasCreated, err)
+	}
+}
+
+func TestFederatedUpsertCannotOverwriteConcurrentTokenRevocation(t *testing.T) {
+	_, repo := newUserRepoForTest(t)
+	ctx := context.Background()
+	created, _, err := repo.UpsertFromSAML(
+		ctx, "tenant-1", "external-subject", "user@example.com", "User", nil, domain.MergeStrategyExternalSubject,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := created
+	byID := repo.(UserIDRepository)
+	version, revoked, err := byID.IncrementTokenVersionByID(ctx, created.Id)
+	if err != nil || version != 1 || revoked.Revision <= stale.Revision {
+		t.Fatalf("revocation version=%d user=%#v err=%v", version, revoked, err)
+	}
+	stale.Email = "stale@example.com"
+	if err := repo.UpdateUser(ctx, &stale); !errors.Is(err, domain.ErrVersionConflict) {
+		t.Fatalf("stale federated update=%v", err)
+	}
+	refreshed, wasCreated, err := repo.UpsertFromSAML(
+		ctx, "tenant-1", "external-subject", "current@example.com", "User", nil, domain.MergeStrategyExternalSubject,
+	)
+	if err != nil || wasCreated || refreshed.TokenVersion != 1 || refreshed.Email != "current@example.com" {
+		t.Fatalf("retry after revocation: user=%#v created=%t err=%v", refreshed, wasCreated, err)
+	}
+}
+
 func TestUpsertFromSAML_ExistingAdminSurvivesMissingRoleAttribute(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
@@ -562,7 +662,7 @@ func TestUpsertFromSAML_DoesNotRecoverFromUnilateralAdminMembership(t *testing.T
 	}
 }
 
-func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
+func TestUpsertFromSAML_EmailStrategyCannotTakeOverPasswordUser(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 
@@ -582,16 +682,17 @@ func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
 		t.Fatalf("create password user: %v", err)
 	}
 
-	// SAML upsert with same email should merge.
+	// The legacy email strategy is inert: an assertion creates an isolated
+	// tenant-local subject and cannot take over the password account.
 	u, created, err := repo.UpsertFromSAML(ctx, "tenant-1", "ext-sub-bob", "bob@example.com", "Bob", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if created {
-		t.Fatalf("expected merge, not create")
+	if !created {
+		t.Fatalf("expected isolated SAML principal")
 	}
-	if u.Id != "pw-user-1" {
-		t.Fatalf("expected same user ID after merge, got %s", u.Id)
+	if u.Id == "pw-user-1" {
+		t.Fatalf("SAML assertion took over password subject")
 	}
 	if u.AuthSource != domain.AuthSourceSAML {
 		t.Fatalf("expected AuthSourceSAML after merge, got %s", u.AuthSource)
@@ -599,9 +700,13 @@ func TestUpsertFromSAML_MergeByEmail(t *testing.T) {
 	if u.ExternalSubject != "ext-sub-bob" {
 		t.Fatalf("expected externalSubject set after merge, got %s", u.ExternalSubject)
 	}
+	stored, findErr := repo.FindByEmail(ctx, pwUser.Email)
+	if findErr != nil || stored == nil || stored.Id != pwUser.Id || stored.AuthSource != domain.AuthSourcePassword || stored.Password != pwUser.Password {
+		t.Fatalf("password principal changed: user=%#v err=%v", stored, findErr)
+	}
 }
 
-func TestUpsertFromSAML_MergeLegacyAdminWithoutRoleAttribute(t *testing.T) {
+func TestUpsertFromSAML_LegacyAdminEmailDoesNotTransferAuthority(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 	tenantID := "tenant-1"
@@ -615,15 +720,19 @@ func TestUpsertFromSAML_MergeLegacyAdminWithoutRoleAttribute(t *testing.T) {
 		t.Fatalf("create legacy admin: %v", err)
 	}
 
-	merged, created, err := repo.UpsertFromSAML(
+	federated, created, err := repo.UpsertFromSAML(
 		ctx, tenantID, "ext-legacy-admin", legacyAdmin.Email, "Legacy Admin",
 		nil, domain.MergeStrategyEmail,
 	)
-	if err != nil || created {
-		t.Fatalf("merge legacy admin: user=%#v created=%t err=%v", merged, created, err)
+	if err != nil || !created {
+		t.Fatalf("isolate legacy admin email: user=%#v created=%t err=%v", federated, created, err)
 	}
-	if merged.Role != domain.RoleCompanyAdmin || merged.AuthSource != domain.AuthSourceSAML {
-		t.Fatalf("legacy admin did not retain bounded tenant authority: %#v", merged)
+	if federated.Id == legacyAdmin.Id || federated.Role != domain.RoleCompanyEmployee || federated.AuthSource != domain.AuthSourceSAML {
+		t.Fatalf("legacy authority transferred to assertion: %#v", federated)
+	}
+	stored, findErr := repo.FindByEmail(ctx, legacyAdmin.Email)
+	if findErr != nil || stored == nil || stored.Id != legacyAdmin.Id || stored.Role != domain.RoleAdmin || stored.AuthSource != domain.AuthSourcePassword {
+		t.Fatalf("legacy password principal changed: user=%#v err=%v", stored, findErr)
 	}
 }
 
@@ -702,7 +811,7 @@ func TestExistingPasswordFlow_Unaffected(t *testing.T) {
 	}
 }
 
-func TestMerge_Email_FromPassword(t *testing.T) {
+func TestMerge_Email_ValueRemainsSubjectOnly(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 
@@ -722,17 +831,26 @@ func TestMerge_Email_FromPassword(t *testing.T) {
 		t.Fatalf("create password user: %v", err)
 	}
 
-	// Merge via email strategy — the SAML-supplied platform ADMIN role must be
-	// reduced to the tenant-local tier.
+	// Even the legacy email value resolves only by external subject.
 	u, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-1", "merge@example.com", "Merge User", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if created {
-		t.Fatalf("expected merge (created=false)")
+	if !created || u.Id == pwUser.Id {
+		t.Fatalf("password subject was merged: created=%t id=%s", created, u.Id)
 	}
 	if u.AuthSource != domain.AuthSourceSAML {
 		t.Fatalf("authSource should flip to saml, got %s", u.AuthSource)
+	}
+	if u.Password != "" || u.PasswordChangeRequired {
+		t.Fatalf("SAML merge retained password credential: password=%q temporary=%t", u.Password, u.PasswordChangeRequired)
+	}
+	if u.TokenVersion != 0 {
+		t.Fatalf("new federated tokenVersion = %d, want 0", u.TokenVersion)
+	}
+	stored, err := repo.FindByEmail(ctx, "merge@example.com")
+	if err != nil || stored == nil || stored.Id != pwUser.Id || stored.Password != "hashed" || stored.AuthSource != domain.AuthSourcePassword {
+		t.Fatalf("password principal changed: %#v, %v", stored, err)
 	}
 	if u.ExternalSubject != "saml-sub-1" {
 		t.Fatalf("externalSubject should be set, got %s", u.ExternalSubject)
@@ -742,7 +860,7 @@ func TestMerge_Email_FromPassword(t *testing.T) {
 	}
 }
 
-func TestMerge_None_RejectsDuplicateDirectoryEmail(t *testing.T) {
+func TestMerge_None_CreatesTenantLocalPrincipalWithoutClaimingDirectoryEmail(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 
@@ -762,16 +880,23 @@ func TestMerge_None_RejectsDuplicateDirectoryEmail(t *testing.T) {
 		t.Fatalf("create password user: %v", err)
 	}
 
-	// The global directory has one canonical owner per normalized email. A
-	// SAML policy that forbids merging therefore fails closed instead of
-	// creating an ambiguous duplicate identity.
-	_, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-dup", "DUP@example.com", "Dup User", []string{"ADMIN"}, domain.MergeStrategyNone)
-	if !errors.Is(err, domain.ErrEmailExists) || created {
-		t.Fatalf("duplicate directory identity created=%t error=%v", created, err)
+	// A tenant-controlled assertion may create a tenant-local principal, but it
+	// cannot replace or reserve the reusable global email identity.
+	federated, created, err := repo.UpsertFromSAML(ctx, "t1", "saml-sub-dup", "DUP@example.com", "Dup User", []string{"ADMIN"}, domain.MergeStrategyNone)
+	if err != nil || !created || federated.Id == pwUser.Id {
+		t.Fatalf("tenant-local identity created=%t user=%#v error=%v", created, federated, err)
 	}
 	stored, findErr := repo.FindByEmail(ctx, "dup@example.com")
 	if findErr != nil || stored.Id != "pw-dup-1" || stored.AuthSource != domain.AuthSourcePassword {
 		t.Fatalf("canonical identity changed: user=%#v error=%v", stored, findErr)
+	}
+	byID, ok := repo.(UserIDRepository)
+	if !ok {
+		t.Fatal("subject-based repository unavailable")
+	}
+	resolved, findErr := byID.FindByID(ctx, federated.Id)
+	if findErr != nil || resolved == nil || resolved.CompanyId == nil || *resolved.CompanyId != "t1" {
+		t.Fatalf("tenant-local principal = %#v, %v", resolved, findErr)
 	}
 }
 
@@ -805,7 +930,7 @@ func TestMerge_ExternalSubject_Matches(t *testing.T) {
 	}
 }
 
-func TestMerge_SubPreserved(t *testing.T) {
+func TestMerge_EmailCannotReuseExistingSubject(t *testing.T) {
 	_, repo := newUserRepoForTest(t)
 	ctx := context.Background()
 
@@ -825,12 +950,12 @@ func TestMerge_SubPreserved(t *testing.T) {
 		t.Fatalf("create password user: %v", err)
 	}
 
-	// Email merge must preserve the original sub (Id).
-	u, _, err := repo.UpsertFromSAML(ctx, "t1", "ext-preserve", "preserve@example.com", "Preserve", []string{"ADMIN"}, domain.MergeStrategyEmail)
+	// The asserted email must not reuse the existing sub (Id).
+	u, created, err := repo.UpsertFromSAML(ctx, "t1", "ext-preserve", "preserve@example.com", "Preserve", []string{"ADMIN"}, domain.MergeStrategyEmail)
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if u.Id != "preserve-sub-1" {
-		t.Fatalf("sub (Id) must be preserved after merge, got %s", u.Id)
+	if !created || u.Id == "preserve-sub-1" {
+		t.Fatalf("assertion reused password sub: created=%t id=%s", created, u.Id)
 	}
 }

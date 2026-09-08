@@ -9,13 +9,14 @@ import (
 // ErrIdPNotFound is returned when a requested IdP record does not exist.
 var ErrIdPNotFound = errors.New("saml: idp not found")
 
-// Store abstracts the persistence layer for SAML state. 13 methods across
+// Store abstracts the persistence layer for SAML state across
 // four record families: requests, IdPs, session indexes, and replay marks.
 type Store interface {
 	PutRequest(ctx context.Context, rec RequestRecord) error
 	ConsumeRequest(ctx context.Context, id string) (RequestRecord, bool, error)
 
 	PutIdP(ctx context.Context, rec IdPRecord) error
+	CompareAndSwapIdP(ctx context.Context, expected IdPRecord, replacement IdPRecord) (bool, error)
 	GetIdP(ctx context.Context, tid string) (IdPRecord, error)
 	ListIdPs(ctx context.Context) ([]IdPRecord, error)
 	DeleteIdP(ctx context.Context, tid string) error
@@ -23,6 +24,8 @@ type Store interface {
 	PutIndex(ctx context.Context, nameID string, rec IndexRecord) error
 	GetIndex(ctx context.Context, nameID string) (IndexRecord, error)
 	DeleteIndex(ctx context.Context, nameID string) error
+	PutSessionIndexes(ctx context.Context, subjectKey, nameIDKey string, rec IndexRecord) error
+	DeleteSessionIndexes(ctx context.Context, subjectKey, nameIDKey string) error
 
 	MarkSeen(ctx context.Context, assertionID string, ttl time.Duration) (bool, error)
 

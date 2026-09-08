@@ -22,4 +22,5 @@ type IssueInput struct {
 	Roles           []string
 	AMR             []string // ["saml"]
 	AuthnInstant    time.Time
+	NotOnOrAfter    time.Time
 }

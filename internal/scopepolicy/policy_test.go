@@ -13,7 +13,7 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		t.Fatalf("compiled policy: %v", err)
 	}
 	digest := sha256.Sum256(manifestJSON)
-	if PolicyVersion != "2026-09-04.2" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
+	if PolicyVersion != "2026-09-08.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
 		t.Fatalf("unexpected policy identity: %s %x", PolicyVersion, digest)
 	}
 	tests := []struct {
@@ -21,6 +21,8 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		want  bool
 	}{
 		{scope: "code-admin:services:read", want: true},
+		{scope: "code-admin:environments:read", want: true},
+		{scope: "code-admin:repositories:read", want: true},
 		{scope: "code-admin:identity:write", want: true},
 		{scope: "code-admin:secrets:read", want: true},
 		{scope: "code-admin:secrets:write", want: true},
@@ -29,7 +31,6 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		{scope: "code-admin:tenants:admin"},
 		{scope: "code-admin:platform:read"},
 		{scope: "code-admin:clusters:read"},
-		{scope: "code-admin:repositories:read"},
 		{scope: "code-admin:identity:read"},
 		{scope: "code-admin:owners:delegate"},
 		{scope: "code-admin:unknown:read"},
@@ -81,6 +82,11 @@ func TestAudienceScopesUseOnlyExistingReservedNames(t *testing.T) {
 		}
 		if RequiresHomeAuthority(enabled) || !TenantRoleAssignable(enabled) {
 			t.Fatalf("misclassified runtime-backed tenant scope %q", enabled)
+		}
+	}
+	for _, enabled := range []string{"code-admin:environments:read", "code-admin:repositories:read"} {
+		if RequiresHomeAuthority(enabled) || !TenantRoleAssignable(enabled) {
+			t.Fatalf("misclassified workload-safe read scope %q", enabled)
 		}
 	}
 	if !RequiresHomeAuthority("code-admin:clusters:read") || RequiresHomeAuthority("code-admin:workloads:read") ||

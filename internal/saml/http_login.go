@@ -12,10 +12,27 @@ import (
 // Login handles GET /saml/login/{tid}. It builds an AuthnRequest, persists
 // the request record, sets a state cookie, and 302-redirects to the IdP.
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
+	secureBrowserAuthenticationResponse(w)
+	if !h.allowSAMLAuthenticationAttempt(w, r, "saml-login:ip") {
+		return
+	}
 	ctx := r.Context()
 	tid := chi.URLParam(r, "tid")
 	relay := r.URL.Query().Get("RelayState")
 	forceAuthn := r.URL.Query().Get("forceAuthn") == "true"
+	if h.tenants == nil {
+		h.renderError(w, r, ReasonInternal, http.StatusInternalServerError)
+		return
+	}
+	active, tenantErr := h.tenants.IsTenantActive(ctx, tid)
+	if tenantErr != nil {
+		h.renderError(w, r, ReasonInternal, http.StatusInternalServerError)
+		return
+	}
+	if !active {
+		h.renderError(w, r, ReasonTIDUnknown, http.StatusNotFound)
+		return
+	}
 
 	idp, err := h.store.GetIdP(ctx, tid)
 	if errors.Is(err, ErrIdPNotFound) {

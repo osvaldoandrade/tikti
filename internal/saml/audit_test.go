@@ -1,8 +1,10 @@
 package saml
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -11,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/go-redis/redis/v8"
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
@@ -83,6 +87,17 @@ func TestAudit_AcceptRecord_Schema(t *testing.T) {
 	)
 
 	validateRecord(t, sch, rec)
+	intent := NewAcceptIntentRecord(
+		"tenant-001",
+		VerifiedAssertion{AssertionID: "_abc123", NameID: "user@example.com", IssuerEntityID: "https://idp.example.com"},
+		"_aabbccddee00112233445566778899aabbccddee",
+		"https://sp.example.com",
+		42*time.Millisecond,
+	)
+	validateRecord(t, sch, intent)
+	if intent.Phase != "intent" || rec.Phase != "outcome" {
+		t.Fatalf("unexpected audit phases: intent=%q outcome=%q", intent.Phase, rec.Phase)
+	}
 }
 
 func TestAudit_RejectRecord_Schema(t *testing.T) {
@@ -96,6 +111,18 @@ func TestAudit_RejectRecord_Schema(t *testing.T) {
 	)
 
 	validateRecord(t, sch, rec)
+	correlated := NewRejectOutcomeRecord(
+		"tenant-002",
+		VerifiedAssertion{AssertionID: "_assertion", NameID: "user@example.com", IssuerEntityID: "https://idp.example.com", Attributes: map[string][]string{"email": {"user@example.com"}}},
+		"_aabbccddee00112233445566778899aabbccddee",
+		"https://sp.example.com",
+		ReasonInternal,
+		15*time.Millisecond,
+	)
+	validateRecord(t, sch, correlated)
+	if correlated.Decision != "reject" || correlated.Phase != "outcome" || correlated.SubjectHash == "" || correlated.SubjectHash == "user@example.com" {
+		t.Fatalf("unsafe correlated reject outcome: %#v", correlated)
+	}
 }
 
 func TestAudit_AttrHash_Deterministic(t *testing.T) {
@@ -183,9 +210,11 @@ func TestAudit_NoPIIPersisted(t *testing.T) {
 		}
 	}
 
-	// nameID, issuer, audience are allowed.
-	if !strings.Contains(jsonStr, "user@example.com") {
-		t.Error("nameID should be present in audit record")
+	if strings.Contains(jsonStr, "user@example.com") {
+		t.Error("raw external subject must not be present in audit record")
+	}
+	if rec.SubjectHash == "" || !strings.Contains(jsonStr, rec.SubjectHash) {
+		t.Error("tenant-bound subject hash should be present in audit record")
 	}
 	if !strings.Contains(jsonStr, "https://idp.example.com") {
 		t.Error("issuer should be present in audit record")
@@ -200,10 +229,48 @@ func TestAudit_NoPIIPersisted(t *testing.T) {
 	}
 }
 
+func TestRedisAuditEmitterPersistsBoundedRedactedDecision(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	record := NewAcceptRecord("bereia", VerifiedAssertion{
+		AssertionID: "assertion-1", NameID: "victim@example.com", IssuerEntityID: "https://idp.example.com",
+		Attributes: map[string][]string{"email": {"victim@example.com"}},
+	}, "request-1", "https://sp.example.com", time.Millisecond)
+	if err := NewRedisAuditEmitter(client, 24*time.Hour, nil).Emit(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	keys := server.Keys()
+	if len(keys) != 1 || !strings.HasPrefix(keys[0], "saml:audit:v1:") || strings.Contains(keys[0], "victim") {
+		t.Fatalf("audit keys=%v", keys)
+	}
+	payload, err := client.Get(context.Background(), keys[0]).Result()
+	if err != nil || strings.Contains(payload, "victim@example.com") || !strings.Contains(payload, record.SubjectHash) {
+		t.Fatalf("durable payload=%q err=%v", payload, err)
+	}
+	if ttl := server.TTL(keys[0]); ttl <= 0 || ttl > 24*time.Hour {
+		t.Fatalf("audit TTL=%s", ttl)
+	}
+}
+
 func TestAudit_LogEmitter(t *testing.T) {
+	var output bytes.Buffer
+	previous := log.Writer()
+	log.SetOutput(&output)
+	defer log.SetOutput(previous)
+
 	emitter := LogEmitter{}
-	rec := NewRejectRecord("t-emit", "_aabbccddee00112233445566778899aabbccddee", ReasonInternal, 5*time.Millisecond)
+	rec := NewAcceptRecord("t-emit", VerifiedAssertion{
+		AssertionID: "assertion", NameID: "external-subject-canary@example.com",
+		IssuerEntityID: "https://idp.example.com",
+	}, "_aabbccddee00112233445566778899aabbccddee", "https://sp.example.com", 5*time.Millisecond)
 	if err := emitter.Emit(context.Background(), rec); err != nil {
 		t.Fatalf("Emit error: %v", err)
+	}
+	if strings.Contains(output.String(), "external-subject-canary@example.com") {
+		t.Fatalf("raw external subject leaked to log: %s", output.String())
+	}
+	if !strings.Contains(output.String(), rec.SubjectHash) {
+		t.Fatalf("correlation hash missing from log: %s", output.String())
 	}
 }

@@ -44,6 +44,13 @@ type loginMockProvider struct {
 	buildAuthnFn func(ctx context.Context, in BuildAuthnRequestInput) (*AuthnRequest, error)
 }
 
+type loginRejectingLimiter struct{ calls int }
+
+func (l *loginRejectingLimiter) AllowAuthenticationAttempt(context.Context, string, string, int, time.Duration) (bool, error) {
+	l.calls++
+	return false, nil
+}
+
 func (m *loginMockProvider) BuildAuthnRequest(ctx context.Context, in BuildAuthnRequestInput) (*AuthnRequest, error) {
 	if m.buildAuthnFn != nil {
 		return m.buildAuthnFn(ctx, in)
@@ -92,6 +99,7 @@ func newLoginHandler(store *loginMockStore, prov *loginMockProvider) *Handler {
 		Clock:    NewFakeClock(),
 		Cfg:      defaultCfg(),
 		Metrics:  NewMetrics(reg),
+		Tenants:  &mockTenantStatusAuthority{active: true},
 	})
 }
 
@@ -138,6 +146,13 @@ func TestLogin_Redirects302(t *testing.T) {
 	if rr.Code != http.StatusFound {
 		t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
 	}
+	for header, expected := range map[string]string{
+		"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
+	} {
+		if got := rr.Header().Get(header); got != expected {
+			t.Errorf("%s = %q, want %q", header, got, expected)
+		}
+	}
 
 	loc := rr.Header().Get("Location")
 	if loc != redirectURL {
@@ -147,6 +162,53 @@ func TestLogin_Redirects302(t *testing.T) {
 	// Acceptance: RedirectURL under 8 KiB.
 	if len(redirectURL) > 8192 {
 		t.Errorf("redirect URL length %d exceeds 8 KiB", len(redirectURL))
+	}
+}
+
+func TestLoginDisabledTenantStopsBeforeTrustLookup(t *testing.T) {
+	storeCalls, providerCalls := 0, 0
+	store := &loginMockStore{getIdPFn: func(context.Context, string) (IdPRecord, error) {
+		storeCalls++
+		return defaultIdP(), nil
+	}}
+	provider := &loginMockProvider{buildAuthnFn: func(context.Context, BuildAuthnRequestInput) (*AuthnRequest, error) {
+		providerCalls++
+		return &AuthnRequest{ID: "must-not-run", RedirectURL: testSSOURL}, nil
+	}}
+	h := newLoginHandler(store, provider)
+	tenantAuthority := &mockTenantStatusAuthority{active: false}
+	h.tenants = tenantAuthority
+
+	response := execLogin(h, testTID)
+	if response.Code != http.StatusNotFound || storeCalls != 0 || providerCalls != 0 || tenantAuthority.calls != 1 {
+		t.Fatalf("disabled tenant status=%d tenant=%d store=%d provider=%d", response.Code, tenantAuthority.calls, storeCalls, providerCalls)
+	}
+}
+
+func TestLoginRateLimitStopsBeforeTenantOrProviderLookup(t *testing.T) {
+	storeCalls, providerCalls := 0, 0
+	store := &loginMockStore{getIdPFn: func(context.Context, string) (IdPRecord, error) {
+		storeCalls++
+		return defaultIdP(), nil
+	}}
+	provider := &loginMockProvider{buildAuthnFn: func(context.Context, BuildAuthnRequestInput) (*AuthnRequest, error) {
+		providerCalls++
+		return &AuthnRequest{ID: "must-not-run", RedirectURL: testSSOURL}, nil
+	}}
+	limiter := &loginRejectingLimiter{}
+	handler := NewHandler(Deps{
+		Store: store, Provider: provider, Clock: NewFakeClock(), Cfg: defaultCfg(),
+		Metrics: NewMetrics(prometheus.NewRegistry()), AuthenticationLimiter: limiter,
+		ResolveClientIP: func(*http.Request) string { return "198.51.100.12" },
+		RateLimit:       config.RateLimitConfig{Requests: 1, WindowSeconds: 60},
+	})
+
+	response := execLogin(handler, testTID)
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "60" {
+		t.Fatalf("rate limit response = %d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	if limiter.calls != 1 || storeCalls != 0 || providerCalls != 0 {
+		t.Fatalf("rate limited request crossed boundary: limiter=%d store=%d provider=%d", limiter.calls, storeCalls, providerCalls)
 	}
 }
 

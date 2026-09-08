@@ -5,6 +5,7 @@ import "time"
 // IdPRecord is the trust material for 1 tenant.
 type IdPRecord struct {
 	TenantID        string              `msgpack:"tid"`
+	Generation      string              `msgpack:"generation,omitempty"`
 	EntityID        string              `msgpack:"entity_id"`
 	SSOURL          string              `msgpack:"sso_url"`
 	SLOURL          string              `msgpack:"slo_url"`
@@ -29,6 +30,8 @@ type RequestRecord struct {
 type IndexRecord struct {
 	TenantID     string    `msgpack:"tid"`
 	Subject      string    `msgpack:"sub"`
+	NameID       string    `msgpack:"name_id"`
+	Email        string    `msgpack:"email"`
 	SessionIndex string    `msgpack:"session_index"`
 	NotOnOrAfter time.Time `msgpack:"not_on_or_after"`
 }

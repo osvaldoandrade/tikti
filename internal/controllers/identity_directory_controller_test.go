@@ -12,16 +12,24 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/osvaldoandrade/tikti/internal/services"
+	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 type identityDirectoryHTTPStub struct {
 	services.IdentityDirectoryService
-	createInput domain.DirectoryUserCreateReq
-	findInput   string
-	listInput   string
-	putETag     string
-	putTenant   string
+	createInput     domain.DirectoryUserCreateReq
+	findInput       string
+	listInput       string
+	tenantListInput string
+	globalListCalls int
+	changeErr       error
+	putETag         string
+	putTenant       string
+}
+
+func (s *identityDirectoryHTTPStub) ChangeTemporaryPassword(_ context.Context, _ domain.TemporaryPasswordChangeReq) error {
+	return s.changeErr
 }
 
 func (s *identityDirectoryHTTPStub) CreateUser(_ context.Context, input domain.DirectoryUserCreateReq) (*domain.DirectoryUser, error) {
@@ -37,10 +45,17 @@ func (s *identityDirectoryHTTPStub) FindUserByEmail(_ context.Context, email str
 	return &domain.DirectoryUser{ID: userID, Email: email, Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now()}, nil
 }
 func (s *identityDirectoryHTTPStub) ListUsers(_ context.Context, query, _ string, _ int) (*domain.DirectoryUserPage, error) {
+	s.globalListCalls++
 	s.listInput = query
 	return &domain.DirectoryUserPage{Users: []domain.DirectoryUser{
 		{ID: "user-1", Email: "user@example.com", Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now()},
 		{ID: "user-2", Email: "external@example.com", Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now()},
+	}}, nil
+}
+func (s *identityDirectoryHTTPStub) ListTenantUsers(_ context.Context, tenantID, query, _ string, _ int) (*domain.DirectoryUserPage, error) {
+	s.tenantListInput = tenantID + ":" + query
+	return &domain.DirectoryUserPage{Users: []domain.DirectoryUser{
+		{ID: "user-1", Email: "user@example.com", Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now()},
 	}}, nil
 }
 func (s *identityDirectoryHTTPStub) GetEffectiveTenantRoles(_ context.Context, userID, tenantID string) ([]string, []domain.AccessProvenance, error) {
@@ -75,6 +90,14 @@ func TestIdentityDirectoryControllerNoLeakExactResolutionAndTenantIsolation(t *t
 		"sub": "platform-admin", "role": string(domain.RoleAdmin), "scope": platformTenantAdminScope,
 		"tid": "local-tenant", domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
 	})
+	missingSubject := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{
+		"role": string(domain.RoleAdmin), "scope": platformTenantAdminScope,
+		"tid": "local-tenant", domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin,
+	})
+	deniedSubjectlessRead := performIdentityRequest(t, router, http.MethodGet, "/admin/users", "", missingSubject, "service-key", "")
+	if deniedSubjectlessRead.Code != http.StatusForbidden || stub.globalListCalls != 0 {
+		t.Fatalf("subjectless platform read = %d globalCalls=%d", deniedSubjectlessRead.Code, stub.globalListCalls)
+	}
 	body := `{"email":"New@Example.com","temporaryPassword":"one-time-secret"}`
 	created := performIdentityRequest(t, router, http.MethodPost, "/admin/users", body, platform, "service-key", "")
 	if created.Code != http.StatusCreated || strings.Contains(created.Body.String(), "one-time-secret") || stub.createInput.TemporaryPassword != "one-time-secret" {
@@ -85,8 +108,9 @@ func TestIdentityDirectoryControllerNoLeakExactResolutionAndTenantIsolation(t *t
 		"sub": "tenant-admin", "role": string(domain.RoleCompanyAdmin), "scope": tenantIdentityReadScope + " " + tenantIdentityWriteScope, "tid": "bereia",
 	})
 	prefix := performIdentityRequest(t, router, http.MethodGet, "/admin/users?query=user@", "", workload, "service-key", "")
-	if prefix.Code != http.StatusOK || stub.listInput != "user@" || !strings.Contains(prefix.Body.String(), "user-1") || strings.Contains(prefix.Body.String(), "user-2") {
-		t.Fatalf("tenant-filtered prefix = %d %s input=%q", prefix.Code, prefix.Body.String(), stub.listInput)
+	if prefix.Code != http.StatusOK || stub.tenantListInput != "bereia:user@" || stub.globalListCalls != 0 ||
+		!strings.Contains(prefix.Body.String(), "user-1") || strings.Contains(prefix.Body.String(), "user-2") {
+		t.Fatalf("tenant-filtered prefix = %d %s tenantInput=%q globalCalls=%d", prefix.Code, prefix.Body.String(), stub.tenantListInput, stub.globalListCalls)
 	}
 	exact := performIdentityRequest(t, router, http.MethodGet, "/admin/users?query=User%40Example.com", "", workload, "service-key", "")
 	if exact.Code != http.StatusOK || stub.findInput != "user@example.com" || !strings.Contains(exact.Body.String(), "user-1") {
@@ -103,6 +127,22 @@ func TestIdentityDirectoryControllerNoLeakExactResolutionAndTenantIsolation(t *t
 	foreign := performIdentityRequest(t, router, http.MethodPut, "/admin/tenants/storifly/users/user-1", `{"roles":["reader"]}`, workload, "service-key", `"1"`)
 	if foreign.Code != http.StatusForbidden || stub.putTenant != "" {
 		t.Fatalf("foreign = %d tenant=%q", foreign.Code, stub.putTenant)
+	}
+}
+
+func TestIdentityDirectoryControllerReturnsStandardRateLimitResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	stub := &identityDirectoryHTTPStub{changeErr: domain.ErrRateLimited}
+	router := gin.New()
+	router.POST("/change", NewIdentityDirectoryController(stub, &config.Config{}).ChangeTemporaryPassword)
+	response := performIdentityRequest(
+		t, router, http.MethodPost, "/change",
+		`{"email":"user@example.com","temporaryPassword":"temporary-1234","newPassword":"permanent-1234"}`,
+		"", "", "",
+	)
+	if response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "60" ||
+		!strings.Contains(response.Body.String(), "too many attempts") {
+		t.Fatalf("rate limit = %d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
 	}
 }
 

@@ -11,8 +11,11 @@ import (
 	"time"
 
 	"github.com/osvaldoandrade/tikti/internal/saml"
+	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+var testSLOStateKey = []byte("test-slo-state-key-at-least-32-bytes")
 
 // ---------------------------------------------------------------------------
 // Test helpers — mock provider and store
@@ -77,9 +80,18 @@ func (s *mockSLOStore) PutRequest(_ context.Context, _ saml.RequestRecord) error
 func (s *mockSLOStore) ConsumeRequest(_ context.Context, _ string) (saml.RequestRecord, bool, error) {
 	return saml.RequestRecord{}, false, nil
 }
-func (s *mockSLOStore) PutIdP(_ context.Context, _ saml.IdPRecord) error     { return nil }
-func (s *mockSLOStore) ListIdPs(_ context.Context) ([]saml.IdPRecord, error) { return nil, nil }
-func (s *mockSLOStore) DeleteIdP(_ context.Context, _ string) error          { return nil }
+func (s *mockSLOStore) PutIdP(_ context.Context, _ saml.IdPRecord) error { return nil }
+func (s *mockSLOStore) CompareAndSwapIdP(_ context.Context, _, _ saml.IdPRecord) (bool, error) {
+	return true, nil
+}
+func (s *mockSLOStore) ListIdPs(_ context.Context) ([]saml.IdPRecord, error) {
+	records := make([]saml.IdPRecord, 0, len(s.idps))
+	for _, record := range s.idps {
+		records = append(records, record)
+	}
+	return records, nil
+}
+func (s *mockSLOStore) DeleteIdP(_ context.Context, _ string) error { return nil }
 func (s *mockSLOStore) PutIndex(_ context.Context, _ string, _ saml.IndexRecord) error {
 	return nil
 }
@@ -103,11 +115,44 @@ func (s *mockSLOStore) DeleteIndex(_ context.Context, nameID string) error {
 	return nil
 }
 
+func (s *mockSLOStore) PutSessionIndexes(_ context.Context, subjectKey, nameIDKey string, rec saml.IndexRecord) error {
+	s.indexes[subjectKey] = rec
+	s.indexes[nameIDKey] = rec
+	return nil
+}
+
+func (s *mockSLOStore) DeleteSessionIndexes(_ context.Context, subjectKey, nameIDKey string) error {
+	s.deleted[subjectKey] = true
+	s.deleted[nameIDKey] = true
+	delete(s.indexes, subjectKey)
+	delete(s.indexes, nameIDKey)
+	return nil
+}
+
 func (s *mockSLOStore) GetIdP(_ context.Context, tid string) (saml.IdPRecord, error) {
 	if rec, ok := s.idps[tid]; ok {
 		return rec, nil
 	}
 	return saml.IdPRecord{}, saml.ErrIdPNotFound
+}
+
+func seedSLOSession(store *mockSLOStore, record saml.IndexRecord) {
+	store.indexes[saml.SessionSubjectIndexKey(record.TenantID, record.Subject)] = record
+	store.indexes[saml.SessionNameIDIndexKey(record.TenantID, record.NameID)] = record
+}
+
+type mockSLOAuthority struct {
+	revoked []string
+	err     error
+}
+
+func (a *mockSLOAuthority) Validate(_ context.Context, _ string) (saml.SessionIdentity, error) {
+	return saml.SessionIdentity{}, saml.ErrSessionAuthority
+}
+
+func (a *mockSLOAuthority) Revoke(_ context.Context, _ string, email string) error {
+	a.revoked = append(a.revoked, email)
+	return a.err
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +167,12 @@ func newTestSLOHandler(prov saml.Provider, store saml.Store) *saml.Handler {
 		Store:    store,
 		Clock:    saml.NewFakeClock(),
 		Metrics:  m,
+		Cfg: config.SAMLConfig{ACS: config.ACSConfig{
+			CookieName:     "tikti_idt",
+			CookieHTTPOnly: true,
+		}},
+		Authority:   &mockSLOAuthority{},
+		SLOStateKey: testSLOStateKey,
 	})
 }
 
@@ -133,11 +184,14 @@ func newTestSLOHandler(prov saml.Provider, store saml.Store) *saml.Handler {
 // removes the SAML session index and clears the session cookie.
 func TestSLO_GET_DeletesSession(t *testing.T) {
 	store := newMockSLOStore()
-	store.indexes["user@example.com"] = saml.IndexRecord{
+	record := saml.IndexRecord{
 		TenantID:     "t-001",
 		Subject:      "sub-001",
+		NameID:       "user@example.com",
+		Email:        "user@example.com",
 		SessionIndex: "idx-001",
 	}
+	seedSLOSession(store, record)
 	store.idps["t-001"] = saml.IdPRecord{TenantID: "t-001", EntityID: "https://idp.example.com"}
 
 	prov := &mockSLOProvider{
@@ -164,8 +218,7 @@ func TestSLO_GET_DeletesSession(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet,
 		"/saml/slo?SAMLResponse="+url.QueryEscape(encoded), nil)
-	state := base64.RawURLEncoding.EncodeToString([]byte("user@example.com")) + "." +
-		base64.RawURLEncoding.EncodeToString([]byte("_req-001"))
+	state := saml.EncodeSLOState("t-001", "sub-001", "_req-001", testSLOStateKey)
 	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: state})
 	rr := httptest.NewRecorder()
 
@@ -175,14 +228,18 @@ func TestSLO_GET_DeletesSession(t *testing.T) {
 	if rr.Code != http.StatusFound {
 		t.Errorf("status = %d, want %d", rr.Code, http.StatusFound)
 	}
+	if rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("Referrer-Policy") != "no-referrer" || rr.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("GET SLO privacy headers = %v", rr.Header())
+	}
 	loc := rr.Header().Get("Location")
 	if loc != "/" {
 		t.Errorf("Location = %q, want %q", loc, "/")
 	}
 
 	// Assert: saml:idx removed
-	if !store.deleted["user@example.com"] {
-		t.Error("expected saml:idx for user@example.com to be deleted")
+	if !store.deleted[saml.SessionSubjectIndexKey("t-001", "sub-001")] ||
+		!store.deleted[saml.SessionNameIDIndexKey("t-001", "user@example.com")] {
+		t.Error("expected both tenant-scoped SAML indexes to be deleted")
 	}
 
 	// Assert: SLO cookie cleared
@@ -201,11 +258,14 @@ func TestSLO_GET_DeletesSession(t *testing.T) {
 // via POST produces a signed LogoutResponse HTML form.
 func TestSLO_POST_Acknowledges(t *testing.T) {
 	store := newMockSLOStore()
-	store.indexes["user@example.com"] = saml.IndexRecord{
+	record := saml.IndexRecord{
 		TenantID:     "t-001",
 		Subject:      "sub-001",
+		NameID:       "user@example.com",
+		Email:        "user@example.com",
 		SessionIndex: "idx-001",
 	}
+	seedSLOSession(store, record)
 	store.idps["t-001"] = saml.IdPRecord{
 		TenantID: "t-001",
 		EntityID: "https://idp.example.com",
@@ -227,7 +287,7 @@ func TestSLO_POST_Acknowledges(t *testing.T) {
 			return &saml.LogoutResponseResult{
 				PostBody: []byte(`<form method="post" action="https://idp.example.com/slo">` +
 					`<input type="hidden" name="SAMLResponse" value="signed-resp" />` +
-					`</form>`),
+					`</form><script>document.getElementById('SAMLResponseForm').submit();</script>`),
 			}, nil
 		},
 	}
@@ -261,10 +321,18 @@ func TestSLO_POST_Acknowledges(t *testing.T) {
 	if !strings.Contains(body, "SAMLResponse") {
 		t.Error("response body does not contain SAMLResponse")
 	}
+	if strings.Contains(body, "<script>") || !strings.Contains(body, `<script nonce="`) || !strings.Contains(rr.Header().Get("Content-Security-Policy"), "script-src 'nonce-") {
+		t.Fatalf("POST SLO script was not nonce-bound: csp=%q body=%s", rr.Header().Get("Content-Security-Policy"), body)
+	}
+	if rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("Referrer-Policy") != "no-referrer" ||
+		rr.Header().Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(rr.Header().Get("Content-Security-Policy"), "form-action https://idp.example.com") {
+		t.Fatalf("POST SLO browser security headers = %v", rr.Header())
+	}
 
 	// Assert: index deleted
-	if !store.deleted["user@example.com"] {
-		t.Error("expected saml:idx for user@example.com to be deleted")
+	if !store.deleted[saml.SessionSubjectIndexKey("t-001", "sub-001")] ||
+		!store.deleted[saml.SessionNameIDIndexKey("t-001", "user@example.com")] {
+		t.Error("expected both tenant-scoped SAML indexes to be deleted")
 	}
 
 	// Assert: BuildLogoutResponse was called with correct IdP
@@ -282,10 +350,16 @@ func TestSLO_POST_Acknowledges(t *testing.T) {
 // the session index is NOT deleted.
 func TestSLO_POST_SignatureInvalid_Reject(t *testing.T) {
 	store := newMockSLOStore()
-	store.indexes["user@example.com"] = saml.IndexRecord{
+	record := saml.IndexRecord{
 		TenantID:     "t-001",
 		Subject:      "sub-001",
+		NameID:       "user@example.com",
+		Email:        "user@example.com",
 		SessionIndex: "idx-001",
+	}
+	seedSLOSession(store, record)
+	store.idps["t-001"] = saml.IdPRecord{
+		TenantID: "t-001", EntityID: "https://idp.example.com",
 	}
 
 	prov := &mockSLOProvider{
@@ -297,7 +371,9 @@ func TestSLO_POST_SignatureInvalid_Reject(t *testing.T) {
 	h := newTestSLOHandler(prov, store)
 
 	reqXML := `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
-		ID="_bad-sig" Version="2.0">
+		xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_bad-sig" Version="2.0">
+		<saml:Issuer>https://idp.example.com</saml:Issuer>
+		<saml:NameID>user@example.com</saml:NameID>
 		<samlp:SessionIndex>idx-001</samlp:SessionIndex>
 	</samlp:LogoutRequest>`
 	encodedReq := base64.StdEncoding.EncodeToString([]byte(reqXML))
@@ -316,12 +392,12 @@ func TestSLO_POST_SignatureInvalid_Reject(t *testing.T) {
 	}
 
 	// Assert: no session deletion
-	if store.deleted["user@example.com"] {
+	if store.deleted[saml.SessionNameIDIndexKey("t-001", "user@example.com")] {
 		t.Error("session index should NOT have been deleted on invalid signature")
 	}
 
 	// Assert: index still present
-	if _, ok := store.indexes["user@example.com"]; !ok {
+	if _, ok := store.indexes[saml.SessionNameIDIndexKey("t-001", "user@example.com")]; !ok {
 		t.Error("session index should still be present after rejection")
 	}
 }

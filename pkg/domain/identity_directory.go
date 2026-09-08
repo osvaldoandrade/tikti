@@ -8,6 +8,7 @@ type DirectoryUser struct {
 	Email                  string     `json:"email"`
 	Status                 UserStatus `json:"status"`
 	AuthSource             AuthSource `json:"authSource"`
+	HomeTenantID           string     `json:"homeTenantId,omitempty"`
 	PasswordChangeRequired bool       `json:"passwordChangeRequired"`
 	CreatedAt              time.Time  `json:"createdAt"`
 }

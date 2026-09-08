@@ -44,6 +44,17 @@ Ingress is disabled by default. Enable it by setting `ingress.enabled=true` and 
 ## SAML
 
 Set `saml.enabled=true` to mount `/saml/*` routes and the SP key volume.
+`saml.platformAdministrators` is empty by default. When platform access through
+SAML is required, configure an exact lowercase email under the immutable
+`local-tenant` MASTER identity; workload-tenant IdPs can never mint platform
+authority. For example:
+
+```yaml
+saml:
+  platformAdministrators:
+    - tenantId: local-tenant
+      email: owner@example.com
+```
 
 ### Inline keys
 

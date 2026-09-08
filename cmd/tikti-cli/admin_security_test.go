@@ -207,13 +207,16 @@ func TestRevokeCommandUsesExplicitGlobalContractAndHeaderAPIKey(t *testing.T) {
 }
 
 func TestAdminMutationCommandsUseHeaderAPIKeyAndScopedAccessToken(t *testing.T) {
+	originalPasswordReader := readTemporaryPassword
+	readTemporaryPassword = func(bool) (string, error) { return "temporary-password", nil }
+	t.Cleanup(func() { readTemporaryPassword = originalPasswordReader })
 	tests := []struct {
 		name, method, path string
 		run                func(*string, *bool) error
 	}{
 		{name: "user create", method: http.MethodPost, path: "/v1/admin/identity/directory/users", run: func(profile *string, outputJSON *bool) error {
 			command := userCmd(profile, outputJSON)
-			command.SetArgs([]string{"create", "--email", "u@example.com", "--temporary-password", "temporary-password"})
+			command.SetArgs([]string{"create", "--email", "u@example.com"})
 			return command.Execute()
 		}},
 		{name: "user suspend", method: http.MethodPost, path: "/v1/accounts/status", run: func(profile *string, outputJSON *bool) error {
@@ -272,13 +275,16 @@ func TestAdminMutationCommandsUseHeaderAPIKeyAndScopedAccessToken(t *testing.T) 
 }
 
 func TestAdminMutationCommandsFailLocallyWithoutScopedAccessToken(t *testing.T) {
+	originalPasswordReader := readTemporaryPassword
+	readTemporaryPassword = func(bool) (string, error) { return "temporary-password", nil }
+	t.Cleanup(func() { readTemporaryPassword = originalPasswordReader })
 	tests := []struct {
 		name string
 		run  func(*string, *bool) error
 	}{
 		{name: "user create", run: func(profile *string, outputJSON *bool) error {
 			command := userCmd(profile, outputJSON)
-			command.SetArgs([]string{"create", "--email", "u@example.com", "--temporary-password", "temporary-password"})
+			command.SetArgs([]string{"create", "--email", "u@example.com"})
 			return command.Execute()
 		}},
 		{name: "user suspend", run: func(profile *string, outputJSON *bool) error {
@@ -324,5 +330,26 @@ func TestAdminMutationCommandsFailLocallyWithoutScopedAccessToken(t *testing.T) 
 				t.Fatalf("error=%v calls=%d", err, calls)
 			}
 		})
+	}
+}
+
+func TestUserCreateRejectsTemporaryPasswordInArguments(t *testing.T) {
+	called := false
+	originalPasswordReader := readTemporaryPassword
+	readTemporaryPassword = func(bool) (string, error) {
+		called = true
+		return "unused", nil
+	}
+	t.Cleanup(func() { readTemporaryPassword = originalPasswordReader })
+
+	profile, outputJSON := "", true
+	command := userCmd(&profile, &outputJSON)
+	command.SetArgs([]string{"create", "--email", "u@example.com", "--temporary-password", "must-not-enter-argv"})
+	err := command.Execute()
+	if err == nil || !strings.Contains(err.Error(), "unknown flag: --temporary-password") {
+		t.Fatalf("argv credential was not rejected: %v", err)
+	}
+	if called {
+		t.Fatal("password reader ran after forbidden argv flag")
 	}
 }

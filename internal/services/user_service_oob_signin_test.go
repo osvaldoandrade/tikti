@@ -14,6 +14,7 @@ type fakeUserRepo struct {
 	oobs         map[string]fakeOob
 	updateCalls  int
 	findErr      error
+	consumeErr   error
 }
 
 type fakeOob struct {
@@ -71,6 +72,9 @@ func (r *fakeUserRepo) SaveOobCode(ctx context.Context, code, email, reqType str
 }
 
 func (r *fakeUserRepo) ConsumeOobCode(ctx context.Context, code string, expectedReqType string) (string, error) {
+	if r.consumeErr != nil {
+		return "", r.consumeErr
+	}
 	oob, ok := r.oobs[code]
 	if !ok {
 		return "", domain.ErrInvalidOob
@@ -173,6 +177,23 @@ func TestUserService_SignInWithOobCode_UserSuspended(t *testing.T) {
 	}
 }
 
+func TestUserService_SignInWithOobCode_UserInactive(t *testing.T) {
+	repo := newFakeUserRepo()
+	repo.usersByEmail["user@company.com"] = &domain.User{
+		Id: "user-1", Email: "user@company.com", Role: domain.RoleCompanyEmployee,
+		Status: domain.UserStatusInactive,
+	}
+	repo.oobs["code-1"] = fakeOob{email: "user@company.com", reqType: "EMAIL_SIGNIN"}
+
+	svc := NewUserService(repo, nil, nil, nil, "secret", "http://issuer", "tikti", "pem", "kid")
+	_, err := svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email: "user@company.com", OobCode: "code-1",
+	})
+	if err != domain.ErrInvalidCreds {
+		t.Fatalf("inactive account issued an OOB session: %v", err)
+	}
+}
+
 func TestUserService_SignInWithOobCode_InvalidArgument(t *testing.T) {
 	svc := NewUserService(newFakeUserRepo(), nil, nil, nil, "secret", "http://issuer", "tikti", "pem", "kid")
 
@@ -225,6 +246,19 @@ func TestUserService_SignInWithOobCode_ConsumeAndLookupErrors(t *testing.T) {
 	}
 }
 
+func TestUserService_SignInWithOobCode_MapsRepositoryFailureToStableError(t *testing.T) {
+	repo := newFakeUserRepo()
+	repo.consumeErr = errors.New("dial tcp redis.internal.example:6379: connection refused")
+	svc := NewUserService(repo, nil, nil, nil, "secret", "http://issuer", "tikti", "pem", "kid")
+
+	_, err := svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email: "user@company.com", OobCode: "code-1",
+	})
+	if err != domain.ErrAuthenticationUnavailable {
+		t.Fatalf("error = %v, want stable ErrAuthenticationUnavailable", err)
+	}
+}
+
 func TestUserService_ResetPassword_RequiresPasswordResetType(t *testing.T) {
 	repo := newFakeUserRepo()
 	repo.usersByEmail["user@company.com"] = &domain.User{
@@ -238,7 +272,7 @@ func TestUserService_ResetPassword_RequiresPasswordResetType(t *testing.T) {
 	svc := NewUserService(repo, nil, nil, nil, "secret", "http://issuer", "tikti", "pem", "kid")
 	err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{
 		OobCode:     "code-1",
-		NewPassword: "new-secret",
+		NewPassword: "new-secret-1234",
 	})
 	if err != domain.ErrInvalidOob {
 		t.Fatalf("expected ErrInvalidOob, got %v", err)

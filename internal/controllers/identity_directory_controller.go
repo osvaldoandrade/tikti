@@ -56,7 +56,7 @@ func (r *IdentityDirectoryController) ChangeTemporaryPassword(c *gin.Context) {
 		writeIdentityDirectoryError(c, domain.ErrDirectoryInvariant)
 		return
 	}
-	if err := r.service.ChangeTemporaryPassword(c.Request.Context(), request); err != nil {
+	if err := r.service.ChangeTemporaryPassword(authenticationRequestContext(c, r.config), request); err != nil {
 		writeIdentityDirectoryError(c, err)
 		return
 	}
@@ -88,31 +88,17 @@ func (r *IdentityDirectoryController) ListUsers(c *gin.Context) {
 			}
 			page = &domain.DirectoryUserPage{Users: []domain.DirectoryUser{}}
 			user, findErr := r.service.FindUserByEmail(c.Request.Context(), normalized)
-			if findErr == nil && user != nil {
+			if findErr == nil && user != nil && (user.AuthSource != domain.AuthSourceSAML || user.HomeTenantID == claimString(claims, "tid")) {
 				page.Users = append(page.Users, *user)
 			} else if findErr != nil && !errors.Is(findErr, domain.ErrNotFound) {
 				writeIdentityDirectoryError(c, findErr)
 				return
 			}
 		} else {
-			// Empty and prefix searches are filtered to effective membership in
-			// the signed tenant. The opaque cursor remains bounded by the global
-			// page but never exposes another user's projection.
-			page, err = r.service.ListUsers(c.Request.Context(), normalized, token, size)
-			if err == nil {
-				visible := page.Users[:0]
-				for _, user := range page.Users {
-					roles, _, accessErr := r.service.GetEffectiveTenantRoles(c.Request.Context(), user.ID, claimString(claims, "tid"))
-					if accessErr != nil {
-						err = accessErr
-						break
-					}
-					if len(roles) > 0 {
-						visible = append(visible, user)
-					}
-				}
-				page.Users = visible
-			}
+			// Empty and prefix searches paginate only effective members of the
+			// signed tenant. No global cursor or foreign principal enters the
+			// workload response.
+			page, err = r.service.ListTenantUsers(c.Request.Context(), claimString(claims, "tid"), normalized, token, size)
 		}
 	}
 	if err != nil {
@@ -416,8 +402,12 @@ func (r *IdentityDirectoryController) authorizeDirectoryRead(c *gin.Context) (jw
 	if !ok {
 		return nil, false, false
 	}
+	if claimString(claims, "sub") == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient identity directory scope"})
+		return nil, false, false
+	}
 	platform := hasPlatformTenantAdminProvenance(claims)
-	local := claimString(claims, "sub") != "" && claimString(claims, "tid") != "" && (hasClaimScope(claims, tenantIdentityReadScope) || hasClaimScope(claims, tenantIdentityWriteScope))
+	local := claimString(claims, "tid") != "" && (hasClaimScope(claims, tenantIdentityReadScope) || hasClaimScope(claims, tenantIdentityWriteScope))
 	if !platform && !local {
 		c.JSON(http.StatusForbidden, gin.H{"error": "insufficient identity directory scope"})
 		return nil, false, false
@@ -542,6 +532,9 @@ func writeIdentityDirectoryError(c *gin.Context, err error) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": domain.ErrInvalidCreds.Error()})
 	case errors.Is(err, domain.ErrPasswordChangeRequired):
 		c.JSON(http.StatusPreconditionRequired, gin.H{"error": err.Error(), "code": "PASSWORD_CHANGE_REQUIRED"})
+	case errors.Is(err, domain.ErrRateLimited):
+		c.Header("Retry-After", "60")
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": domain.ErrRateLimited.Error()})
 	case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrMembershipDependencyNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 	case errors.Is(err, domain.ErrEmailExists), errors.Is(err, domain.ErrGroupExists):

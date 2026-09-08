@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"strings"
+	"unicode"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -88,6 +90,22 @@ func Logger(next http.Handler) http.Handler {
 
 		tid := TIDFromContext(r.Context())
 		reqID := RequestIDFromContext(r.Context())
-		log.Printf("method=%s path=%s tid=%s requestID=%s", r.Method, r.URL.Path, tid, reqID)
+		// #nosec G706 -- every externally influenced value is control-stripped and bounded.
+		log.Printf("method=%s path=%s tid=%s requestID=%s", safeLogField(r.Method), safeLogField(r.URL.Path), safeLogField(tid), safeLogField(reqID))
 	})
+}
+
+func safeLogField(value string) string {
+	var result strings.Builder
+	for _, character := range value {
+		if result.Len() >= 512 {
+			break
+		}
+		if unicode.IsControl(character) {
+			result.WriteByte('_')
+			continue
+		}
+		result.WriteRune(character)
+	}
+	return result.String()
 }

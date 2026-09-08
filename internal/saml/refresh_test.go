@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,6 +30,7 @@ func (s *tickCountingStore) ListIdPs(_ context.Context) ([]IdPRecord, error) {
 // refreshMemStore is a simple in-memory Store for refresh tests.
 type refreshMemStore struct {
 	stubStore
+	mu      sync.Mutex
 	records map[string]IdPRecord
 }
 
@@ -40,11 +43,26 @@ func newRefreshMemStore(recs ...IdPRecord) *refreshMemStore {
 }
 
 func (s *refreshMemStore) PutIdP(_ context.Context, rec IdPRecord) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.records[rec.TenantID] = rec
 	return nil
 }
 
+func (s *refreshMemStore) CompareAndSwapIdP(_ context.Context, expected, replacement IdPRecord) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, exists := s.records[expected.TenantID]
+	if !exists || !reflect.DeepEqual(current, expected) {
+		return false, nil
+	}
+	s.records[replacement.TenantID] = replacement
+	return true, nil
+}
+
 func (s *refreshMemStore) GetIdP(_ context.Context, tid string) (IdPRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	r, ok := s.records[tid]
 	if !ok {
 		return IdPRecord{}, ErrIdPNotFound
@@ -53,11 +71,20 @@ func (s *refreshMemStore) GetIdP(_ context.Context, tid string) (IdPRecord, erro
 }
 
 func (s *refreshMemStore) ListIdPs(_ context.Context) ([]IdPRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	out := make([]IdPRecord, 0, len(s.records))
 	for _, r := range s.records {
 		out = append(out, r)
 	}
 	return out, nil
+}
+
+func (s *refreshMemStore) DeleteIdP(_ context.Context, tid string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.records, tid)
+	return nil
 }
 
 // gaugeVecValue reads the current value of a GaugeVec for the given label set.
@@ -130,6 +157,64 @@ func TestRefresh_FetchFail_KeepsOld(t *testing.T) {
 	}
 	if got.SSOURL != original.SSOURL {
 		t.Errorf("SSOURL changed: got %q, want %q", got.SSOURL, original.SSOURL)
+	}
+}
+
+func TestRefreshCannotResurrectConfigurationDeletedDuringFetch(t *testing.T) {
+	raw, err := os.ReadFile("testdata/idp_okta.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := IdPRecord{TenantID: "tenant-delete", EntityID: "https://old.example/entity", MetadataURL: "https://old.example/metadata"}
+	store := newRefreshMemStore(existing)
+	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	refresher := NewRefresher(RefresherConfig{Store: store, Fetcher: func(string) ([]byte, error) {
+		close(started)
+		<-release
+		return raw, nil
+	}})
+	go func() {
+		defer close(finished)
+		refresher.refreshOne(context.Background(), existing)
+	}()
+	<-started
+	if err := store.DeleteIdP(context.Background(), existing.TenantID); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-finished
+	if restored, err := store.GetIdP(context.Background(), existing.TenantID); !errors.Is(err, ErrIdPNotFound) {
+		t.Fatalf("deleted SAML trust was resurrected by stale refresh: %#v err=%v", restored, err)
+	}
+}
+
+func TestRefreshCannotReplaceNewerConfigurationWrittenDuringFetch(t *testing.T) {
+	raw, err := os.ReadFile("testdata/idp_okta.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := IdPRecord{TenantID: "tenant-replace", EntityID: "https://old.example/entity", MetadataURL: "https://old.example/metadata"}
+	newer := IdPRecord{TenantID: existing.TenantID, EntityID: "https://new.example/entity", MetadataURL: "https://new.example/metadata"}
+	store := newRefreshMemStore(existing)
+	started, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	refresher := NewRefresher(RefresherConfig{Store: store, Fetcher: func(string) ([]byte, error) {
+		close(started)
+		<-release
+		return raw, nil
+	}})
+	go func() {
+		defer close(finished)
+		refresher.refreshOne(context.Background(), existing)
+	}()
+	<-started
+	if err := store.PutIdP(context.Background(), newer); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	<-finished
+	stored, err := store.GetIdP(context.Background(), existing.TenantID)
+	if err != nil || stored.EntityID != newer.EntityID || stored.MetadataURL != newer.MetadataURL {
+		t.Fatalf("new SAML trust was replaced by stale refresh: %#v err=%v", stored, err)
 	}
 }
 
@@ -234,8 +319,20 @@ func TestRefresh_IdPCertExpiry_Set(t *testing.T) {
 	found := false
 	for _, mf := range mfs {
 		if mf.GetName() == "tikti_saml_idp_cert_expiry_seconds" {
-			if len(mf.GetMetric()) > 0 {
-				found = true
+			for _, metric := range mf.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() != "fingerprint" {
+						continue
+					}
+					value := label.GetValue()
+					if len(value) != 16 {
+						t.Fatalf("certificate fingerprint label length = %d, want 16", len(value))
+					}
+					if value == "Test IdP" || value == "CN=Test IdP" {
+						t.Fatalf("certificate subject leaked through metric label: %q", value)
+					}
+					found = true
+				}
 			}
 		}
 	}

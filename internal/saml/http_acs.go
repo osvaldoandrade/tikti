@@ -14,6 +14,10 @@ import (
 // idToken via the SessionBridge, and redirects the user to the RelayState.
 // Implementation follows HLD §9 / Appendix A.3.
 func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
+	secureBrowserAuthenticationResponse(w)
+	if !h.allowSAMLAuthenticationAttempt(w, r, "saml-acs:ip") {
+		return
+	}
 	t0 := h.clock.Now()
 	ctx := context.WithValue(r.Context(), ctxKeyT0, t0)
 	r = r.WithContext(ctx)
@@ -61,6 +65,25 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, r, "", ReasonRequestNotFound)
 		return
 	}
+	// RelayState is part of the single-use login correlation record. Never
+	// accept a callback-selected redirect, even when it is locally shaped.
+	if relay != req.RelayState {
+		h.reject(w, r, req.TenantID, ReasonRequestNotFound)
+		return
+	}
+	if h.tenants == nil {
+		h.reject(w, r, req.TenantID, ReasonInternal)
+		return
+	}
+	active, tenantErr := h.tenants.IsTenantActive(ctx, req.TenantID)
+	if tenantErr != nil {
+		h.reject(w, r, req.TenantID, ReasonInternal)
+		return
+	}
+	if !active {
+		h.reject(w, r, req.TenantID, ReasonTIDUnknown)
+		return
+	}
 
 	// 2. Look up IdP trust material.
 	idp, err := h.store.GetIdP(ctx, req.TenantID)
@@ -79,6 +102,13 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 		h.reject(w, r, req.TenantID, reason)
 		return
 	}
+	sessionNow := h.clock.Now()
+	sessionExpiresAt := boundedSessionExpiry(h.cfg.ACS.SessionTTL, va.NotOnOrAfter, sessionNow)
+	cookieMaxAge := int(sessionExpiresAt.Sub(sessionNow).Seconds())
+	if cookieMaxAge <= 0 {
+		h.reject(w, r, req.TenantID, ReasonClockSkew)
+		return
+	}
 
 	// 4. Replay guard — after validation (fail fast on crypto first).
 	fresh, err := h.store.MarkSeen(ctx, va.AssertionID, time.Hour)
@@ -93,6 +123,15 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. JIT user + session bridge: issue a local idToken.
+	if h.authority == nil {
+		h.reject(w, r, req.TenantID, ReasonInternal)
+		return
+	}
+	if err := h.emitAudit(ctx, NewAcceptIntentRecord(req.TenantID, *va, req.ID, h.cfg.SP.EntityID, h.clock.Since(t0))); err != nil {
+		h.observeAuditFailure(req.TenantID, "intent")
+		h.writeAuditUnavailable(w)
+		return
+	}
 	idt, err := h.bridge.Issue(ctx, IssueInput{
 		TenantID:        req.TenantID,
 		ExternalSubject: va.NameID,
@@ -100,28 +139,50 @@ func (h *Handler) ACS(w http.ResponseWriter, r *http.Request) {
 		Name:            firstAttr(va, "name"),
 		Roles:           allAttrs(va, "roles"),
 		AMR:             []string{"saml"},
-		AuthnInstant:    h.clock.Now(),
+		AuthnInstant:    sessionNow,
+		NotOnOrAfter:    sessionExpiresAt,
 	})
 	if err != nil {
-		h.reject(w, r, req.TenantID, ReasonInternal)
+		h.rejectAfterIntent(w, r, req.TenantID, *va, req.ID, h.cfg.SP.EntityID, ReasonInternal)
 		return
 	}
 
-	// 6. Record session index for SLO.
-	_ = h.store.PutIndex(ctx, va.NameID, IndexRecord{
+	// 6. Record tenant-scoped local-subject and external-NameID indexes for
+	// SLO. Validate the newly issued token through the same current-session
+	// authority used at the HTTP logout boundary.
+	identity, authorityErr := h.authority.Validate(ctx, idt)
+	if authorityErr != nil || identity.TenantID != req.TenantID {
+		h.rejectAfterIntent(w, r, req.TenantID, *va, req.ID, h.cfg.SP.EntityID, ReasonInternal)
+		return
+	}
+	if err := putSessionIndex(ctx, h.store, IndexRecord{
 		TenantID:     req.TenantID,
-		Subject:      subjectFromToken(idt),
+		Subject:      identity.Subject,
+		NameID:       va.NameID,
+		Email:        identity.Email,
 		SessionIndex: va.SessionIndex,
-		NotOnOrAfter: va.NotOnOrAfter,
-	})
+		NotOnOrAfter: sessionExpiresAt,
+	}); err != nil {
+		h.rejectAfterIntent(w, r, req.TenantID, *va, req.ID, h.cfg.SP.EntityID, ReasonInternal)
+		return
+	}
 
-	// 7. Set idToken cookie, record metrics + audit, redirect.
-	h.setIDTokenCookie(w, idt)
+	// 7. Persist the acceptance decision before exposing the session. A local
+	// token must never reach the browser when its audit trail is unavailable.
+	if err := h.emitAudit(ctx, NewAcceptRecord(req.TenantID, *va, req.ID, h.cfg.SP.EntityID, h.clock.Since(t0))); err != nil {
+		h.observeAuditFailure(req.TenantID, "accept")
+		_ = deleteSessionIndex(ctx, h.store, IndexRecord{TenantID: req.TenantID, Subject: identity.Subject, NameID: va.NameID})
+		h.clearIDTokenCookie(w)
+		h.writeAuditUnavailable(w)
+		return
+	}
+
+	// 8. Expose the audited session, record metrics, and redirect.
+	h.setIDTokenCookie(w, idt, cookieMaxAge)
 	h.metrics.Responses.WithLabelValues(req.TenantID, "accept").Inc()
 	h.metrics.ValidationDuration.WithLabelValues(req.TenantID).Observe(h.clock.Since(t0).Seconds())
-	_ = h.audit.Emit(ctx, NewAcceptRecord(req.TenantID, *va, req.ID, h.cfg.SP.EntityID, h.clock.Since(t0)))
 
-	redirectURL := relay
+	redirectURL := req.RelayState
 	if redirectURL == "" || !isSafeRedirect(redirectURL) {
 		redirectURL = h.cfg.ACS.PostLoginURL
 	}

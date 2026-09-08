@@ -154,6 +154,11 @@ func (f *fakeTenantService) Get(ctx context.Context, tenantID string) (*domain.T
 	return nil, nil
 }
 
+func (f *fakeTenantService) IsTenantActive(ctx context.Context, tenantID string) (bool, error) {
+	tenant, err := f.Get(ctx, tenantID)
+	return err == nil && tenant != nil && tenant.Status == domain.TenantStatusActive, err
+}
+
 func (f *fakeTenantService) List(ctx context.Context, offset uint64, pageSize int64) (*domain.TenantsPage, error) {
 	if f.listFn != nil {
 		return f.listFn(ctx, offset, pageSize)

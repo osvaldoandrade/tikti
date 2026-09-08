@@ -22,6 +22,7 @@ const (
 // sibling domain from creating a colliding Domain cookie. SameSite=None
 // allows the cookie on the IdP's cross-origin POST when the browser permits it.
 func (h *Handler) setStateCookie(w http.ResponseWriter, id string, ttl time.Duration) {
+	// #nosec G124 -- all browser security attributes are explicit below.
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
 		Value:    id,
@@ -35,7 +36,8 @@ func (h *Handler) setStateCookie(w http.ResponseWriter, id string, ttl time.Dura
 
 // setIDTokenCookie writes the idToken as an HTTP cookie per HLD App. A.9.
 // The cookie uses config-driven attributes (SameSite=Lax by default).
-func (h *Handler) setIDTokenCookie(w http.ResponseWriter, idt string) {
+func (h *Handler) setIDTokenCookie(w http.ResponseWriter, idt string, maxAge int) {
+	// #nosec G124 -- config validation requires Secure, HttpOnly and Lax/Strict.
 	http.SetCookie(w, &http.Cookie{
 		Name:     h.cfg.ACS.CookieName,
 		Value:    idt,
@@ -44,13 +46,50 @@ func (h *Handler) setIDTokenCookie(w http.ResponseWriter, idt string) {
 		Secure:   h.cfg.ACS.CookieSecure,
 		HttpOnly: h.cfg.ACS.CookieHTTPOnly,
 		SameSite: parseSameSite(h.cfg.ACS.CookieSameSite),
-		MaxAge:   h.cfg.ACS.SessionTTL,
+		MaxAge:   maxAge,
+	})
+}
+
+func boundedSessionExpiry(configuredTTL int, notOnOrAfter, now time.Time) time.Time {
+	if !notOnOrAfter.After(now) {
+		return now
+	}
+	expiresAt := notOnOrAfter
+	if configuredTTL > 0 {
+		configuredExpiry := now.Add(time.Duration(configuredTTL) * time.Second)
+		if configuredExpiry.Before(expiresAt) {
+			expiresAt = configuredExpiry
+		}
+	}
+	return expiresAt
+}
+
+func (h *Handler) clearIDTokenCookie(w http.ResponseWriter) {
+	// #nosec G124 -- deletion mirrors the config whose security attributes are validated.
+	http.SetCookie(w, &http.Cookie{
+		Name:     h.cfg.ACS.CookieName,
+		Value:    "",
+		Path:     "/",
+		Domain:   h.cfg.ACS.CookieDomain,
+		Secure:   h.cfg.ACS.CookieSecure,
+		HttpOnly: h.cfg.ACS.CookieHTTPOnly,
+		SameSite: parseSameSite(h.cfg.ACS.CookieSameSite),
+		MaxAge:   -1,
+	})
+}
+
+func clearSLOStateCookie(w http.ResponseWriter) {
+	// #nosec G124 -- all browser security attributes are explicit below.
+	http.SetCookie(w, &http.Cookie{
+		Name: "tikti_saml_slo", Value: "", Path: "/saml", MaxAge: -1,
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
 	})
 }
 
 // clearStateCookie removes the SAML state cookie by setting MaxAge=-1
 // and an empty value.
 func (h *Handler) clearStateCookie(w http.ResponseWriter) {
+	// #nosec G124 -- all browser security attributes are explicit below.
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName,
 		Value:    "",

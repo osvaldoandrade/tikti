@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -25,19 +26,37 @@ type UserRepository interface {
 	UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error)
 }
 
+// UserIDRepository is the subject-based authority used by signed sessions.
+// It also covers tenant-local federated principals that intentionally do not
+// participate in the global email directory.
+type UserIDRepository interface {
+	FindByID(context.Context, string) (*domain.User, error)
+	IncrementTokenVersionByID(context.Context, string) (int, *domain.User, error)
+}
+
 // redisRepo is a Redis-backed implementation of UserRepository.
 type redisRepo struct {
 	client *redis.Client
 }
 
 const (
-	usersHashV2      = "users_v2"
-	legacyUsersHash  = "users"
-	userByEmailKeyNS = "userByEmail:"
-	legacyOobHash    = "oobs"
-	oobKeyPrefix     = "oob:"
-	samlSubjectKeyNS = "samlSubject:"
+	usersHashV2        = "users_v2"
+	legacyUsersHash    = "users"
+	userByEmailKeyNS   = "userByEmail:"
+	legacyOobHash      = "oobs"
+	oobKeyPrefix       = "oob:"
+	samlSubjectKeyNS   = "samlSubject:"
+	federatedUsersHash = "saml_users_v2"
 )
+
+var createFederatedUserScript = redis.NewScript(`
+local existing = redis.call("GET", KEYS[1])
+if existing and existing ~= false then return existing end
+if redis.call("HEXISTS", KEYS[2], ARGV[1]) == 1 then return "collision" end
+redis.call("HSET", KEYS[2], ARGV[1], ARGV[2])
+redis.call("SET", KEYS[1], ARGV[1])
+return ARGV[1]
+`)
 
 // NewRedisRepo instantiates a repository using the provided Redis client.
 func NewRedisRepo(rdb *redis.Client) UserRepository {
@@ -122,6 +141,7 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 	}
 	// Best-effort migration to v2 layout.
 	if u.Id != "" {
+		// #nosec G117 -- persisted User.Password contains only a one-way password hash.
 		if data, err := json.Marshal(&u); err == nil {
 			_ = r.client.HSet(ctx, usersHashV2, u.Id, data).Err()
 			_ = r.client.Set(ctx, userByEmailKeyNS+email, u.Id, 0).Err()
@@ -130,9 +150,90 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 	return &u, nil
 }
 
+func (r *redisRepo) FindByID(ctx context.Context, userID string) (*domain.User, error) {
+	if !canonicalUserIdentity(userID) {
+		return nil, domain.ErrInvalidArgument
+	}
+	for _, key := range []string{usersHashV2, federatedUsersHash} {
+		raw, err := r.client.HGet(ctx, key, userID).Result()
+		if err == redis.Nil || raw == "" {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		var user domain.User
+		if json.Unmarshal([]byte(raw), &user) != nil || user.Id != userID {
+			return nil, domain.ErrDirectoryInvariant
+		}
+		return &user, nil
+	}
+	return nil, nil
+}
+
 // UpdateUser overwrites the stored user JSON for the provided user.
 func (r *redisRepo) UpdateUser(ctx context.Context, user *domain.User) error {
+	if user != nil {
+		federated, err := r.client.HExists(ctx, federatedUsersHash, user.Id).Result()
+		if err != nil {
+			return err
+		}
+		if federated {
+			return r.updateFederatedUser(ctx, user)
+		}
+	}
 	_, err := NewIdentityDirectoryRepository(r.client).UpdateDirectoryUser(ctx, user)
+	return err
+}
+
+func (r *redisRepo) updateFederatedUser(ctx context.Context, user *domain.User) error {
+	canonical, err := canonicalFederatedUser(user)
+	if err != nil {
+		return err
+	}
+	nextRevision := canonical.Revision + 1
+	err = r.client.Watch(ctx, func(tx *redis.Tx) error {
+		raw, readErr := tx.HGet(ctx, federatedUsersHash, canonical.Id).Result()
+		if readErr == redis.Nil || raw == "" {
+			return domain.ErrNotFound
+		}
+		if readErr != nil {
+			return readErr
+		}
+		var stored domain.User
+		if json.Unmarshal([]byte(raw), &stored) != nil {
+			return domain.ErrDirectoryInvariant
+		}
+		current, canonicalErr := canonicalFederatedUser(&stored)
+		if canonicalErr != nil || current.Id != canonical.Id || current.Revision != canonical.Revision {
+			if canonicalErr == nil && current.Id == canonical.Id {
+				return domain.ErrVersionConflict
+			}
+			return domain.ErrDirectoryInvariant
+		}
+		if current.CompanyId == nil || canonical.CompanyId == nil || *current.CompanyId != *canonical.CompanyId ||
+			current.ExternalSubject != canonical.ExternalSubject ||
+			canonical.TokenVersion < current.TokenVersion {
+			return domain.ErrDirectoryInvariant
+		}
+		canonical.Revision = nextRevision
+		// #nosec G117 -- persisted User.Password contains only a one-way password hash.
+		payload, marshalErr := json.Marshal(canonical)
+		if marshalErr != nil {
+			return domain.ErrInvalidArgument
+		}
+		_, writeErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.HSet(ctx, federatedUsersHash, canonical.Id, payload)
+			return nil
+		})
+		return writeErr
+	}, federatedUsersHash)
+	if err == redis.TxFailedErr {
+		return domain.ErrVersionConflict
+	}
+	if err == nil {
+		user.Revision = nextRevision
+	}
 	return err
 }
 
@@ -142,13 +243,115 @@ func (r *redisRepo) DeleteByEmail(ctx context.Context, email string) error {
 	if email == "" {
 		return nil
 	}
-	if userID, err := r.client.Get(ctx, userByEmailKeyNS+email).Result(); err == nil && userID != "" {
-		_ = r.client.HDel(ctx, usersHashV2, userID).Err()
-		_ = r.client.Del(ctx, userByEmailKeyNS+email).Err()
-		_ = r.client.ZRem(ctx, directoryUserEmailIndex, directoryUserIndexMember(email, userID)).Err()
+	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
+		userID, err := r.client.Get(ctx, userByEmailKeyNS+email).Result()
+		if err == redis.Nil {
+			return r.client.HDel(ctx, legacyUsersHash, email).Err()
+		}
+		if err != nil {
+			return err
+		}
+		if !canonicalUserIdentity(userID) {
+			return domain.ErrDirectoryInvariant
+		}
+		groups, err := r.client.SMembers(ctx, userGroupsKey(userID)).Result()
+		if err != nil || len(groups) > directoryMaximumRelationships {
+			return domain.ErrDirectoryInvariant
+		}
+		tenants, err := r.client.SMembers(ctx, principalTenantsKey(domain.AccessPrincipalUser, userID)).Result()
+		if err != nil || len(tenants) > directoryMaximumRelationships {
+			return domain.ErrDirectoryInvariant
+		}
+		watchKeys := []string{
+			usersHashV2,
+			userByEmailKeyNS + email,
+			directoryUserEmailIndex,
+			userGroupsKey(userID),
+			principalTenantsKey(domain.AccessPrincipalUser, userID),
+			directoryGroupsHash,
+		}
+		for _, groupID := range groups {
+			watchKeys = append(watchKeys, groupMembersKey(groupID))
+		}
+		for _, tenantID := range tenants {
+			watchKeys = append(watchKeys, assignmentsKey(tenantID))
+		}
+		err = r.client.Watch(ctx, func(tx *redis.Tx) error {
+			currentID, readErr := tx.Get(ctx, userByEmailKeyNS+email).Result()
+			if readErr == redis.Nil {
+				return nil
+			}
+			if readErr != nil {
+				return readErr
+			}
+			if currentID != userID {
+				return redis.TxFailedErr
+			}
+			raw, readErr := tx.HGet(ctx, usersHashV2, userID).Result()
+			if readErr != nil {
+				return domain.ErrDirectoryInvariant
+			}
+			var stored domain.User
+			if json.Unmarshal([]byte(raw), &stored) != nil {
+				return domain.ErrDirectoryInvariant
+			}
+			current, canonicalErr := canonicalDirectoryStorageUser(&stored)
+			if canonicalErr != nil || current.Id != userID || current.Email != email {
+				return domain.ErrDirectoryInvariant
+			}
+			currentGroups, readErr := tx.SMembers(ctx, userGroupsKey(userID)).Result()
+			if readErr != nil || len(currentGroups) > directoryMaximumRelationships {
+				return domain.ErrDirectoryInvariant
+			}
+			currentTenants, readErr := tx.SMembers(ctx, principalTenantsKey(domain.AccessPrincipalUser, userID)).Result()
+			if readErr != nil || len(currentTenants) > directoryMaximumRelationships {
+				return domain.ErrDirectoryInvariant
+			}
+			updatedGroups := make(map[string][]byte, len(currentGroups))
+			for _, groupID := range currentGroups {
+				groupRaw, groupErr := tx.HGet(ctx, directoryGroupsHash, groupID).Result()
+				if groupErr != nil {
+					return domain.ErrDirectoryInvariant
+				}
+				group, decodeErr := decodeGroup(groupRaw, groupID)
+				if decodeErr != nil {
+					return decodeErr
+				}
+				group.Version++
+				group.UpdatedAt = time.Now().UTC()
+				payload, marshalErr := json.Marshal(group)
+				if marshalErr != nil {
+					return domain.ErrDirectoryInvariant
+				}
+				updatedGroups[groupID] = payload
+			}
+			_, writeErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.HDel(ctx, usersHashV2, userID)
+				pipe.Del(ctx, userByEmailKeyNS+email, userGroupsKey(userID), principalTenantsKey(domain.AccessPrincipalUser, userID))
+				pipe.ZRem(ctx, directoryUserEmailIndex, directoryUserIndexMember(email, userID))
+				pipe.HDel(ctx, legacyUsersHash, email)
+				if current.CompanyId != nil && current.ExternalSubject != "" {
+					pipe.Del(ctx, samlSubjectKey(*current.CompanyId, current.ExternalSubject))
+				}
+				for groupID, payload := range updatedGroups {
+					pipe.SRem(ctx, groupMembersKey(groupID), userID)
+					pipe.HSet(ctx, directoryGroupsHash, groupID, payload)
+				}
+				for _, tenantID := range currentTenants {
+					pipe.HDel(ctx, assignmentsKey(tenantID), assignmentField(domain.AccessPrincipalUser, userID))
+				}
+				return nil
+			})
+			return writeErr
+		}, watchKeys...)
+		if err == nil {
+			return nil
+		}
+		if err != redis.TxFailedErr {
+			return err
+		}
 	}
-	_ = r.client.HDel(ctx, legacyUsersHash, email).Err()
-	return nil
+	return errDirectoryRetry
 }
 
 func (r *redisRepo) SetStatus(ctx context.Context, email string, status domain.UserStatus) (*domain.User, error) {
@@ -159,6 +362,14 @@ func (r *redisRepo) SetStatus(ctx context.Context, email string, status domain.U
 	if u == nil {
 		return nil, domain.ErrNotFound
 	}
+	// Every administrative status write is also a monotonic session
+	// revocation. Otherwise ACTIVE -> SUSPENDED -> ACTIVE would revive tokens
+	// carrying the unchanged version. UpdateUser commits the status/version pair
+	// with the current revision as an optimistic CAS.
+	if u.TokenVersion < 0 {
+		u.TokenVersion = 0
+	}
+	u.TokenVersion++
 	u.Status = status
 	if err := r.UpdateUser(ctx, u); err != nil {
 		return nil, err
@@ -182,6 +393,30 @@ func (r *redisRepo) IncrementTokenVersion(ctx context.Context, email string) (in
 		return 0, nil, err
 	}
 	return u.TokenVersion, u, nil
+}
+
+func (r *redisRepo) IncrementTokenVersionByID(ctx context.Context, userID string) (int, *domain.User, error) {
+	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
+		user, err := r.FindByID(ctx, userID)
+		if err != nil {
+			return 0, nil, err
+		}
+		if user == nil {
+			return 0, nil, domain.ErrNotFound
+		}
+		if user.TokenVersion < 0 {
+			user.TokenVersion = 0
+		}
+		user.TokenVersion++
+		if err := r.UpdateUser(ctx, user); err != nil {
+			if errors.Is(err, domain.ErrVersionConflict) {
+				continue
+			}
+			return 0, nil, err
+		}
+		return user.TokenVersion, user, nil
+	}
+	return 0, nil, errDirectoryRetry
 }
 
 // SaveOobCode stores a time-bounded payload keyed by the generated OOB code.
@@ -242,78 +477,53 @@ func (r *redisRepo) findByExternalSubject(ctx context.Context, tid, externalSubj
 	if err != nil {
 		return nil, err
 	}
-	val, err := r.client.HGet(ctx, usersHashV2, userID).Result()
-	if err == redis.Nil || val == "" {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var u domain.User
-	if e := json.Unmarshal([]byte(val), &u); e != nil {
-		return nil, e
-	}
-	return &u, nil
+	return r.FindByID(ctx, userID)
 }
 
-// UpsertFromSAML creates or updates a user from a SAML assertion.
-// If a user exists with (tid, externalSubject), it is updated and created=false.
-// When mergeStrategy is "email" (the default) and a password user exists with
-// (tid, email), the user is merged: authSource flips to SAML, externalSubject is
-// set, but sub and roles are preserved.
-// Otherwise a new user is created and created=true.
+// UpsertFromSAML creates or updates a tenant-local principal from a SAML
+// assertion. The immutable authority key is (tid, externalSubject); an asserted
+// email is presentation data and is never proof that the IdP controls an
+// existing password or global-directory principal.
 func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, email, name string, roles []string, mergeStrategy domain.MergeStrategy) (domain.User, bool, error) {
 	if tid == "" || externalSubject == "" || email == "" {
 		return domain.User{}, false, domain.ErrInvalidArgument
 	}
 
-	// Treat empty strategy as the default: email.
-	if mergeStrategy == "" {
-		mergeStrategy = domain.MergeStrategyEmail
-	}
-
-	// Case 1: Existing SAML user by external subject.
-	existing, err := r.findByExternalSubject(ctx, tid, externalSubject)
-	if err != nil {
-		return domain.User{}, false, err
-	}
-	if existing != nil {
+	// Case 1: Existing SAML user by external subject. A concurrent SLO/token
+	// revocation wins through the Revision CAS; retrying preserves its newer
+	// tokenVersion instead of resurrecting an old session.
+	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
+		existing, err := r.findByExternalSubject(ctx, tid, externalSubject)
+		if err != nil {
+			return domain.User{}, false, err
+		}
+		if existing == nil {
+			break
+		}
 		existing.Email = email
+		currentRole := existing.Role
 		existing.Role = r.existingTenantScopedSAMLRole(ctx, tid, existing, roles)
+		if existing.Role != currentRole {
+			// Role changes from a fresh assertion are authoritative and revoke
+			// every bearer minted from the prior role, including home tokens
+			// whose claims do not carry the tenant assignment array.
+			existing.TokenVersion++
+		}
 		existing.AuthSource = domain.AuthSourceSAML
 		existing.ExternalSubject = externalSubject
 		existing.CompanyId = stringPointer(tid)
 		if err := r.UpdateUser(ctx, existing); err != nil {
+			if errors.Is(err, domain.ErrVersionConflict) {
+				continue
+			}
 			return domain.User{}, false, err
 		}
 		return *existing, false, nil
 	}
 
-	// Case 2: Merge by email — password user with the same email within same tenant.
-	// Only active when mergeStrategy is "email".
-	if mergeStrategy == domain.MergeStrategyEmail {
-		emailUser, err := r.FindByEmail(ctx, email)
-		if err != nil && err != domain.ErrNotFound {
-			return domain.User{}, false, err
-		}
-		if emailUser != nil && (emailUser.AuthSource == domain.AuthSourcePassword || emailUser.AuthSource == "") {
-			if emailUser.CompanyId == nil || *emailUser.CompanyId != tid {
-				return domain.User{}, false, domain.ErrInvalidTenant
-			}
-			emailUser.AuthSource = domain.AuthSourceSAML
-			emailUser.ExternalSubject = externalSubject
-			emailUser.Role = r.existingTenantScopedSAMLRole(ctx, tid, emailUser, roles)
-			if err := r.UpdateUser(ctx, emailUser); err != nil {
-				return domain.User{}, false, err
-			}
-			if err := r.client.Set(ctx, samlSubjectKey(tid, externalSubject), emailUser.Id, 0).Err(); err != nil {
-				return domain.User{}, false, err
-			}
-			return *emailUser, false, nil
-		}
-	}
-
-	// Case 3: Create new SAML user.
+	// Case 2: Create a tenant-local federated principal. It deliberately does
+	// not enter the global email directory: a tenant-controlled IdP assertion
+	// is not proof that it owns a reusable global email identity.
 	role := tenantScopedSAMLRole(roles)
 	companyID := tid
 	u := domain.User{
@@ -326,15 +536,46 @@ func (r *redisRepo) UpsertFromSAML(ctx context.Context, tid, externalSubject, em
 		ExternalSubject: externalSubject,
 		CompanyId:       &companyID,
 	}
-	if err := r.CreateUser(ctx, &u); err != nil {
+	canonical, err := canonicalFederatedUser(&u)
+	if err != nil {
 		return domain.User{}, false, err
 	}
-	if err := r.client.Set(ctx, samlSubjectKey(tid, externalSubject), u.Id, 0).Err(); err != nil {
-		_ = r.DeleteByEmail(ctx, email)
-		return domain.User{}, false, err
+	// #nosec G117 -- federated users carry no password; this is the canonical storage record.
+	raw, err := json.Marshal(canonical)
+	if err != nil {
+		return domain.User{}, false, domain.ErrInvalidArgument
 	}
+	storedID, err := createFederatedUserScript.Run(
+		ctx, r.client, []string{samlSubjectKey(tid, externalSubject), federatedUsersHash},
+		canonical.Id, string(raw),
+	).Text()
+	if err != nil || storedID == "collision" {
+		if err != nil {
+			return domain.User{}, false, err
+		}
+		return domain.User{}, false, domain.ErrDirectoryInvariant
+	}
+	if storedID != canonical.Id {
+		existing, findErr := r.FindByID(ctx, storedID)
+		if findErr != nil || existing == nil {
+			return domain.User{}, false, domain.ErrDirectoryInvariant
+		}
+		return *existing, false, nil
+	}
+	return *canonical, true, nil
+}
 
-	return u, true, nil
+func canonicalFederatedUser(input *domain.User) (*domain.User, error) {
+	if input == nil || !canonicalUserIdentity(input.Id) || input.AuthSource != domain.AuthSourceSAML ||
+		!validExternalSubject(input.ExternalSubject) || input.CompanyId == nil || !canonicalTenantIdentity(*input.CompanyId) ||
+		!canonicalEmail(input.Email) || !validUserStatus(input.Status) || input.TokenVersion < 0 {
+		return nil, domain.ErrInvalidArgument
+	}
+	copy := *input
+	copy.Password = ""
+	copy.PasswordChangeRequired = false
+	copy.Email = normalizeDirectoryEmail(copy.Email)
+	return &copy, nil
 }
 
 func tenantScopedSAMLRole(roles []string) domain.UserRole {

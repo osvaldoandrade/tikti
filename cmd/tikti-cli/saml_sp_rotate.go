@@ -35,16 +35,16 @@ type rotationState struct {
 // metadata parameters (--entity-id, --acs-url, --slo-url).
 func samlSPRotateCmd(_ *string, outputJSON *bool) *cobra.Command {
 	var (
-		redisAddr  string
-		keyPath    string
-		certPath   string
-		entityID   string
-		acsURL     string
-		sloURL     string
-		outFile    string
-		keyBits    int
-		prepare    bool
-		commit     bool
+		redisAddr string
+		keyPath   string
+		certPath  string
+		entityID  string
+		acsURL    string
+		sloURL    string
+		outFile   string
+		keyBits   int
+		prepare   bool
+		commit    bool
 	)
 
 	cmd := &cobra.Command{
@@ -103,6 +103,7 @@ func rotatePrepare(
 	jsonOut bool,
 ) error {
 	// Read old certificate.
+	// #nosec G304 -- certPath is an explicit local administrator CLI argument.
 	oldCertPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		return fmt.Errorf("read old cert: %w", err)
@@ -128,7 +129,7 @@ func rotatePrepare(
 		EntityID:             entityID,
 		ACSURL:               acsURL,
 		SLOURL:               sloURL,
-		SigningCertPEM:        oldCertPEM,
+		SigningCertPEM:       oldCertPEM,
 		EncryptCertPEM:       oldCertPEM, // encryption uses old cert in prepare phase; updated in commit
 		ExtraSigningCertPEMs: [][]byte{newCertPEM},
 		ValidUntil:           time.Now().AddDate(1, 0, 0),
@@ -158,11 +159,11 @@ func rotatePrepare(
 	}
 
 	return printResult(jsonOut, map[string]any{
-		"status":    "prepared",
-		"newKey":    keyPath + ".new",
-		"newCert":   certPath + ".new",
-		"certs":     2,
-		"message":   "Metadata published with 2 signing certs. Wait for IdPs to refresh, then run --commit.",
+		"status":  "prepared",
+		"newKey":  keyPath + ".new",
+		"newCert": certPath + ".new",
+		"certs":   2,
+		"message": "Metadata published with 2 signing certs. Wait for IdPs to refresh, then run --commit.",
 	})
 }
 
@@ -229,7 +230,7 @@ func writeOutput(path string, data []byte) error {
 		_, err := os.Stdout.Write(data)
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // generateSelfSignedKeyPair generates a new RSA key pair and self-signed

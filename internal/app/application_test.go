@@ -6,6 +6,8 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -101,8 +103,6 @@ func TestProtectedRoutesRejectQueryAPIKeyBeforeControllers(t *testing.T) {
 		"/v1/accounts/validate",
 		"/v1/accounts/update",
 		"/v1/accounts/delete",
-		"/v1/accounts/sendOobCode",
-		"/v1/accounts/resetPassword",
 	} {
 		t.Run(path, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, path+"?key=secret", strings.NewReader(`[`))
@@ -114,11 +114,19 @@ func TestProtectedRoutesRejectQueryAPIKeyBeforeControllers(t *testing.T) {
 			}
 		})
 	}
-	request := httptest.NewRequest(http.MethodPost, "/v1/accounts/signUp?key=secret", strings.NewReader(`{}`))
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound {
-		t.Fatalf("superseded sign-up route remains registered: %d", response.Code)
+	for _, path := range []string{
+		"/v1/accounts/signUp",
+		"/v1/accounts/sendOobCode",
+		"/v1/accounts/resetPassword",
+	} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-API-Key", "secret")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("superseded route %s remains registered: %d %s", path, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -179,7 +187,7 @@ func TestSetupMappingsRoleContractAuthorizationAndIsolation(t *testing.T) {
 	privateKey := applicationTestPrivateKey(t, 2048)
 	cfg := &config.Config{ApiKey: "secret", JwksPrivateKey: privateKey, IssuerBaseURL: "https://tikti", DefaultAudience: "code-admin"}
 	router := gin.New()
-	SetupMappings(router, cfg, nil, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
+	SetupMappings(router, cfg, testCurrentAdminTokenService{config: cfg}, nil, services.NewRoleService(repo), nil, nil, nil, nil, nil)
 	routes := map[string]bool{}
 	for _, route := range router.Routes() {
 		routes[route.Method+" "+route.Path] = true
@@ -346,6 +354,29 @@ func TestNewApplicationAndWorkloadVerifier(t *testing.T) {
 		verifier, err := newWorkloadTokenVerifier(test.cfg)
 		if (err != nil) != test.wantErr || !test.wantErr && (verifier == nil) != test.nilVerifier {
 			t.Fatalf("%s: verifier=%T err=%v", test.name, verifier, err)
+		}
+	}
+}
+
+func TestNewApplicationWiresDistributedAuthenticationThrottle(t *testing.T) {
+	server := miniredis.RunT(t)
+	application, err := NewApplication(&config.Config{RedisAddr: server.Addr()})
+	if err != nil {
+		t.Fatalf("application startup: %v", err)
+	}
+	t.Cleanup(func() { _ = application.Redis.Close() })
+
+	ctx := services.WithAuthenticationClientIP(context.Background(), "203.0.113.10")
+	for attempt := 1; attempt <= config.DefaultAuthenticationRateLimits().Login.Requests+1; attempt++ {
+		_, signInErr := application.UserService.SignIn(ctx, domain.SignInReq{
+			Email:    fmt.Sprintf("unknown-%d@example.com", attempt),
+			Password: "wrong-password",
+		})
+		if attempt <= config.DefaultAuthenticationRateLimits().Login.Requests && !errors.Is(signInErr, domain.ErrInvalidCreds) {
+			t.Fatalf("attempt %d = %v, want invalid credentials", attempt, signInErr)
+		}
+		if attempt > config.DefaultAuthenticationRateLimits().Login.Requests && !errors.Is(signInErr, domain.ErrRateLimited) {
+			t.Fatalf("attempt %d = %v, want distributed IP rate limit", attempt, signInErr)
 		}
 	}
 }

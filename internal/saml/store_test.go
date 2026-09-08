@@ -23,6 +23,10 @@ func (s *stubStore) PutIdP(_ context.Context, _ IdPRecord) error {
 	return nil
 }
 
+func (s *stubStore) CompareAndSwapIdP(_ context.Context, _, _ IdPRecord) (bool, error) {
+	return true, nil
+}
+
 func (s *stubStore) GetIdP(_ context.Context, _ string) (IdPRecord, error) {
 	return IdPRecord{}, nil
 }
@@ -44,6 +48,14 @@ func (s *stubStore) GetIndex(_ context.Context, _ string) (IndexRecord, error) {
 }
 
 func (s *stubStore) DeleteIndex(_ context.Context, _ string) error {
+	return nil
+}
+
+func (s *stubStore) PutSessionIndexes(_ context.Context, _, _ string, _ IndexRecord) error {
+	return nil
+}
+
+func (s *stubStore) DeleteSessionIndexes(_ context.Context, _, _ string) error {
 	return nil
 }
 

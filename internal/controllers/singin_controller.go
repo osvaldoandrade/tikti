@@ -25,21 +25,30 @@ func NewSignInController(u services.UserService, c *config.Config) *SignInContro
 
 // Handle binds request JSON, authenticates with the user service and returns the response.
 func (ctrl *SignInController) Handle(ctx *gin.Context) {
+	preventSensitiveResponseCaching(ctx)
 	var req domain.SignInReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+	authContext := authenticationRequestContext(ctx, ctrl.cfg)
 	ch := runCommandAsync(func(context.Context) (interface{}, error) {
-		return ctrl.userSvc.SignIn(context.Background(), req)
+		return ctrl.userSvc.SignIn(authContext, req)
 	})
 	result := <-ch
 	if e, ok := result.(error); ok {
-		if errors.Is(e, domain.ErrPasswordChangeRequired) {
+		switch {
+		case errors.Is(e, domain.ErrRateLimited):
+			ctx.JSON(http.StatusTooManyRequests, gin.H{"error": domain.ErrRateLimited.Error()})
+		case errors.Is(e, domain.ErrPasswordChangeRequired):
 			ctx.JSON(http.StatusPreconditionRequired, gin.H{"error": domain.ErrPasswordChangeRequired.Error(), "code": "PASSWORD_CHANGE_REQUIRED"})
-			return
+		case errors.Is(e, domain.ErrInvalidCreds), errors.Is(e, domain.ErrInvalidToken):
+			ctx.JSON(http.StatusUnauthorized, gin.H{"error": domain.ErrInvalidCreds.Error()})
+		case errors.Is(e, domain.ErrAuthenticationUnavailable):
+			writeAuthenticationUnavailable(ctx, http.StatusServiceUnavailable)
+		default:
+			writeAuthenticationUnavailable(ctx)
 		}
-		ctx.JSON(http.StatusUnauthorized, gin.H{"error": e.Error()})
 		return
 	}
 	ctx.JSON(http.StatusOK, result)

@@ -1,6 +1,9 @@
 package saml
 
 import (
+	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
 	"log"
 	"net/http"
@@ -23,6 +26,7 @@ import (
 //	index, clears the session cookie, and returns a signed
 //	LogoutResponse via HTTP-POST back to the IdP.
 func (h *Handler) SLO(w http.ResponseWriter, r *http.Request) {
+	setSLOSecurityHeaders(w)
 	switch r.Method {
 	case http.MethodGet:
 		h.sloGet(w, r)
@@ -49,13 +53,13 @@ func (h *Handler) sloGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	nameID, expectedID, ok := decodeSLOState(state.Value)
+	tenantID, subject, expectedID, ok := decodeSLOState(state.Value, h.sloStateKey)
 	if !ok {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	idx, err := h.store.GetIndex(ctx, nameID)
-	if err != nil {
+	idx, err := h.store.GetIndex(ctx, SessionSubjectIndexKey(tenantID, subject))
+	if err != nil || !validSessionIndex(idx, tenantID, subject, "") {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -71,7 +75,7 @@ func (h *Handler) sloGet(w http.ResponseWriter, r *http.Request) {
 		Binding:              crewjamsaml.HTTPRedirectBinding,
 		ExpectedInResponseTo: expectedID,
 	})
-	if err != nil || !verified.IsResponse {
+	if err != nil || verified == nil || !verified.IsResponse {
 		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
@@ -80,16 +84,21 @@ func (h *Handler) sloGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read the SLO state cookie set by the logout handler (P3.4) to
-	// determine which SAML session index to delete.
-	_ = h.store.DeleteIndex(ctx, nameID)
+	if h.authority == nil || h.authority.Revoke(ctx, idx.Subject, idx.Email) != nil {
+		h.clearIDTokenCookie(w)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if err := deleteSessionIndex(ctx, h.store, idx); err != nil {
+		h.clearIDTokenCookie(w)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
 	h.metrics.LogoutResponses.WithLabelValues(idx.TenantID, "accept").Inc()
 
-	// Clear session and SLO cookies.
-	http.SetCookie(w, &http.Cookie{
-		Name: "tikti_saml_slo", Path: "/saml", MaxAge: -1,
-		Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode,
-	})
+	// Clear both the browser identity session and the correlation state.
+	h.clearIDTokenCookie(w)
+	clearSLOStateCookie(w)
 
 	http.Redirect(w, r, "/", http.StatusFound)
 }
@@ -108,85 +117,171 @@ func (h *Handler) sloPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nameID, ok := untrustedLogoutNameID(rawReq)
+	nameID, issuer, ok := untrustedLogoutIdentity(rawReq)
 	if !ok {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-	idx, err := h.store.GetIndex(ctx, nameID)
+	idps, err := h.store.ListIdPs(ctx)
 	if err != nil {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-	idp, err := h.store.GetIdP(ctx, idx.TenantID)
-	if err != nil {
+	idp, ok := exactIdPForIssuer(idps, issuer)
+	if !ok {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	sloURL, safe := secureSLOURL(idp.SLOURL)
+	if !safe {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 	verified, err := h.prov.ValidateLogoutMessage(ctx, ValidateLogoutInput{
-		TenantID:   idx.TenantID,
+		TenantID:   idp.TenantID,
 		IdP:        idp,
 		RawMessage: rawReq,
 		Binding:    crewjamsaml.HTTPPostBinding,
 	})
-	if err != nil || verified.IsResponse {
+	if err != nil || verified == nil || verified.IsResponse || verified.NameID != nameID || verified.SessionIndex == "" {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-
-	// Look up the session index to determine the tenant and IdP.
-	_ = h.store.DeleteIndex(ctx, verified.NameID)
-	h.metrics.LogoutResponses.WithLabelValues(idx.TenantID, "accept").Inc()
+	idx, err := h.store.GetIndex(ctx, SessionNameIDIndexKey(idp.TenantID, verified.NameID))
+	if err != nil || !validSessionIndex(idx, idp.TenantID, "", verified.NameID) || idx.SessionIndex != verified.SessionIndex {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
 	resp, err := h.prov.BuildLogoutResponse(ctx, BuildLogoutResponseInput{
 		IdP:          idp,
 		InResponseTo: verified.MessageID,
 	})
 	if err != nil {
-		log.Printf("saml: slo: build logout response: %v", err)
+		log.Printf("saml: slo: build logout response failed")
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
+	if h.authority == nil || h.authority.Revoke(ctx, idx.Subject, idx.Email) != nil {
+		h.clearIDTokenCookie(w)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	if err := deleteSessionIndex(ctx, h.store, idx); err != nil {
+		h.clearIDTokenCookie(w)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+	h.metrics.LogoutResponses.WithLabelValues(idx.TenantID, "accept").Inc()
+	h.clearIDTokenCookie(w)
 
+	nonce := hexRandom(16)
+	body := bytes.Replace(resp.PostBody, []byte("<script>"), []byte(`<script nonce="`+nonce+`">`), 1)
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'nonce-"+nonce+"'; form-action "+sloURL.Scheme+"://"+sloURL.Host+"; base-uri 'none'; frame-ancestors 'none'")
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(resp.PostBody)
+	_, _ = w.Write(body)
 }
 
-func decodeSLOState(value string) (string, string, bool) {
+func setSLOSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+}
+
+func EncodeSLOState(tenantID, subject, requestID string, key []byte) string {
+	if len(key) < 32 || tenantID == "" || subject == "" || requestID == "" ||
+		len(tenantID) > 128 || len(subject) > 1024 || len(requestID) > 256 {
+		return ""
+	}
+	unsigned := base64.RawURLEncoding.EncodeToString([]byte(tenantID)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(subject)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(requestID))
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(unsigned))
+	return unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func decodeSLOState(value string, key []byte) (string, string, string, bool) {
 	parts := strings.Split(value, ".")
-	if len(parts) != 2 {
-		return "", "", false
+	if len(parts) != 4 || len(key) < 32 {
+		return "", "", "", false
 	}
-	nameID, err := base64.RawURLEncoding.Strict().DecodeString(parts[0])
+	providedMAC, err := base64.RawURLEncoding.Strict().DecodeString(parts[3])
 	if err != nil {
-		return "", "", false
+		return "", "", "", false
 	}
-	requestID, err := base64.RawURLEncoding.Strict().DecodeString(parts[1])
-	if err != nil || len(nameID) == 0 || len(requestID) == 0 {
-		return "", "", false
+	unsigned := strings.Join(parts[:3], ".")
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(unsigned))
+	if !hmac.Equal(providedMAC, mac.Sum(nil)) {
+		return "", "", "", false
 	}
-	return string(nameID), string(requestID), true
+	tenantID, err := base64.RawURLEncoding.Strict().DecodeString(parts[0])
+	if err != nil {
+		return "", "", "", false
+	}
+	subject, err := base64.RawURLEncoding.Strict().DecodeString(parts[1])
+	if err != nil {
+		return "", "", "", false
+	}
+	requestID, err := base64.RawURLEncoding.Strict().DecodeString(parts[2])
+	if err != nil || len(tenantID) == 0 || len(subject) == 0 || len(requestID) == 0 ||
+		len(tenantID) > 128 || len(subject) > 1024 || len(requestID) > 256 {
+		return "", "", "", false
+	}
+	return string(tenantID), string(subject), string(requestID), true
 }
 
 func untrustedLogoutNameID(raw string) (string, bool) {
+	nameID, _, ok := untrustedLogoutIdentity(raw)
+	return nameID, ok
+}
+
+func untrustedLogoutIdentity(raw string) (string, string, bool) {
 	xmlBytes, err := base64.StdEncoding.Strict().DecodeString(raw)
 	if err != nil || len(xmlBytes) == 0 || len(xmlBytes) > 1<<20 || containsDOCTYPE(xmlBytes) {
-		return "", false
+		return "", "", false
 	}
 	doc := etree.NewDocument()
 	if err := doc.ReadFromBytes(xmlBytes); err != nil || doc.Root() == nil ||
 		doc.Root().Tag != "LogoutRequest" ||
 		doc.Root().NamespaceURI() != "urn:oasis:names:tc:SAML:2.0:protocol" {
-		return "", false
+		return "", "", false
 	}
+	nameID, issuer := "", ""
 	for _, element := range doc.Root().ChildElements() {
 		if element.Tag == "NameID" && element.NamespaceURI() == "urn:oasis:names:tc:SAML:2.0:assertion" {
-			value := strings.TrimSpace(element.Text())
-			return value, value != ""
+			if nameID != "" {
+				return "", "", false
+			}
+			nameID = strings.TrimSpace(element.Text())
+		}
+		if element.Tag == "Issuer" && element.NamespaceURI() == "urn:oasis:names:tc:SAML:2.0:assertion" {
+			if issuer != "" {
+				return "", "", false
+			}
+			issuer = strings.TrimSpace(element.Text())
 		}
 	}
-	return "", false
+	return nameID, issuer, nameID != "" && issuer != ""
+}
+
+func exactIdPForIssuer(records []IdPRecord, issuer string) (IdPRecord, bool) {
+	var selected IdPRecord
+	found := false
+	for _, record := range records {
+		if record.EntityID != issuer || record.TenantID == "" {
+			continue
+		}
+		if found {
+			return IdPRecord{}, false
+		}
+		selected, found = record, true
+	}
+	return selected, found
 }
 
 func extractRequestID(raw string) string {

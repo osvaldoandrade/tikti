@@ -11,12 +11,19 @@ import (
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/utils"
+	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 const (
-	directoryPasswordMinimum = 12
-	directoryPasswordMaximum = 1024
+	directoryPasswordMinimum             = 12
+	directoryPasswordMaximum             = 1024
+	temporaryPasswordChangeAttemptLimit  = 5
+	temporaryPasswordChangeAttemptWindow = time.Minute
+	// Generated from a public fixed dummy value at bcrypt.DefaultCost. It is
+	// used only to equalize the unknown/ineligible-user path and is not a
+	// credential for any account.
+	temporaryPasswordDummyHash = "$2a$10$E0ITma.2mszCHfbNPAFTK.XtwO7m/I6pZzFSnlhYM6wbTc612RWze" // #nosec G101 -- fixed non-account timing equalizer documented above.
 )
 
 type IdentityDirectoryService interface {
@@ -25,6 +32,7 @@ type IdentityDirectoryService interface {
 	GetUser(context.Context, string) (*domain.DirectoryUser, error)
 	FindUserByEmail(context.Context, string) (*domain.DirectoryUser, error)
 	ListUsers(context.Context, string, string, int) (*domain.DirectoryUserPage, error)
+	ListTenantUsers(context.Context, string, string, string, int) (*domain.DirectoryUserPage, error)
 	GetUserAccess(context.Context, string) (*domain.DirectoryUserAccess, error)
 
 	CreateGroup(context.Context, domain.IdentityGroupCreateReq) (*domain.IdentityGroup, error)
@@ -43,15 +51,35 @@ type IdentityDirectoryService interface {
 }
 
 type identityDirectoryService struct {
-	directory   repository.IdentityDirectoryRepository
-	users       repository.UserRepository
-	tenants     repository.ExactTenantRepository
-	roles       repository.ExactRoleBatchRepository
-	groupsWrite bool
+	directory      repository.IdentityDirectoryRepository
+	users          repository.UserRepository
+	tenants        repository.ExactTenantRepository
+	roles          repository.ExactRoleBatchRepository
+	groupsWrite    bool
+	verifyPassword func(string, string) bool
+	rateLimits     config.AuthenticationRateLimitsConfig
 }
 
-func NewIdentityDirectoryService(directory repository.IdentityDirectoryRepository, users repository.UserRepository, tenants repository.ExactTenantRepository, roles repository.ExactRoleBatchRepository, groupsWrite bool) IdentityDirectoryService {
-	return &identityDirectoryService{directory: directory, users: users, tenants: tenants, roles: roles, groupsWrite: groupsWrite}
+type IdentityDirectoryServiceOption func(*identityDirectoryService)
+
+func WithIdentityDirectoryRateLimits(limits config.AuthenticationRateLimitsConfig) IdentityDirectoryServiceOption {
+	return func(service *identityDirectoryService) {
+		service.rateLimits = effectiveAuthenticationRateLimits(limits)
+	}
+}
+
+func NewIdentityDirectoryService(directory repository.IdentityDirectoryRepository, users repository.UserRepository, tenants repository.ExactTenantRepository, roles repository.ExactRoleBatchRepository, groupsWrite bool, options ...IdentityDirectoryServiceOption) IdentityDirectoryService {
+	service := &identityDirectoryService{
+		directory: directory, users: users, tenants: tenants, roles: roles,
+		groupsWrite: groupsWrite, verifyPassword: utils.VerifyPassword,
+		rateLimits: config.DefaultAuthenticationRateLimits(),
+	}
+	for _, option := range options {
+		if option != nil {
+			option(service)
+		}
+	}
+	return service
 }
 
 func (s *identityDirectoryService) CreateUser(ctx context.Context, request domain.DirectoryUserCreateReq) (*domain.DirectoryUser, error) {
@@ -82,22 +110,50 @@ func (s *identityDirectoryService) ChangeTemporaryPassword(ctx context.Context, 
 	if email == "" || !validDirectoryPassword(request.TemporaryPassword) || !validDirectoryPassword(request.NewPassword) || request.TemporaryPassword == request.NewPassword {
 		return domain.ErrInvalidArgument
 	}
-	user, err := s.users.FindByEmail(ctx, email)
-	if err != nil || user == nil || user.Status != domain.UserStatusActive || user.AuthSource != domain.AuthSourcePassword || !user.PasswordChangeRequired {
-		return domain.ErrInvalidCreds
+	limit := s.rateLimits.Login
+	allowed := true
+	var err error
+	if clientIP := authenticationClientIP(ctx); clientIP != "" {
+		allowed, err = s.directory.AllowAuthenticationAttempt(
+			ctx, authenticationBucketTemporaryPasswordIP, clientIP, limit.Requests, time.Duration(limit.WindowSeconds)*time.Second,
+		)
 	}
-	if !utils.VerifyPassword(user.Password, request.TemporaryPassword) {
+	if err == nil && allowed {
+		allowed, err = s.directory.AllowAuthenticationAttempt(
+			ctx, authenticationBucketTemporaryPasswordEmail, email, limit.Requests, time.Duration(limit.WindowSeconds)*time.Second,
+		)
+	}
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return domain.ErrRateLimited
+	}
+	user, err := s.users.FindByEmail(ctx, email)
+	eligible := err == nil && user != nil && user.Status == domain.UserStatusActive &&
+		user.AuthSource == domain.AuthSourcePassword && user.PasswordChangeRequired
+	verificationHash := temporaryPasswordDummyHash
+	if eligible {
+		cost, costErr := bcrypt.Cost([]byte(user.Password))
+		if costErr == nil && cost == bcrypt.DefaultCost {
+			verificationHash = user.Password
+		} else {
+			eligible = false
+		}
+	}
+	verifier := s.verifyPassword
+	if verifier == nil {
+		verifier = utils.VerifyPassword
+	}
+	passwordMatches := verifier(verificationHash, request.TemporaryPassword)
+	if !eligible || !passwordMatches {
 		return domain.ErrInvalidCreds
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(request.NewPassword), bcrypt.DefaultCost)
 	if err != nil {
 		return domain.ErrInvalidArgument
 	}
-	user.Password = string(hash)
-	user.PasswordChangeRequired = false
-	user.TokenVersion++
-	_, err = s.directory.UpdateDirectoryUser(ctx, user)
-	return err
+	return s.directory.ConsumeTemporaryPassword(ctx, user.Id, user.Password, user.TokenVersion, string(hash))
 }
 
 func (s *identityDirectoryService) GetUser(ctx context.Context, userID string) (*domain.DirectoryUser, error) {
@@ -127,6 +183,13 @@ func (s *identityDirectoryService) ListUsers(ctx context.Context, search, token 
 		return nil, domain.ErrDirectoryInvariant
 	}
 	return s.directory.ListDirectoryUsers(ctx, search, token, limit)
+}
+
+func (s *identityDirectoryService) ListTenantUsers(ctx context.Context, tenantID, search, token string, limit int) (*domain.DirectoryUserPage, error) {
+	if s == nil || s.directory == nil {
+		return nil, domain.ErrDirectoryInvariant
+	}
+	return s.directory.ListTenantDirectoryUsers(ctx, tenantID, search, token, limit)
 }
 
 func (s *identityDirectoryService) GetUserAccess(ctx context.Context, userID string) (*domain.DirectoryUserAccess, error) {

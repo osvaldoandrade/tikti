@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	WorkloadSubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	WorkloadSubjectTokenType = "urn:ietf:params:oauth:token-type:jwt" // #nosec G101 -- public OAuth token-type identifier, not a credential.
 	WorkloadProducerAudience = "codeq-producer"
 	WorkloadWorkerAudience   = "codeq-worker"
 	WorkloadAdminScope       = "codeq:admin"

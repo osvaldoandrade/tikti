@@ -43,15 +43,14 @@ The CLI also provides `auth logout`, which clears stored tokens for the profile.
 
 ## Token exchange commands
 
-The CLI provides a `token exchange` command that calls the `token/exchange` endpoint and stores the resulting access or worker token. The command accepts the audience, scopes, tenant id, subject, and event types. The idToken from the profile is used unless the operator overrides it.
+The CLI provides a `token exchange` command that calls the `token/exchange` endpoint and stores the resulting access or worker token. The command accepts the audience, scopes, tenant id, and event types. The authenticated idToken subject is always authoritative and cannot be overridden by the caller.
 
 ```bash
 tikti-cli token exchange \
   --audience codeq-worker \
   --scopes codeq:claim,codeq:result,codeq:subscribe \
   --event-types render_video,generate_master \
-  --tenant tenant-1 \
-  --subject worker-1
+  --tenant tenant-1
 ```
 
 The CLI translates comma-separated scopes and event types into arrays in the request body. The CLI stores the returned token in the profile under `workerToken` if the audience is `codeq-worker`, and under `accessToken` otherwise. This rule eliminates ambiguity and makes subsequent worker operations deterministic.
@@ -76,7 +75,8 @@ The CLI exposes a `user` command group for account lifecycle operations. These c
 `user create` creates a global directory user with an administrator-supplied temporary password. This maps to `POST /v1/admin/identity/directory/users`, uses the admin token in the Authorization header, and never prints the password after submission.
 
 ```bash
-tikti-cli user create --email user@company.com --temporary-password 'OneTimeSecret123'
+tikti-cli user create --email user@company.com
+# automation: secret-producing-command | tikti-cli user create --email user@company.com --temporary-password-stdin
 ```
 
 `user get` fetches identity metadata for the current idToken. This maps to `lookup`.
@@ -312,8 +312,7 @@ tikti-cli token exchange \
    --audience codeq-worker \
    --scopes codeq:claim,codeq:heartbeat,codeq:result \
    --event-types render_video \
-   --tenant tenant-1 \
-   --subject worker-1
+   --tenant tenant-1
 tikti-cli token show --type worker
 ```
 

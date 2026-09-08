@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -34,7 +35,18 @@ func (ctrl *deleteController) Handle(c *gin.Context) {
 	})
 	result := <-ch
 	if err, ok := result.(error); ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		switch {
+		case errors.Is(err, domain.ErrInvalidToken), errors.Is(err, domain.ErrInvalidCreds):
+			c.JSON(http.StatusUnauthorized, gin.H{"error": domain.ErrInvalidToken.Error()})
+		case errors.Is(err, domain.ErrInvalidArgument):
+			c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
+		case errors.Is(err, domain.ErrNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": domain.ErrNotFound.Error()})
+		case errors.Is(err, domain.ErrAuthenticationUnavailable):
+			writeAuthenticationUnavailable(c, http.StatusServiceUnavailable)
+		default:
+			writeAuthenticationUnavailable(c)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"kind": "identitytoolkit#DeleteAccountResponse"})

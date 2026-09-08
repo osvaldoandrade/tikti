@@ -47,12 +47,14 @@ const (
 	AuthSourceSAML AuthSource = "saml"
 )
 
-// MergeStrategy controls how UpsertFromSAML resolves an existing user.
+// MergeStrategy is retained in the repository contract for stored-provider
+// compatibility. SAML authority is always resolved by (tenant, external
+// subject); asserted email never links an existing principal.
 type MergeStrategy string
 
 const (
-	// MergeStrategyEmail matches an existing password user by (tid, email) and
-	// converts it to a SAML user. This is the default.
+	// MergeStrategyEmail is a legacy configuration value. It no longer enables
+	// an email-based account merge.
 	MergeStrategyEmail MergeStrategy = "email"
 	// MergeStrategyExternalSubject only merges when the SAML external subject
 	// already exists; no email-based merge is attempted.
@@ -64,13 +66,16 @@ const (
 
 // User represents the canonical user document stored in Redis and exposed to clients.
 type User struct {
-	Id              string     `json:"localId"`
-	Email           string     `json:"email"`
-	Password        string     `json:"password"`
-	Role            UserRole   `json:"role"`
-	Status          UserStatus `json:"status"`
-	CompanyId       *string    `json:"companyId,omitempty"`
-	TokenVersion    int        `json:"tokenVersion,omitempty"`
+	Id           string     `json:"localId"`
+	Email        string     `json:"email"`
+	Password     string     `json:"password"`
+	Role         UserRole   `json:"role"`
+	Status       UserStatus `json:"status"`
+	CompanyId    *string    `json:"companyId,omitempty"`
+	TokenVersion int        `json:"tokenVersion,omitempty"`
+	// Revision is an internal optimistic-concurrency token. It is persisted but
+	// never included in directory/API projections.
+	Revision        int64      `json:"revision,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	AuthSource      AuthSource `json:"authSource"`
 	ExternalSubject string     `json:"externalSubject"`
@@ -127,7 +132,6 @@ type TokenExchangeReq struct {
 	Scopes                  []string `json:"scopes,omitempty"`
 	EventTypes              []string `json:"eventTypes,omitempty"`
 	TTLSeconds              int      `json:"ttlSeconds,omitempty"`
-	Subject                 string   `json:"subject,omitempty"`
 	TenantID                string   `json:"tenantId,omitempty"`
 	DiscoverTenantTargetsV1 bool     `json:"discoverTenantTargetsV1,omitempty"`
 	DiscoverTenantTargetsV2 bool     `json:"discoverTenantTargetsV2,omitempty"`

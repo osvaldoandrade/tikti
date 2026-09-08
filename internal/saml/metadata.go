@@ -158,6 +158,7 @@ func certPEMToBase64(pemBytes []byte) (string, error) {
 
 // LoadCertFile reads a PEM certificate file from disk.
 func LoadCertFile(path string) ([]byte, error) {
+	// #nosec G304 -- path is explicit operator configuration for a public certificate.
 	return os.ReadFile(path)
 }
 
@@ -212,6 +213,10 @@ type singleLogoutService struct {
 //   - expired signing certificate (all certs expired)
 //   - SSO URL not using HTTPS
 //   - unsupported SSO binding
+//
+// SLO is optional. When supplied, only supported bindings with HTTPS
+// locations are retained; insecure locations are never used for redirects or
+// POST responses carrying SAML session identifiers.
 func ParseIdPMetadata(raw []byte) (*IdPRecord, error) {
 	// Reject XML with DOCTYPE declarations (XXE defence).
 	if containsDOCTYPE(raw) {
@@ -267,7 +272,7 @@ func ParseIdPMetadata(raw []byte) (*IdPRecord, error) {
 		EntityID:        ed.EntityID,
 		SSOURL:          ssoURL,
 		SLOURL:          sloURL,
-		SigningCerts:     rawCerts(sigCerts),
+		SigningCerts:    rawCerts(sigCerts),
 		EncryptionCerts: rawCerts(encCerts),
 		NameIDFormat:    nameIDFmt,
 		LastFetched:     time.Now(),
@@ -330,8 +335,7 @@ func pickSSOURL(services []singleSignOnService) (string, error) {
 		if !supportedBindings[s.Binding] {
 			continue // skip, try next
 		}
-		u, err := url.Parse(s.Location)
-		if err != nil || !strings.EqualFold(u.Scheme, "https") {
+		if _, ok := secureSLOURL(s.Location); !ok {
 			return "", ErrMetadataInsecureURL
 		}
 		return s.Location, nil
@@ -344,15 +348,28 @@ func pickSSOURL(services []singleSignOnService) (string, error) {
 	return "", fmt.Errorf("%w: no SingleSignOnService element", ErrMetadataMalformedXML)
 }
 
-// pickSLOURL returns the first SLO URL with a supported binding, or "" if
-// none exists (SLO is optional).
+// pickSLOURL returns the first HTTPS SLO URL with a supported binding, or ""
+// if none exists (SLO is optional). Invalid or insecure optional endpoints are
+// ignored so they cannot downgrade logout traffic.
 func pickSLOURL(services []singleLogoutService) string {
 	for _, s := range services {
-		if supportedBindings[s.Binding] {
-			return s.Location
+		if !supportedBindings[s.Binding] {
+			continue
 		}
+		if _, ok := secureSLOURL(s.Location); !ok {
+			continue
+		}
+		return s.Location
 	}
 	return ""
+}
+
+func secureSLOURL(raw string) (*url.URL, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return nil, false
+	}
+	return u, true
 }
 
 // rawCerts converts parsed certificates back to DER bytes for storage.

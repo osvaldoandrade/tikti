@@ -48,6 +48,9 @@ func (c *clientController) Create(ctx *gin.Context) {
 		}
 		return
 	}
+	// Client secrets are returned exactly once. Prevent browsers, proxies and
+	// shared gateways from persisting the successful response.
+	preventSensitiveResponseCaching(ctx)
 	ctx.JSON(http.StatusCreated, result)
 }
 

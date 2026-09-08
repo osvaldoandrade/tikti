@@ -235,9 +235,10 @@ func TestRoleService_CreateWithNameValidationBoundaries(t *testing.T) {
 		{name: "permission control", tenant: "t", role: "r", permissions: []string{"scope:\nread"}, wantErr: domain.ErrInvalidArgument},
 		{name: "permission Unicode", tenant: "t", role: "r", permissions: []string{"escopo:leitura" + "ç"}, wantErr: domain.ErrInvalidArgument},
 		{name: "tenant scope", tenant: "t", role: "r", permissions: []string{"code-admin:services:read"}},
+		{name: "environment read", tenant: "t", role: "r", permissions: []string{"code-admin:environments:read"}},
+		{name: "repository read", tenant: "t", role: "r", permissions: []string{"code-admin:repositories:read"}},
 		{name: "identity write", tenant: "t", role: "r", permissions: []string{"code-admin:identity:write"}},
 		{name: "global reserved", tenant: "t", role: "r", permissions: []string{"code-admin:tenants:admin"}, wantErr: domain.ErrInvalidArgument},
-		{name: "mixed reserved", tenant: "t", role: "r", permissions: []string{"code-admin:repositories:read"}, wantErr: domain.ErrInvalidArgument},
 		{name: "nonassignable reserved", tenant: "t", role: "r", permissions: []string{"code-admin:owners:delegate"}, wantErr: domain.ErrInvalidArgument},
 		{name: "unknown reserved", tenant: "t", role: "r", permissions: []string{"code-admin:unknown:read"}, wantErr: domain.ErrInvalidArgument},
 	}

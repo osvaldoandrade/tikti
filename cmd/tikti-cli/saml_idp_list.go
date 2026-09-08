@@ -42,6 +42,6 @@ func formatIdPTable(records []map[string]any) string {
 			r["last_fetched"],
 		)
 	}
-	tw.Flush()
+	_ = tw.Flush()
 	return buf.String()
 }

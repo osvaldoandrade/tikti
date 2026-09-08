@@ -8,14 +8,11 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// ParseToken validates a JWT string, defaulting the secret when empty, and returns claims.
+// ParseToken validates an HS256 JWT with an explicitly configured secret.
 func ParseToken(tokenString, secret string) (jwt.MapClaims, error) {
 	tokenString = strings.TrimSpace(tokenString)
-	if tokenString == "" {
+	if tokenString == "" || secret == "" {
 		return nil, errors.New("invalid token")
-	}
-	if secret == "" {
-		secret = "supersecret"
 	}
 	parsed, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 		if t.Method.Alg() != jwt.SigningMethodHS256.Alg() {

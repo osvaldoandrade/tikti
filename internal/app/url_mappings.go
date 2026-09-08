@@ -16,10 +16,11 @@ import (
 // SetupMappings registers every public and protected route with their respective controllers.
 func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, roleService services.RoleService, clientService services.ClientService, workloadService services.WorkloadIdentityService, workloadAccountService services.WorkloadAccountBFFService, samlStore saml.Store, samlMetrics *saml.Metrics) {
 	v1 := engine.Group("/v1")
+	currentAdminToken := controllers.RequireCurrentAdminToken(userService, cfg)
 
 	signInCtrl := controllers.NewSignInController(userService, cfg)
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
-	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
+	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService, cfg).Handle)
 	v1.GET("/auth/forward", controllers.NewForwardAuthController(userService, workloadService, cfg).Handle)
 	v1.GET("/.well-known/jwks.json", controllers.NewJWKSController(userService).Handle)
 	workloadCtrl := controllers.NewWorkloadIdentityController(workloadService)
@@ -42,45 +43,44 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		workloadAdmin.POST("/bindings/revoke", workloadCtrl.RevokeBinding)
 	}
 	roleCtrl := controllers.NewRoleController(roleService, cfg)
-	roleAdmin := v1.Group("/admin/tenants/:tenantId/roles", utils.RequiredApiKeyHeader(cfg.ApiKey))
+	roleAdmin := v1.Group("/admin/tenants/:tenantId/roles", utils.RequiredApiKeyHeader(cfg.ApiKey), currentAdminToken)
 	roleAdmin.GET("", roleCtrl.ListAdmin)
 	roleAdmin.GET("/:roleName", roleCtrl.Get)
 	roleAdmin.PUT("/:roleName", roleCtrl.Put)
 	clientCtrl := controllers.NewClientController(clientService, cfg)
 	if clientService != nil {
-		clientAdmin := v1.Group("/admin/tenants/:tenantId/clients", utils.RequiredApiKeyHeader(cfg.ApiKey))
+		clientAdmin := v1.Group("/admin/tenants/:tenantId/clients", utils.RequiredApiKeyHeader(cfg.ApiKey), currentAdminToken)
 		clientAdmin.GET("", clientCtrl.List)
 		clientAdmin.POST("", clientCtrl.Create)
 		clientAdmin.GET("/:clientId", clientCtrl.Get)
 	}
 	if (cfg.TenantScopedTokenClaimsV1 || cfg.TenantTargetDiscoveryV2) && clientService != nil {
 		managedClient := controllers.NewManagedAudienceClientController(clientService, cfg)
-		managedAdmin := v1.Group("/admin/tenants/:tenantId/clients", utils.RequiredApiKeyHeader(cfg.ApiKey))
+		managedAdmin := v1.Group("/admin/tenants/:tenantId/clients", utils.RequiredApiKeyHeader(cfg.ApiKey), currentAdminToken)
 		managedAdmin.PUT("/code-admin-api:ensure", managedClient.Ensure)
 		managedAdmin.PUT("/code-admin-api:ensure/", managedClient.Ensure)
 	}
 	tenantCtrl := controllers.NewTenantController(tenantService, cfg)
-	identityAdmin := v1.Group("/admin/identity", utils.RequiredApiKeyHeader(cfg.ApiKey))
+	identityAdmin := v1.Group("/admin/identity", utils.RequiredApiKeyHeader(cfg.ApiKey), currentAdminToken)
 	identityAdmin.GET("/tenant-inventory", tenantCtrl.List)
 	identityAdmin.GET("/tenants/:tenantId", tenantCtrl.Get)
 	identityAdmin.PUT("/tenants/:tenantId", tenantCtrl.CreateWithID)
-	tenantOOB := v1.Group("/tenants/:tenantId/oob", utils.RequiredApiKeyHeader(cfg.ApiKey))
-	tenantOOB.POST("/send", controllers.RequireTenantOOBOrchestratorAuthority(cfg), controllers.NewOobDispatchController(userService).Handle)
+	tenantOOB := v1.Group("/tenants/:tenantId/oob", utils.RequiredApiKeyHeader(cfg.ApiKey), currentAdminToken)
+	tenantOOB.POST("/send", controllers.RequireTenantOOBOrchestratorAuthority(cfg), controllers.NewOobDispatchController(userService, cfg).Handle)
 
 	protected := v1.Group("/")
 	protected.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
 	{
 		protected.POST("/accounts/signInWithPassword", signInCtrl.Handle)
 		protected.POST("/accounts/lookup", controllers.NewLookupController(userService, cfg).Handle)
-		protected.POST("/accounts/token/exchange", controllers.NewTokenExchangeController(userService).Handle)
+		protected.POST("/accounts/token/exchange", controllers.NewTokenExchangeController(userService, cfg).Handle)
 		adminUser := controllers.NewUserAdminController(userService, cfg)
-		protected.POST("/accounts/status", adminUser.SetStatus)
-		protected.POST("/accounts/revoke", adminUser.Revoke)
-		protected.POST("/accounts/validate", controllers.NewValidateController(userService, cfg).Handle)
+		protected.POST("/accounts/status", currentAdminToken, adminUser.SetStatus)
+		protected.POST("/accounts/revoke", currentAdminToken, adminUser.Revoke)
+		protected.POST("/accounts/validate", currentAdminToken, controllers.NewValidateController(userService, cfg).Handle)
+		protected.POST("/internal/access-tokens:validate", controllers.NewCurrentAccessTokenController(userService, cfg).Validate)
 		protected.POST("/accounts/update", controllers.NewUpdateController(userService, cfg).Handle)
 		protected.POST("/accounts/delete", controllers.NewDeleteController(userService, cfg).Handle)
-		protected.POST("/accounts/sendOobCode", controllers.NewOobSendController(userService, cfg).Handle)
-		protected.POST("/accounts/resetPassword", controllers.NewOobResetController(userService, cfg).Handle)
 	}
 
 	if samlStore != nil {
@@ -91,14 +91,14 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 			samlMetrics,
 		))
 		samlAdmin := v1.Group("/admin/tenants/:tenantId/saml/idp")
-		samlAdmin.Use(utils.RequiredApiKeyHeader(cfg.ApiKey))
+		samlAdmin.Use(utils.RequiredApiKeyHeader(cfg.ApiKey), currentAdminToken)
 		samlAdmin.GET("", controllers.RequireSAMLAdminReadAuthority(cfg), samlAdminController.Get)
 		samlAdmin.PUT("", controllers.RequireSAMLAdminWriteAuthority(cfg), samlAdminController.Put)
 		samlAdmin.DELETE("", controllers.RequireSAMLAdminWriteAuthority(cfg), samlAdminController.Delete)
 	}
 }
 
-func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, service services.IdentityDirectoryService) {
+func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, service services.IdentityDirectoryService, tokenService services.UserService) {
 	if engine == nil || cfg == nil || service == nil {
 		return
 	}
@@ -107,7 +107,12 @@ func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, serv
 	// session. All administrative directory routes additionally require the
 	// private service API key and a validated RS256 administrative bearer.
 	engine.POST("/v1/accounts/changeTemporaryPassword", identityDirectoryContractMarker, controller.ChangeTemporaryPassword)
-	routes := engine.Group("/v1/admin/identity", identityDirectoryContractMarker, utils.RequiredApiKeyHeader(cfg.ApiKey))
+	routes := engine.Group(
+		"/v1/admin/identity",
+		identityDirectoryContractMarker,
+		utils.RequiredApiKeyHeader(cfg.ApiKey),
+		controllers.RequireCurrentAdminToken(tokenService, cfg),
+	)
 	routes.GET("/directory/users", controller.ListUsers)
 	routes.POST("/directory/users", controller.CreateUser)
 	routes.GET("/directory/users/:userId", controller.GetUser)

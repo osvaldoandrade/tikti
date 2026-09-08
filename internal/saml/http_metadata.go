@@ -21,5 +21,5 @@ func (h *Handler) Metadata(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/samlmetadata+xml; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.WriteHeader(http.StatusOK)
-	w.Write(meta)
+	_, _ = w.Write(meta)
 }

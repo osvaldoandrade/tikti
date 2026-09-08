@@ -117,6 +117,9 @@ func TestTenantService_CreateWithIDValidation(t *testing.T) {
 		{name: "slug differs from id", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Bereia", Slug: "other"}},
 		{name: "empty name", tenantID: "bereia", req: domain.TenantCreateReq{Name: "", Slug: "bereia"}},
 		{name: "long name", tenantID: "bereia", req: domain.TenantCreateReq{Name: longName, Slug: "bereia"}},
+		{name: "format control", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Code\u200bFoundry", Slug: "bereia"}},
+		{name: "bidi control", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Code\u202eFoundry", Slug: "bereia"}},
+		{name: "embedded control", tenantID: "bereia", req: domain.TenantCreateReq{Name: "Bereia\nAdmin", Slug: "bereia"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -250,7 +253,7 @@ func TestTenantService_Get(t *testing.T) {
 	}
 
 	svc = NewTenantService(&fakeTenantRepo{getFn: func(ctx context.Context, tenantID string) (*domain.Tenant, error) {
-		return &domain.Tenant{Id: "t1", Name: "Tenant", Slug: "tenant", Status: domain.TenantStatusActive}, nil
+		return &domain.Tenant{Id: "t1", Name: "Tenant", Slug: "t1", Status: domain.TenantStatusActive}, nil
 	}})
 	resp, err := svc.Get(context.Background(), "t1")
 	if err != nil {
@@ -309,8 +312,15 @@ func TestTenantServiceProjectsOneAuthoritativeMaster(t *testing.T) {
 
 func TestTenantServiceRejectsMasterNameSpoofing(t *testing.T) {
 	svc := NewTenantService(&fakeTenantRepo{})
-	if _, _, err := svc.CreateWithID(context.Background(), "workload", domain.TenantCreateReq{Name: "Code Foundry", Slug: "workload"}); !errors.Is(err, domain.ErrInvalidArgument) {
-		t.Fatalf("workload spoof err=%v", err)
+	for _, name := range []string{
+		"Code Foundry",
+		"code-foundry",
+		"Ｃｏｄｅ　Ｆｏｕｎｄｒｙ",
+		"Cоde Foundry", // Cyrillic o.
+	} {
+		if _, _, err := svc.CreateWithID(context.Background(), "workload", domain.TenantCreateReq{Name: name, Slug: "workload"}); !errors.Is(err, domain.ErrInvalidArgument) {
+			t.Fatalf("workload spoof %q err=%v", name, err)
+		}
 	}
 	if _, _, err := svc.CreateWithID(context.Background(), "local-tenant", domain.TenantCreateReq{Name: "Other", Slug: "local-tenant"}); !errors.Is(err, domain.ErrInvalidArgument) {
 		t.Fatalf("master rename err=%v", err)

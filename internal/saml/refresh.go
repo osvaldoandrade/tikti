@@ -2,11 +2,14 @@ package saml
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"log"
-	"math/rand"
+	"math/big"
 	"time"
 )
 
@@ -72,8 +75,12 @@ func (r *Refresher) Start(ctx context.Context) {
 // the ticker at r.interval.
 func (r *Refresher) run(ctx context.Context) {
 	if r.maxJitter > 0 {
-		//nolint:gosec // non-crypto jitter is intentional
-		jitter := time.Duration(rand.Int63n(int64(r.maxJitter)))
+		value, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(r.maxJitter)))
+		if err != nil {
+			log.Printf("saml: metadata refresh jitter unavailable: %v", err)
+			value = big.NewInt(0)
+		}
+		jitter := time.Duration(value.Int64())
 		select {
 		case <-ctx.Done():
 			return
@@ -138,14 +145,21 @@ func (r *Refresher) refreshOne(ctx context.Context, existing IdPRecord) {
 
 	// Carry over tenant-specific fields that metadata does not supply.
 	rec.TenantID = tid
+	rec.Generation = existing.Generation
 	rec.MetadataURL = existing.MetadataURL
 	rec.LastFetched = time.Now()
 	if rec.AttributeMap == nil && existing.AttributeMap != nil {
 		rec.AttributeMap = existing.AttributeMap
 	}
 
-	if err := r.store.PutIdP(ctx, *rec); err != nil {
+	swapped, err := r.store.CompareAndSwapIdP(ctx, existing, *rec)
+	if err != nil {
 		r.handleFailure(tid, fmt.Errorf("store: %w", err))
+		return
+	}
+	if !swapped {
+		// An administrator replaced or removed this trust while the fetch was in
+		// flight. The admin mutation is authoritative; discard the stale result.
 		return
 	}
 
@@ -162,8 +176,10 @@ func (r *Refresher) refreshOne(ctx context.Context, existing IdPRecord) {
 
 // handleFailure logs the error, bumps the failure counter/gauge, and emits an
 // ERROR-level log when two consecutive failures have occurred.
-func (r *Refresher) handleFailure(tid string, err error) {
-	log.Printf("saml: metadata refresh failed for tid=%s: %v", tid, err)
+func (r *Refresher) handleFailure(tid string, _ error) {
+	// Fetch errors can be produced by URL-aware transports. Never forward their
+	// text to logs because administrator-supplied metadata paths may be sensitive.
+	log.Printf("saml: metadata refresh failed for tid=%s", tid)
 
 	r.consecFails[tid]++
 	if r.metrics != nil {
@@ -190,11 +206,9 @@ func (r *Refresher) updateIdPCertExpiry(tid string, derCerts [][]byte) {
 		if err != nil {
 			continue
 		}
-		subject := cert.Subject.CommonName
-		if subject == "" {
-			subject = cert.Subject.String()
-		}
-		r.metrics.IdPCertExpiry.WithLabelValues(tid, subject).Set(cert.NotAfter.Sub(now).Seconds())
+		digest := sha256.Sum256(cert.Raw)
+		fingerprint := hex.EncodeToString(digest[:8])
+		r.metrics.IdPCertExpiry.WithLabelValues(tid, fingerprint).Set(cert.NotAfter.Sub(now).Seconds())
 	}
 }
 

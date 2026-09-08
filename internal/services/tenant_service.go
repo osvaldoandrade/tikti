@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
+	"github.com/osvaldoandrade/tikti/internal/tenantname"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -16,6 +16,28 @@ type TenantService interface {
 	Get(ctx context.Context, tenantID string) (*domain.TenantResp, error)
 	List(ctx context.Context, offset uint64, pageSize int64) (*domain.TenantsPage, error)
 	EnsureDefault(ctx context.Context) (*domain.TenantResp, error)
+	IsTenantActive(ctx context.Context, tenantID string) (bool, error)
+}
+
+// IsTenantActive is the authoritative runtime gate used by browser-session
+// entry points as well as access-token issuance. Missing and disabled tenants
+// are both inactive; malformed persisted data fails closed as an invariant
+// error.
+func (s *tenantService) IsTenantActive(ctx context.Context, tenantID string) (bool, error) {
+	if !validDNSLabel(tenantID) {
+		return false, domain.ErrInvalidArgument
+	}
+	tenant, err := s.repo.Get(ctx, tenantID)
+	if err != nil {
+		return false, err
+	}
+	if tenant == nil {
+		return false, nil
+	}
+	if tenant.Id != tenantID || !validStoredTenant(tenant) {
+		return false, domain.ErrTenantInvariant
+	}
+	return tenant.Status == domain.TenantStatusActive, nil
 }
 
 type tenantService struct {
@@ -33,10 +55,10 @@ func (s *tenantService) CreateWithID(
 	tenantID string,
 	req domain.TenantCreateReq,
 ) (*domain.TenantResp, bool, error) {
-	req.Name = strings.TrimSpace(req.Name)
+	req.Name = tenantname.Normalize(req.Name)
 	if !validDNSLabel(tenantID) || !validTenantName(req.Name) || req.Slug != tenantID ||
 		tenantID == domain.MasterTenantID && req.Name != domain.MasterTenantName ||
-		tenantID != domain.MasterTenantID && strings.EqualFold(req.Name, domain.MasterTenantName) {
+		tenantID != domain.MasterTenantID && tenantname.ReservedMaster(req.Name) {
 		return nil, false, domain.ErrInvalidArgument
 	}
 	proposed := &domain.Tenant{
@@ -66,8 +88,7 @@ func (s *tenantService) Get(ctx context.Context, tenantID string) (*domain.Tenan
 	if tenant == nil {
 		return nil, domain.ErrNotFound
 	}
-	if tenant.Id == domain.MasterTenantID && tenant.Slug != domain.MasterTenantID ||
-		tenant.Id != domain.MasterTenantID && strings.EqualFold(strings.TrimSpace(tenant.Name), domain.MasterTenantName) {
+	if !validStoredTenant(tenant) {
 		return nil, domain.ErrTenantInvariant
 	}
 	return tenantResponse(tenant), nil
@@ -78,8 +99,12 @@ func validDNSLabel(value string) bool {
 }
 
 func validTenantName(value string) bool {
-	length := utf8.RuneCountInString(value)
-	return length >= 1 && length <= 128
+	return tenantname.Valid(value)
+}
+
+func validStoredTenant(tenant *domain.Tenant) bool {
+	return tenant != nil && validDNSLabel(tenant.Id) && tenant.Slug == tenant.Id && tenantname.Valid(tenant.Name) &&
+		(tenant.Id == domain.MasterTenantID || !tenantname.ReservedMaster(tenant.Name))
 }
 
 func tenantResponse(tenant *domain.Tenant) *domain.TenantResp {
@@ -105,6 +130,9 @@ func (s *tenantService) List(ctx context.Context, offset uint64, pageSize int64)
 	}
 	items := make([]domain.TenantResp, 0, len(tenants))
 	for _, tenant := range tenants {
+		if !validStoredTenant(&tenant) {
+			return nil, domain.ErrTenantInvariant
+		}
 		items = append(items, *tenantResponse(&tenant))
 	}
 	return &domain.TenantsPage{Tenants: items, NextPageToken: next}, nil

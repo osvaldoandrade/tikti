@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/osvaldoandrade/tikti/pkg/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -39,15 +41,22 @@ func newDiscoverHandler(store *discoverMockStore) *Handler {
 		Store:   store,
 		Clock:   NewFakeClock(),
 		Metrics: NewMetrics(reg),
+		Cfg:     config.SAMLConfig{Discover: config.DiscoverConfig{Enabled: true}},
 	})
 }
 
 func execDiscover(h *Handler, query string) *httptest.ResponseRecorder {
 	target := "/saml/discover"
+	method := http.MethodGet
+	body := strings.NewReader("")
 	if query != "" {
-		target += "?" + query
+		method = http.MethodPost
+		body = strings.NewReader(query)
 	}
-	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req := httptest.NewRequest(method, target, body)
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
 	rr := httptest.NewRecorder()
 	h.Discover(rr, req)
 	return rr
@@ -101,8 +110,8 @@ func TestDiscover_UnknownDomain_ReRender(t *testing.T) {
 	if !strings.Contains(body, "Workspace not found.") {
 		t.Errorf("body missing 'Workspace not found.' message:\n%s", body)
 	}
-	if !strings.Contains(body, "bob@unknown.org") {
-		t.Errorf("body missing email value:\n%s", body)
+	if strings.Contains(body, "bob@unknown.org") {
+		t.Errorf("body reflected email value:\n%s", body)
 	}
 }
 
@@ -126,8 +135,30 @@ func TestDiscover_XSS_Escaped(t *testing.T) {
 		t.Errorf("body contains unescaped <script> tag:\n%s", body)
 	}
 
-	// The escaped version should be present.
-	if !strings.Contains(body, "&lt;script&gt;") {
-		t.Errorf("body missing escaped <script> tag:\n%s", body)
+	// Submitted input must not be reflected even after escaping.
+	if strings.Contains(body, "&lt;script&gt;") {
+		t.Errorf("body reflected escaped input:\n%s", body)
+	}
+}
+
+func TestDiscoverRejectsEmailInURLAndSetsPrivacyHeaders(t *testing.T) {
+	h := newDiscoverHandler(&discoverMockStore{})
+	req := httptest.NewRequest(http.MethodGet, "/saml/discover?email=victim@example.com", nil)
+	recorder := httptest.NewRecorder()
+	h.Discover(recorder, req)
+	if recorder.Code != http.StatusBadRequest || strings.Contains(recorder.Body.String(), "victim@example.com") {
+		t.Fatalf("URL email response = %d %q", recorder.Code, recorder.Body.String())
+	}
+	if recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("privacy headers = %v", recorder.Header())
+	}
+}
+
+func TestDiscoverDisabledAtHandlerBoundary(t *testing.T) {
+	h := NewHandler(Deps{Cfg: config.SAMLConfig{Discover: config.DiscoverConfig{Enabled: false}}})
+	recorder := httptest.NewRecorder()
+	h.Discover(recorder, httptest.NewRequest(http.MethodGet, "/saml/discover", nil))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("disabled discovery status = %d", recorder.Code)
 	}
 }

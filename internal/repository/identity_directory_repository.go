@@ -30,6 +30,10 @@ const (
 	directoryAssignmentsPrefix    = "identity:v2:access:assignments:"
 	directoryPrincipalPrefix      = "identity:v2:access:principal:"
 	directoryBackfillMarker       = "identity:v2:backfill:complete"
+	directoryBackfillLock         = "identity:v2:backfill:owner"
+	directoryBackfillVersion      = "v1"
+	directoryBackfillLeaseTTL     = 30 * time.Second
+	directoryBackfillLeaseRenewal = 10 * time.Second
 	directoryMaximumUsers         = 100_000
 	directoryMaximumGroups        = 10_000
 	directoryMaximumAssignments   = 10_000
@@ -38,18 +42,44 @@ const (
 	directoryMaximumRoles         = 100
 	directoryMaximumPageSize      = 200
 	directoryMaximumRetries       = 8
+	authenticationAttemptPrefix   = "identity:v2:auth:attempt:"
 )
 
 var errDirectoryRetry = errors.New("identity directory transaction retry exhausted")
 
+var renewDirectoryBackfillLeaseScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call("PEXPIRE", KEYS[1], ARGV[2])
+return 1
+`)
+
+var releaseDirectoryBackfillLeaseScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+return redis.call("DEL", KEYS[1])
+`)
+
+var completeDirectoryBackfillScript = redis.NewScript(`
+if redis.call("GET", KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call("SET", KEYS[2], ARGV[2])
+redis.call("DEL", KEYS[1])
+return 1
+`)
+
+type AuthenticationAttemptLimiter interface {
+	AllowAuthenticationAttempt(context.Context, string, string, int, time.Duration) (bool, error)
+}
+
 // IdentityDirectoryRepository is the single runtime authority for directory
 // projections, global groups and mutable tenant access assignments.
 type IdentityDirectoryRepository interface {
+	AuthenticationAttemptLimiter
 	CreateDirectoryUser(context.Context, *domain.User) (*domain.DirectoryUser, error)
 	UpdateDirectoryUser(context.Context, *domain.User) (*domain.DirectoryUser, error)
+	ConsumeTemporaryPassword(context.Context, string, string, int, string) error
 	GetDirectoryUser(context.Context, string) (*domain.DirectoryUser, error)
 	FindDirectoryUserByEmail(context.Context, string) (*domain.DirectoryUser, error)
 	ListDirectoryUsers(context.Context, string, string, int) (*domain.DirectoryUserPage, error)
+	ListTenantDirectoryUsers(context.Context, string, string, string, int) (*domain.DirectoryUserPage, error)
 
 	CreateGroup(context.Context, string, string) (*domain.IdentityGroup, error)
 	GetGroup(context.Context, string) (*domain.IdentityGroup, error)
@@ -69,6 +99,48 @@ type IdentityDirectoryRepository interface {
 	ListEffectiveTenantIDs(context.Context, string, int) ([]string, bool, error)
 
 	Backfill(context.Context) (*domain.IdentityBackfillResult, error)
+}
+
+var authenticationAttemptScript = redis.NewScript(`
+local count = redis.call("INCR", KEYS[1])
+if count == 1 then redis.call("PEXPIRE", KEYS[1], ARGV[1]) end
+return count
+`)
+
+// AllowAuthenticationAttempt enforces a distributed authentication throttle.
+// The Redis key contains only a SHA-256 digest of the server-owned bucket and
+// canonical subject, so counters cannot become a secondary identity index.
+func (r *identityDirectoryRepo) AllowAuthenticationAttempt(
+	ctx context.Context,
+	bucket string,
+	subject string,
+	limit int,
+	window time.Duration,
+) (bool, error) {
+	bucket = strings.TrimSpace(bucket)
+	subject = strings.TrimSpace(subject)
+	if r == nil || r.client == nil || !validAuthenticationBucket(bucket) || subject == "" || len(subject) > 2048 || limit < 1 || window < time.Millisecond {
+		return false, domain.ErrInvalidArgument
+	}
+	digest := sha256.Sum256([]byte(bucket + "\x00" + subject))
+	key := authenticationAttemptPrefix + hex.EncodeToString(digest[:])
+	count, err := authenticationAttemptScript.Run(ctx, r.client, []string{key}, window.Milliseconds()).Int64()
+	if err != nil {
+		return false, err
+	}
+	return count <= int64(limit), nil
+}
+
+func validAuthenticationBucket(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' && character != ':' {
+			return false
+		}
+	}
+	return true
 }
 
 type identityDirectoryRepo struct{ client *redis.Client }
@@ -93,6 +165,9 @@ func (r *identityDirectoryRepo) CreateDirectoryUser(ctx context.Context, input *
 	if err != nil || r == nil || r.client == nil {
 		return nil, domain.ErrInvalidArgument
 	}
+	// New records always start from the server-owned initial revision.
+	user.Revision = 0
+	// #nosec G117 -- persisted User.Password contains only a bcrypt hash produced before this boundary.
 	payload, err := json.Marshal(user)
 	if err != nil {
 		return nil, domain.ErrInvalidArgument
@@ -121,6 +196,7 @@ func (r *identityDirectoryRepo) UpdateDirectoryUser(ctx context.Context, input *
 		return nil, domain.ErrInvalidArgument
 	}
 	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
+		var committed *domain.User
 		previousRaw, readErr := r.client.HGet(ctx, usersHashV2, user.Id).Result()
 		if readErr == redis.Nil {
 			return nil, domain.ErrNotFound
@@ -153,6 +229,9 @@ func (r *identityDirectoryRepo) UpdateDirectoryUser(ctx context.Context, input *
 			if currentErr != nil || currentCanonical.Id != user.Id {
 				return domain.ErrDirectoryInvariant
 			}
+			if currentCanonical.Revision != user.Revision {
+				return domain.ErrVersionConflict
+			}
 			if currentCanonical.Email != previousEmail {
 				return redis.TxFailedErr
 			}
@@ -165,7 +244,10 @@ func (r *identityDirectoryRepo) UpdateDirectoryUser(ctx context.Context, input *
 					return domain.ErrEmailExists
 				}
 			}
-			payload, marshalErr := json.Marshal(user)
+			updated := *user
+			updated.Revision = currentCanonical.Revision + 1
+			// #nosec G117 -- persisted User.Password contains only a one-way password hash.
+			payload, marshalErr := json.Marshal(&updated)
 			if marshalErr != nil {
 				return domain.ErrInvalidArgument
 			}
@@ -179,16 +261,82 @@ func (r *identityDirectoryRepo) UpdateDirectoryUser(ctx context.Context, input *
 				}
 				return nil
 			})
+			if writeErr == nil {
+				committed = &updated
+			}
 			return writeErr
 		}, usersHashV2, userByEmailKeyNS+previousEmail, userByEmailKeyNS+user.Email, directoryUserEmailIndex)
 		if err == nil {
-			return directoryUserProjection(user), nil
+			*input = *committed
+			return directoryUserProjection(committed), nil
 		}
 		if err != redis.TxFailedErr {
 			return nil, err
 		}
 	}
 	return nil, errDirectoryRetry
+}
+
+// ConsumeTemporaryPassword atomically replaces the one-time password state.
+// The expected hash and token version come from the credential check performed
+// by the service; a concurrent winner makes every later attempt invalid.
+func (r *identityDirectoryRepo) ConsumeTemporaryPassword(
+	ctx context.Context,
+	userID string,
+	expectedPasswordHash string,
+	expectedTokenVersion int,
+	replacementPasswordHash string,
+) error {
+	if r == nil || r.client == nil || !canonicalUserIdentity(userID) ||
+		strings.TrimSpace(expectedPasswordHash) == "" || expectedTokenVersion < 0 ||
+		strings.TrimSpace(replacementPasswordHash) == "" {
+		return domain.ErrInvalidArgument
+	}
+	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
+		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+			raw, readErr := tx.HGet(ctx, usersHashV2, userID).Result()
+			if readErr == redis.Nil {
+				return domain.ErrInvalidCreds
+			}
+			if readErr != nil {
+				return readErr
+			}
+			var stored domain.User
+			if json.Unmarshal([]byte(raw), &stored) != nil {
+				return domain.ErrDirectoryInvariant
+			}
+			current, canonicalErr := canonicalDirectoryStorageUser(&stored)
+			if canonicalErr != nil || current.Id != userID {
+				return domain.ErrDirectoryInvariant
+			}
+			if current.Status != domain.UserStatusActive || current.AuthSource != domain.AuthSourcePassword ||
+				!current.PasswordChangeRequired || current.Password != expectedPasswordHash ||
+				current.TokenVersion != expectedTokenVersion {
+				return domain.ErrInvalidCreds
+			}
+			current.Password = replacementPasswordHash
+			current.PasswordChangeRequired = false
+			current.TokenVersion++
+			current.Revision++
+			// #nosec G117 -- temporary plaintext is never stored; both values are bcrypt hashes.
+			payload, marshalErr := json.Marshal(current)
+			if marshalErr != nil {
+				return domain.ErrDirectoryInvariant
+			}
+			_, writeErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+				pipe.HSet(ctx, usersHashV2, userID, payload)
+				return nil
+			})
+			return writeErr
+		}, usersHashV2)
+		if err == nil {
+			return nil
+		}
+		if err != redis.TxFailedErr {
+			return err
+		}
+	}
+	return errDirectoryRetry
 }
 
 func (r *identityDirectoryRepo) GetDirectoryUser(ctx context.Context, userID string) (*domain.DirectoryUser, error) {
@@ -275,6 +423,99 @@ func (r *identityDirectoryRepo) ListDirectoryUsers(ctx context.Context, search, 
 	return page, nil
 }
 
+// ListTenantDirectoryUsers builds pagination exclusively from principals with
+// effective access to the target tenant. Its cursor may therefore contain only
+// an already-visible member; it never carries a global directory position.
+func (r *identityDirectoryRepo) ListTenantDirectoryUsers(ctx context.Context, tenantID, search, token string, limit int) (*domain.DirectoryUserPage, error) {
+	if r == nil || r.client == nil || !canonicalTenantIdentity(tenantID) || limit < 1 || limit > directoryMaximumPageSize {
+		return nil, domain.ErrInvalidArgument
+	}
+	search = normalizeDirectorySearch(search)
+	if search == "!invalid!" {
+		return nil, domain.ErrInvalidArgument
+	}
+	after, err := decodeDirectoryCursor(token, "tenant-users", tenantID+"\x00"+search)
+	if err != nil {
+		return nil, err
+	}
+	values, err := r.client.HGetAll(ctx, assignmentsKey(tenantID)).Result()
+	if err != nil || len(values) > directoryMaximumAssignments {
+		return nil, domain.ErrDirectoryInvariant
+	}
+	userIDs := make(map[string]struct{})
+	for field, raw := range values {
+		principalType, principalID, ok := parseAssignmentField(field)
+		if !ok {
+			return nil, domain.ErrDirectoryInvariant
+		}
+		if _, decodeErr := decodeAssignment(raw, tenantID, principalType, principalID); decodeErr != nil {
+			return nil, decodeErr
+		}
+		switch principalType {
+		case domain.AccessPrincipalUser:
+			userIDs[principalID] = struct{}{}
+		case domain.AccessPrincipalGroup:
+			group, groupErr := r.GetGroup(ctx, principalID)
+			if groupErr != nil || group == nil {
+				if groupErr == nil {
+					groupErr = domain.ErrDirectoryInvariant
+				}
+				return nil, groupErr
+			}
+			if group.Status != domain.IdentityGroupStatusActive {
+				continue
+			}
+			members, memberErr := r.client.SMembers(ctx, groupMembersKey(principalID)).Result()
+			if memberErr != nil || len(members) > directoryMaximumRelationships {
+				return nil, domain.ErrDirectoryInvariant
+			}
+			for _, userID := range members {
+				if !canonicalUserIdentity(userID) {
+					return nil, domain.ErrDirectoryInvariant
+				}
+				userIDs[userID] = struct{}{}
+			}
+		}
+		if len(userIDs) > directoryMaximumUsers {
+			return nil, domain.ErrDirectoryInvariant
+		}
+	}
+	members := make([]string, 0, len(userIDs))
+	users := make(map[string]*domain.User, len(userIDs))
+	for userID := range userIDs {
+		user, readErr := r.readStorageUser(ctx, userID)
+		if readErr != nil || user == nil {
+			if readErr == nil {
+				readErr = domain.ErrDirectoryInvariant
+			}
+			return nil, readErr
+		}
+		if search != "" && !strings.HasPrefix(user.Email, search) {
+			continue
+		}
+		member := directoryUserIndexMember(user.Email, user.Id)
+		members = append(members, member)
+		users[member] = user
+	}
+	sort.Strings(members)
+	start := sort.SearchStrings(members, after)
+	if after != "" && start < len(members) && members[start] == after {
+		start++
+	}
+	end := minInt(start+limit, len(members))
+	page := &domain.DirectoryUserPage{Users: make([]domain.DirectoryUser, 0, end-start)}
+	for _, member := range members[start:end] {
+		page.Users = append(page.Users, *directoryUserProjection(users[member]))
+	}
+	if end < len(members) {
+		page.NextPageToken, err = encodeDirectoryCursor("tenant-users", tenantID+"\x00"+search, members[end-1])
+		if err != nil {
+			return nil, domain.ErrDirectoryInvariant
+		}
+	}
+	return page, nil
+}
+
 func (r *identityDirectoryRepo) readStorageUser(ctx context.Context, userID string) (*domain.User, error) {
 	if r == nil || r.client == nil || !canonicalUserIdentity(userID) {
 		return nil, domain.ErrInvalidArgument
@@ -298,7 +539,7 @@ func (r *identityDirectoryRepo) readStorageUser(ctx context.Context, userID stri
 }
 
 func canonicalDirectoryStorageUser(input *domain.User) (*domain.User, error) {
-	if input == nil || !canonicalUserIdentity(input.Id) {
+	if input == nil || !canonicalUserIdentity(input.Id) || input.Revision < 0 {
 		return nil, domain.ErrInvalidArgument
 	}
 	email := normalizeDirectoryEmail(input.Email)
@@ -330,6 +571,12 @@ func canonicalDirectoryStorageUser(input *domain.User) (*domain.User, error) {
 		copy.Role = domain.RoleCompanyEmployee
 	}
 	copy.Email, copy.AuthSource = email, authSource
+	if copy.AuthSource == domain.AuthSourceSAML {
+		// SAML is the sole credential authority after conversion. Historical
+		// password hashes must never remain usable as a parallel login path.
+		copy.Password = ""
+		copy.PasswordChangeRequired = false
+	}
 	return &copy, nil
 }
 
@@ -337,10 +584,14 @@ func directoryUserProjection(user *domain.User) *domain.DirectoryUser {
 	if user == nil {
 		return nil
 	}
-	return &domain.DirectoryUser{
+	projection := &domain.DirectoryUser{
 		ID: user.Id, Email: user.Email, Status: user.Status, AuthSource: user.AuthSource,
 		PasswordChangeRequired: user.PasswordChangeRequired, CreatedAt: user.CreatedAt,
 	}
+	if user.CompanyId != nil {
+		projection.HomeTenantID = strings.TrimSpace(*user.CompanyId)
+	}
+	return projection
 }
 
 func normalizeDirectoryEmail(value string) string {
@@ -651,19 +902,27 @@ func (r *identityDirectoryRepo) changeGroupMember(ctx context.Context, groupID, 
 	if !canonicalGroupID(groupID) || !canonicalUserIdentity(userID) || r == nil || r.client == nil {
 		return nil, false, domain.ErrInvalidArgument
 	}
-	if add {
-		user, err := r.GetDirectoryUser(ctx, userID)
-		if err != nil || user == nil {
-			if err == nil {
-				err = domain.ErrNotFound
-			}
-			return nil, false, err
-		}
-	}
 	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
 		var result *domain.IdentityGroup
 		changed := false
 		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+			if add {
+				userRaw, userErr := tx.HGet(ctx, usersHashV2, userID).Result()
+				if userErr == redis.Nil {
+					return domain.ErrNotFound
+				}
+				if userErr != nil {
+					return userErr
+				}
+				var stored domain.User
+				if json.Unmarshal([]byte(userRaw), &stored) != nil {
+					return domain.ErrDirectoryInvariant
+				}
+				canonical, canonicalErr := canonicalDirectoryStorageUser(&stored)
+				if canonicalErr != nil || canonical.Id != userID {
+					return domain.ErrDirectoryInvariant
+				}
+			}
 			raw, err := tx.HGet(ctx, directoryGroupsHash, groupID).Result()
 			if err == redis.Nil {
 				return domain.ErrNotFound
@@ -708,7 +967,7 @@ func (r *identityDirectoryRepo) changeGroupMember(ctx context.Context, groupID, 
 			})
 			result, changed = group, true
 			return err
-		}, directoryGroupsHash, groupMembersKey(groupID), userGroupsKey(userID))
+		}, usersHashV2, directoryGroupsHash, groupMembersKey(groupID), userGroupsKey(userID))
 		if err == nil {
 			result.MemberCount = int(r.client.SCard(ctx, groupMembersKey(groupID)).Val())
 			return result, changed, nil
@@ -725,28 +984,46 @@ func (r *identityDirectoryRepo) PutAccessAssignment(ctx context.Context, tenantI
 	if err != nil || !canonicalTenantIdentity(tenantID) || !canonicalPrincipal(principalType, principalID) || r == nil || r.client == nil {
 		return nil, false, domain.ErrInvalidArgument
 	}
-	if principalType == domain.AccessPrincipalUser {
-		user, readErr := r.GetDirectoryUser(ctx, principalID)
-		if readErr != nil || user == nil {
-			if readErr == nil {
-				readErr = domain.ErrNotFound
-			}
-			return nil, false, readErr
-		}
-	} else {
-		group, readErr := r.GetGroup(ctx, principalID)
-		if readErr != nil || group == nil {
-			if readErr == nil {
-				readErr = domain.ErrNotFound
-			}
-			return nil, false, readErr
-		}
-	}
 	key, field, reverse := assignmentsKey(tenantID), assignmentField(principalType, principalID), principalTenantsKey(principalType, principalID)
+	principalAuthorityKey := usersHashV2
+	if principalType == domain.AccessPrincipalGroup {
+		principalAuthorityKey = directoryGroupsHash
+	}
 	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
 		var result *domain.AccessAssignment
 		created := false
 		err = r.client.Watch(ctx, func(tx *redis.Tx) error {
+			if principalType == domain.AccessPrincipalUser {
+				userRaw, userErr := tx.HGet(ctx, usersHashV2, principalID).Result()
+				if userErr == redis.Nil {
+					return domain.ErrNotFound
+				}
+				if userErr != nil {
+					return userErr
+				}
+				var stored domain.User
+				if json.Unmarshal([]byte(userRaw), &stored) != nil {
+					return domain.ErrDirectoryInvariant
+				}
+				canonical, canonicalErr := canonicalDirectoryStorageUser(&stored)
+				if canonicalErr != nil || canonical.Id != principalID {
+					return domain.ErrDirectoryInvariant
+				}
+				if canonical.AuthSource == domain.AuthSourceSAML && (canonical.CompanyId == nil || *canonical.CompanyId != tenantID) {
+					return domain.ErrInvalidTenant
+				}
+			} else {
+				groupRaw, groupErr := tx.HGet(ctx, directoryGroupsHash, principalID).Result()
+				if groupErr == redis.Nil {
+					return domain.ErrNotFound
+				}
+				if groupErr != nil {
+					return groupErr
+				}
+				if _, decodeErr := decodeGroup(groupRaw, principalID); decodeErr != nil {
+					return decodeErr
+				}
+			}
 			raw, readErr := tx.HGet(ctx, key, field).Result()
 			now := time.Now().UTC()
 			if readErr == redis.Nil {
@@ -779,7 +1056,7 @@ func (r *identityDirectoryRepo) PutAccessAssignment(ctx context.Context, tenantI
 				return nil
 			})
 			return writeErr
-		}, key, reverse)
+		}, principalAuthorityKey, key, reverse)
 		if err == nil {
 			return result, created, nil
 		}
@@ -914,6 +1191,13 @@ func (r *identityDirectoryRepo) ListEffectiveTenantIDs(ctx context.Context, user
 	if !canonicalUserIdentity(userID) || maximum < 1 || maximum > directoryMaximumRelationships || r == nil || r.client == nil {
 		return nil, false, domain.ErrInvalidArgument
 	}
+	user, err := r.GetDirectoryUser(ctx, userID)
+	if err != nil || user == nil {
+		if err == nil {
+			err = domain.ErrNotFound
+		}
+		return nil, false, err
+	}
 	tenants, err := r.client.SMembers(ctx, principalTenantsKey(domain.AccessPrincipalUser, userID)).Result()
 	if err != nil {
 		return nil, false, err
@@ -953,6 +1237,9 @@ func (r *identityDirectoryRepo) ListEffectiveTenantIDs(ctx context.Context, user
 	}
 	result := make([]string, 0, len(set))
 	for tenantID := range set {
+		if user.AuthSource == domain.AuthSourceSAML && user.HomeTenantID != tenantID {
+			continue
+		}
 		result = append(result, tenantID)
 	}
 	sort.Strings(result)
@@ -962,6 +1249,16 @@ func (r *identityDirectoryRepo) ListEffectiveTenantIDs(ctx context.Context, user
 func (r *identityDirectoryRepo) GetEffectiveTenantRoles(ctx context.Context, userID, tenantID string) ([]string, []domain.AccessProvenance, error) {
 	if !canonicalUserIdentity(userID) || !canonicalTenantIdentity(tenantID) || r == nil || r.client == nil {
 		return nil, nil, domain.ErrInvalidArgument
+	}
+	user, err := r.GetDirectoryUser(ctx, userID)
+	if err != nil || user == nil {
+		if err == nil {
+			err = domain.ErrNotFound
+		}
+		return nil, nil, err
+	}
+	if user.AuthSource == domain.AuthSourceSAML && user.HomeTenantID != tenantID {
+		return []string{}, []domain.AccessProvenance{}, nil
 	}
 	roleSet := map[string]struct{}{}
 	provenance := []domain.AccessProvenance{}
@@ -1021,31 +1318,117 @@ func (r *identityDirectoryRepo) Backfill(ctx context.Context) (*domain.IdentityB
 	if r == nil || r.client == nil {
 		return nil, domain.ErrDirectoryInvariant
 	}
-	marker, err := r.client.Get(ctx, directoryBackfillMarker).Result()
-	if err == nil {
-		if marker != "v1" {
-			return nil, domain.ErrDirectoryInvariant
-		}
+	complete, err := r.directoryBackfillComplete(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if complete {
 		// Legacy membership writers are removed before this marker can be
 		// committed. From this point on, canonical assignments (including an
 		// intentional absence after DELETE) are the only authority.
 		return &domain.IdentityBackfillResult{}, nil
 	}
-	if err != redis.Nil {
-		return nil, err
-	}
-	users, err := r.backfillUsers(ctx)
+
+	owner := uuid.NewString()
+	acquired, err := r.client.SetNX(ctx, directoryBackfillLock, owner, directoryBackfillLeaseTTL).Result()
 	if err != nil {
 		return nil, err
 	}
-	assignments, err := r.backfillAssignments(ctx)
+	if !acquired {
+		// Close the marker/lock race: the owner may have completed immediately
+		// after our first marker read.
+		complete, markerErr := r.directoryBackfillComplete(ctx)
+		if markerErr != nil {
+			return nil, markerErr
+		}
+		if complete {
+			return &domain.IdentityBackfillResult{}, nil
+		}
+		return nil, domain.ErrDirectoryBackfillInProgress
+	}
+
+	leaseCtx, cancelLease := context.WithCancel(ctx)
+	leaseDone := make(chan struct{})
+	go r.renewDirectoryBackfillLease(leaseCtx, cancelLease, leaseDone, owner)
+	releaseLease := true
+	defer func() {
+		cancelLease()
+		<-leaseDone
+		if releaseLease {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, _ = releaseDirectoryBackfillLeaseScript.Run(
+				releaseCtx, r.client, []string{directoryBackfillLock}, owner,
+			).Result()
+		}
+	}()
+
+	users, err := r.backfillUsers(leaseCtx)
 	if err != nil {
 		return nil, err
 	}
-	if err = r.client.Set(ctx, directoryBackfillMarker, "v1", 0).Err(); err != nil {
+	assignments, err := r.backfillAssignments(leaseCtx)
+	if err != nil {
 		return nil, err
 	}
+	committed, err := completeDirectoryBackfillScript.Run(
+		leaseCtx,
+		r.client,
+		[]string{directoryBackfillLock, directoryBackfillMarker},
+		owner,
+		directoryBackfillVersion,
+	).Int()
+	if err != nil {
+		return nil, err
+	}
+	if committed != 1 {
+		return nil, domain.ErrDirectoryBackfillInProgress
+	}
+	releaseLease = false
 	return &domain.IdentityBackfillResult{UsersIndexed: users, AssignmentsCopied: assignments}, nil
+}
+
+func (r *identityDirectoryRepo) directoryBackfillComplete(ctx context.Context) (bool, error) {
+	marker, err := r.client.Get(ctx, directoryBackfillMarker).Result()
+	if err == redis.Nil {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if marker != directoryBackfillVersion {
+		return false, domain.ErrDirectoryInvariant
+	}
+	return true, nil
+}
+
+func (r *identityDirectoryRepo) renewDirectoryBackfillLease(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	done chan<- struct{},
+	owner string,
+) {
+	defer close(done)
+	ticker := time.NewTicker(directoryBackfillLeaseRenewal)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			renewed, err := renewDirectoryBackfillLeaseScript.Run(
+				ctx,
+				r.client,
+				[]string{directoryBackfillLock},
+				owner,
+				directoryBackfillLeaseTTL.Milliseconds(),
+			).Int()
+			if err != nil || renewed != 1 {
+				cancel()
+				return
+			}
+		}
+	}
 }
 
 func (r *identityDirectoryRepo) backfillUsers(ctx context.Context) (int, error) {
@@ -1095,6 +1478,7 @@ func (r *identityDirectoryRepo) backfillUsers(ctx context.Context) (int, error) 
 	sort.Strings(ids)
 	for _, id := range ids {
 		user := byID[id]
+		// #nosec G117 -- backfill rewrites the existing one-way hash, never plaintext.
 		payload, _ := json.Marshal(user)
 		owner, getErr := r.client.Get(ctx, userByEmailKeyNS+user.Email).Result()
 		if getErr != nil && getErr != redis.Nil || getErr == nil && owner != id {

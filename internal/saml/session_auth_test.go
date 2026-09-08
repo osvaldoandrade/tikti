@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
@@ -51,23 +52,25 @@ type fakeIssuer struct {
 	lastAMR               []string
 	lastUser              domain.User
 	lastPlatformPrivilege string
+	lastNotOnOrAfter      time.Time
 	err                   error
 }
 
-func (f *fakeIssuer) IssueIDTokenWithAMR(u *domain.User, amr []string, platformPrivilege string) (string, int, error) {
+func (f *fakeIssuer) IssueIDTokenWithAMRUntil(u *domain.User, amr []string, platformPrivilege string, notOnOrAfter time.Time) (string, int, error) {
 	f.lastAMR = amr
 	f.lastUser = *u
 	f.lastPlatformPrivilege = platformPrivilege
+	f.lastNotOnOrAfter = notOnOrAfter
 	return f.token, 3600, f.err
 }
 
 func TestSessionBridge_Issue_DowngradesTenantSAMLPlatformAdmin(t *testing.T) {
-	repo := &fakeRepo{user: domain.User{Id: "u1", Email: "admin@example.com", Role: domain.RoleAdmin, AuthSource: domain.AuthSourceSAML}}
+	repo := &fakeRepo{user: domain.User{Id: "u1", Email: "admin@example.com", Role: domain.RoleAdmin, AuthSource: domain.AuthSourceSAML, TokenVersion: 7}}
 	issuer := &fakeIssuer{token: "tenant-token"}
 	bridge := NewSessionBridge(repo, issuer)
 	_, err := bridge.Issue(context.Background(), IssueInput{
 		TenantID: "tenant-1", ExternalSubject: "external-admin", Email: "admin@example.com",
-		Roles: []string{"ADMIN"}, AMR: []string{"saml"},
+		Roles: []string{"ADMIN"}, AMR: []string{"saml"}, NotOnOrAfter: time.Now().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +80,9 @@ func TestSessionBridge_Issue_DowngradesTenantSAMLPlatformAdmin(t *testing.T) {
 	}
 	if issuer.lastPlatformPrivilege != "" {
 		t.Fatalf("tenant SAML administrator received platform provenance: %q", issuer.lastPlatformPrivilege)
+	}
+	if repo.updated == nil || repo.updated.Role != domain.RoleCompanyAdmin || repo.updated.TokenVersion != 8 {
+		t.Fatalf("stale platform role was not durably revoked: %#v", repo.updated)
 	}
 }
 
@@ -93,7 +99,7 @@ func TestSessionBridge_Issue_ElevatesOnlyConfiguredSAMLPlatformAdministrator(t *
 
 	_, err := bridge.Issue(context.Background(), IssueInput{
 		TenantID: tenantID, ExternalSubject: "external-owner", Email: "Owner@Example.com",
-		AMR: []string{"saml"},
+		AMR: []string{"saml"}, NotOnOrAfter: time.Now().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +124,7 @@ func TestSessionBridge_Issue_DoesNotElevatePlatformAdministratorAcrossTenant(t *
 
 	_, err := bridge.Issue(context.Background(), IssueInput{
 		TenantID: "foreign-tenant", ExternalSubject: "external-owner", Email: "owner@example.com",
-		AMR: []string{"saml"},
+		AMR: []string{"saml"}, NotOnOrAfter: time.Now().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -144,7 +150,7 @@ func TestSessionBridge_Issue_FailsClosedWhenPlatformAdministratorCannotPersist(t
 
 	_, err := bridge.Issue(context.Background(), IssueInput{
 		TenantID: "local-tenant", ExternalSubject: "external-owner", Email: "owner@example.com",
-		AMR: []string{"saml"},
+		AMR: []string{"saml"}, NotOnOrAfter: time.Now().Add(time.Hour),
 	})
 	if !errors.Is(err, repoErr) {
 		t.Fatalf("expected persistence error, got %v", err)
@@ -161,12 +167,14 @@ func TestSessionBridge_Issue_SAML(t *testing.T) {
 	issuer := &fakeIssuer{token: "tok-saml"}
 	bridge := NewSessionBridge(repo, issuer)
 
+	notOnOrAfter := time.Now().Add(5 * time.Minute).UTC()
 	tok, err := bridge.Issue(context.Background(), IssueInput{
 		TenantID:        "tenant-1",
 		ExternalSubject: "ext-sub-1",
 		Email:           "alice@example.com",
 		Name:            "Alice",
 		AMR:             []string{"saml"},
+		NotOnOrAfter:    notOnOrAfter,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -176,6 +184,26 @@ func TestSessionBridge_Issue_SAML(t *testing.T) {
 	}
 	if len(issuer.lastAMR) != 1 || issuer.lastAMR[0] != "saml" {
 		t.Fatalf("expected amr=[saml], got %v", issuer.lastAMR)
+	}
+	if !issuer.lastNotOnOrAfter.Equal(notOnOrAfter) {
+		t.Fatalf("issuer expiry = %v, want assertion expiry %v", issuer.lastNotOnOrAfter, notOnOrAfter)
+	}
+}
+
+func TestSessionBridge_Issue_RejectsExpiredAssertionBeforeUpsert(t *testing.T) {
+	repo := &fakeRepo{user: domain.User{Id: "u1", Status: domain.UserStatusActive}}
+	issuer := &fakeIssuer{token: "must-not-issue"}
+	bridge := NewSessionBridge(repo, issuer)
+
+	_, err := bridge.Issue(context.Background(), IssueInput{
+		TenantID: "tenant-1", ExternalSubject: "external", Email: "alice@example.com",
+		NotOnOrAfter: time.Now().Add(-time.Second),
+	})
+	if err == nil {
+		t.Fatal("expired assertion unexpectedly issued a local session")
+	}
+	if issuer.lastUser.Id != "" {
+		t.Fatalf("token issuer called for expired assertion: %#v", issuer.lastUser)
 	}
 }
 
@@ -189,6 +217,7 @@ func TestSessionBridge_Issue_UpsertError(t *testing.T) {
 		ExternalSubject: "ext-sub-1",
 		Email:           "alice@example.com",
 		AMR:             []string{"saml"},
+		NotOnOrAfter:    time.Now().Add(time.Hour),
 	})
 	if err == nil {
 		t.Fatal("expected error from upsert failure")

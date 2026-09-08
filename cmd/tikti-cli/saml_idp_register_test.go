@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -33,6 +34,15 @@ func newMemStore() *memStore {
 func (m *memStore) PutIdP(_ context.Context, rec saml.IdPRecord) error {
 	m.idps[rec.TenantID] = rec
 	return nil
+}
+
+func (m *memStore) CompareAndSwapIdP(_ context.Context, expected, replacement saml.IdPRecord) (bool, error) {
+	current, ok := m.idps[expected.TenantID]
+	if !ok || !reflect.DeepEqual(current, expected) {
+		return false, nil
+	}
+	m.idps[expected.TenantID] = replacement
+	return true, nil
 }
 
 func (m *memStore) GetIdP(_ context.Context, tid string) (saml.IdPRecord, error) {
@@ -65,8 +75,14 @@ func (m *memStore) PutIndex(_ context.Context, _ string, _ saml.IndexRecord) err
 func (m *memStore) GetIndex(_ context.Context, _ string) (saml.IndexRecord, error) {
 	return saml.IndexRecord{}, nil
 }
-func (m *memStore) DeleteIndex(_ context.Context, _ string) error                        { return nil }
-func (m *memStore) MarkSeen(_ context.Context, _ string, _ time.Duration) (bool, error)  { return false, nil }
+func (m *memStore) DeleteIndex(_ context.Context, _ string) error { return nil }
+func (m *memStore) PutSessionIndexes(_ context.Context, _, _ string, _ saml.IndexRecord) error {
+	return nil
+}
+func (m *memStore) DeleteSessionIndexes(_ context.Context, _, _ string) error { return nil }
+func (m *memStore) MarkSeen(_ context.Context, _ string, _ time.Duration) (bool, error) {
+	return false, nil
+}
 func (m *memStore) PutDomain(_ context.Context, domain, tid string) error {
 	m.domains[domain] = tid
 	return nil

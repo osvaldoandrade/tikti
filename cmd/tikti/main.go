@@ -20,6 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/osvaldoandrade/tikti/internal/app"
+	"github.com/osvaldoandrade/tikti/internal/httpidentity"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/pkg/config"
@@ -42,7 +43,13 @@ func main() {
 	// Wire SAML KeyHolder if SAML is enabled.
 	var kh *saml.KeyHolder
 	var samlMetrics *saml.Metrics
+	var clientIPResolver httpidentity.ClientIPResolver
 	if cfg.SAML.Enabled {
+		var resolverErr error
+		clientIPResolver, resolverErr = httpidentity.NewClientIPResolver(cfg.HTTP.TrustedProxyCIDRs)
+		if resolverErr != nil {
+			log.Fatalf("invalid trusted proxy configuration: %v", resolverErr)
+		}
 		if err := cfg.SAML.Validate(); err != nil {
 			log.Fatalf("saml config invalid: %v", err)
 		}
@@ -146,10 +153,20 @@ func main() {
 			Provider: provider,
 			Store:    samlStore,
 			Bridge:   bridge,
-			Clock:    saml.SystemClock{},
-			Cfg:      cfg.SAML,
-			Metrics:  samlMetrics,
-			Audit:    saml.LogEmitter{},
+			Authority: saml.NewSessionAuthority(
+				application.UserService.(saml.IDTokenAuthority),
+				cfg.IssuerBaseURL,
+				cfg.DefaultAudience,
+			),
+			Tenants:               application.TenantSvc,
+			SLOStateKey:           []byte(cfg.JwtSecret),
+			Clock:                 saml.SystemClock{},
+			Cfg:                   cfg.SAML,
+			Metrics:               samlMetrics,
+			Audit:                 saml.NewRedisAuditEmitter(application.Redis, 90*24*time.Hour, saml.LogEmitter{}),
+			AuthenticationLimiter: application.AuthenticationLimiter,
+			ResolveClientIP:       clientIPResolver.Resolve,
+			RateLimit:             cfg.HTTP.RateLimits.SAML,
 		})
 
 		r := chi.NewRouter()
@@ -161,7 +178,10 @@ func main() {
 			s.Get("/logout/{tid}", h.Logout)
 			s.Get("/slo", h.SLO)
 			s.Post("/slo", h.SLO)
-			s.Get("/discover", h.Discover)
+			if cfg.SAML.Discover.Enabled {
+				s.Get("/discover", h.Discover)
+				s.Post("/discover", h.Discover)
+			}
 		})
 		samlRouter = r
 		log.Println("SAML routes mounted at /saml/*")

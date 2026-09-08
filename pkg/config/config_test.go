@@ -9,8 +9,21 @@ import (
 	"time"
 )
 
+const testJWTSecret = "test-jwt-secret-with-at-least-32-bytes"
+
 func writeTempConfig(t *testing.T, body string) string {
 	t.Helper()
+	trimmed := strings.TrimSpace(body)
+	if !strings.Contains(body, "jwtSecret:") {
+		switch {
+		case trimmed == "{}":
+			body = "jwtSecret: " + testJWTSecret
+		case strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}"):
+			body = "{jwtSecret: " + testJWTSecret + ", " + strings.TrimPrefix(trimmed, "{")
+		default:
+			body += "\njwtSecret: " + testJWTSecret + "\n"
+		}
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tikti.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
@@ -53,7 +66,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	if cfg.RedisDB != 0 {
 		t.Fatalf("unexpected redis db: %d", cfg.RedisDB)
 	}
-	if cfg.JwtSecret != "supersecret" {
+	if cfg.JwtSecret != testJWTSecret {
 		t.Fatalf("unexpected secret")
 	}
 	if cfg.IssuerBaseURL != "http://localhost:8080" {
@@ -70,6 +83,22 @@ func TestLoadConfig_Defaults(t *testing.T) {
 	}
 	if cfg.TenantTargetDiscoveryV2 || len(cfg.TenantTargetDiscoveryV2PrincipalTenants) != 0 {
 		t.Fatalf("dynamic tenant discovery must default off: %#v", cfg.TenantTargetDiscoveryV2PrincipalTenants)
+	}
+}
+
+func TestLoadConfigRejectsMissingOrWeakJWTSecret(t *testing.T) {
+	for _, body := range []string{
+		"{}",
+		"jwtSecret: supersecret\n",
+		"jwtSecret: short\n",
+	} {
+		path := filepath.Join(t.TempDir(), "tikti.yaml")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "jwtSecret") {
+			t.Fatalf("weak JWT secret was accepted for %q: %v", body, err)
+		}
 	}
 }
 
@@ -171,7 +200,7 @@ func TestLoadConfigReadsRuntimeSecretsFromFiles(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	secrets := map[string]string{
-		"JWT_SECRET_FILE":       "jwt-secret",
+		"JWT_SECRET_FILE":       testJWTSecret,
 		"API_KEY_FILE":          "api-key",
 		"REDIS_PASSWORD_FILE":   "redis-password",
 		"JWKS_PRIVATE_KEY_FILE": "private-key",
@@ -188,7 +217,7 @@ func TestLoadConfigReadsRuntimeSecretsFromFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if cfg.JwtSecret != "jwt-secret" || cfg.ApiKey != "api-key" ||
+	if cfg.JwtSecret != testJWTSecret || cfg.ApiKey != "api-key" ||
 		cfg.RedisPassword != "redis-password" || cfg.JwksPrivateKey != "private-key" {
 		t.Fatalf("runtime secrets were not loaded from files")
 	}
@@ -507,6 +536,43 @@ forwardAuth:
 	}
 }
 
+func TestAuthenticationBoundaryDefaultsAndCannotBeLoosened(t *testing.T) {
+	cfg, err := LoadConfig(writeTempConfig(t, "{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := DefaultAuthenticationRateLimits(); !reflect.DeepEqual(cfg.HTTP.RateLimits, want) {
+		t.Fatalf("authentication defaults = %+v, want %+v", cfg.HTTP.RateLimits, want)
+	}
+
+	for name, body := range map[string]string{
+		"more requests": `
+http:
+  rateLimits:
+    login: {requests: 6, windowSeconds: 60}
+`,
+		"shorter window": `
+http:
+  rateLimits:
+    saml: {requests: 10, windowSeconds: 59}
+`,
+		"unbounded IPv4 proxy": `
+http:
+  trustedProxyCIDRs: ["0.0.0.0/0"]
+`,
+		"unbounded IPv6 proxy": `
+http:
+  trustedProxyCIDRs: ["::/0"]
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, loadErr := LoadConfig(writeTempConfig(t, body)); loadErr == nil {
+				t.Fatal("weakened authentication boundary was accepted")
+			}
+		})
+	}
+}
+
 func TestSAMLConfig_RequiresKeysWhenEnabled(t *testing.T) {
 	path := writeTempConfig(t, `
 saml:
@@ -530,6 +596,10 @@ func TestSAMLConfig_ValidatesExactPlatformAdministrators(t *testing.T) {
 			EntityID:        "https://console.example.com/saml",
 			ACSURL:          "https://console.example.com/saml/acs",
 		},
+		ACS: ACSConfig{
+			DeliveryMode: "cookie", CookieSameSite: "Lax", CookieSecure: true,
+			CookieHTTPOnly: true, SessionTTL: 3600, PostLoginURL: "/dashboard",
+		},
 	}
 	base.PlatformAdministrators = []SAMLPlatformAdministrator{{
 		TenantID: "local-tenant",
@@ -541,6 +611,7 @@ func TestSAMLConfig_ValidatesExactPlatformAdministrators(t *testing.T) {
 
 	for name, administrators := range map[string][]SAMLPlatformAdministrator{
 		"invalid tenant":      {{TenantID: "Local-Tenant", Email: "owner@example.com"}},
+		"workload tenant":     {{TenantID: "bereia", Email: "owner@example.com"}},
 		"non canonical email": {{TenantID: "local-tenant", Email: "Owner@example.com"}},
 		"invalid email":       {{TenantID: "local-tenant", Email: "owner"}},
 		"duplicate": {
@@ -553,6 +624,54 @@ func TestSAMLConfig_ValidatesExactPlatformAdministrators(t *testing.T) {
 			candidate.PlatformAdministrators = administrators
 			if err := candidate.Validate(); err == nil {
 				t.Fatal("invalid platform administrator configuration was accepted")
+			}
+		})
+	}
+}
+
+func TestSAMLConfig_RejectsUnsafeBrowserSessionBoundary(t *testing.T) {
+	valid := SAMLConfig{
+		Enabled: true,
+		SP: SPConfig{
+			SigningKeyPath: "/saml/sp.key", SigningCertPath: "/saml/sp.crt",
+			EntityID: "https://console.example.com/saml", ACSURL: "https://console.example.com/saml/acs",
+			SLOURL: "https://console.example.com/saml/slo",
+		},
+		ACS: ACSConfig{
+			DeliveryMode: "cookie", CookieName: "tikti_idt", CookieSameSite: "Lax",
+			CookieSecure: true, CookieHTTPOnly: true, SessionTTL: 3600, PostLoginURL: "/dashboard",
+		},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("secure SAML config rejected: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*SAMLConfig){
+		"HTTP cookie":       func(c *SAMLConfig) { c.ACS.CookieSecure = false },
+		"script cookie":     func(c *SAMLConfig) { c.ACS.CookieHTTPOnly = false },
+		"SameSite none":     func(c *SAMLConfig) { c.ACS.CookieSameSite = "None" },
+		"unknown SameSite":  func(c *SAMLConfig) { c.ACS.CookieSameSite = "invalid" },
+		"zero TTL":          func(c *SAMLConfig) { c.ACS.SessionTTL = 0 },
+		"unbounded TTL":     func(c *SAMLConfig) { c.ACS.SessionTTL = 3601 },
+		"domain cookie":     func(c *SAMLConfig) { c.ACS.CookieDomain = ".example.com" },
+		"absolute redirect": func(c *SAMLConfig) { c.ACS.PostLoginURL = "https://evil.example.com/dashboard" },
+		"network redirect":  func(c *SAMLConfig) { c.ACS.PostLoginURL = "//evil.example.com/dashboard" },
+		"backslash redirect": func(c *SAMLConfig) {
+			c.ACS.PostLoginURL = `/\\evil.example.com/dashboard`
+		},
+		"redirect fragment": func(c *SAMLConfig) { c.ACS.PostLoginURL = "/dashboard#token" },
+		"HTTP ACS":          func(c *SAMLConfig) { c.SP.ACSURL = "http://console.example.com/saml/acs" },
+		"hostless ACS":      func(c *SAMLConfig) { c.SP.ACSURL = "https:opaque" },
+		"credentialed ACS":  func(c *SAMLConfig) { c.SP.ACSURL = "https://user:password@console.example.com/saml/acs" },
+		"fragmented ACS":    func(c *SAMLConfig) { c.SP.ACSURL = "https://console.example.com/saml/acs#fragment" },
+		"queried entity ID": func(c *SAMLConfig) { c.SP.EntityID = "https://console.example.com/saml?entity=1" },
+		"insecure SLO":      func(c *SAMLConfig) { c.SP.SLOURL = "http://console.example.com/saml/slo" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if err := candidate.Validate(); err == nil {
+				t.Fatal("unsafe SAML browser boundary was accepted")
 			}
 		})
 	}
@@ -627,9 +746,10 @@ saml:
   acs:
     deliveryMode: cookie
     cookieName: tikti_saml
-    cookieDomain: ".example.com"
+    cookieDomain: ""
     cookieSameSite: Lax
     cookieSecure: true
+    cookieHTTPOnly: true
     sessionTTL: 3600
   idp:
     metadataURL: "https://idp.example.com/metadata"

@@ -41,7 +41,7 @@ func TestTenantScopedTokenClaimsIsolateBereia(t *testing.T) {
 	}}
 	svc := NewUserService(users, memberships, roles, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid",
 		WithTenantScopedTokenClaimsV1(true, []string{"bereia"}, tenants)).(*userService)
-	idToken := signIDToken(t, "secret", user.Email)
+	idToken := signCurrentIDToken(t, "secret", user.Email, "https://issuer", "tikti", 4)
 	for _, alias := range []string{" bereia ", "Bereia", " BEREIA ", "beReIa", "\tBeReIa\n"} {
 		if response, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{IdToken: idToken, Audience: "bereia-api", TenantID: alias, Scopes: []string{"storifly:admin"}}); err != domain.ErrInvalidTenant || response != nil {
 			t.Fatalf("protected tenant alias %q bypassed strict path: response=%+v err=%v", alias, response, err)
@@ -92,7 +92,7 @@ func TestTenantScopedTokenClaimsPreserveLegacyOutsideCanary(t *testing.T) {
 		{name: "Bereia alias flag off", target: " BEREIA ", want: "BEREIA"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			user := &domain.User{Id: "user-1", Email: "admin@example.com", Status: domain.UserStatusActive, Role: domain.RoleAdmin}
+			user := &domain.User{Id: "user-1", Email: "admin@example.com", Status: domain.UserStatusActive, Role: domain.RoleAdmin, CompanyId: testStringPointer(test.want)}
 			memberships := &mockMembershipRepo{listTenantIDsByUser: func(context.Context, string) ([]string, error) {
 				if test.target == "" {
 					return []string{"storifly", "code-company"}, nil

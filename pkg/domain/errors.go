@@ -9,6 +9,12 @@ var (
 	ErrInvalidCreds = errors.New("invalid credentials")
 	// ErrPasswordChangeRequired is returned without issuing a normal session.
 	ErrPasswordChangeRequired = errors.New("password change required")
+	// ErrRateLimited rejects repeated authentication attempts without revealing
+	// whether the supplied principal exists.
+	ErrRateLimited = errors.New("too many attempts")
+	// ErrAuthenticationUnavailable hides infrastructure and topology details at
+	// public authentication boundaries while preserving a retryable failure.
+	ErrAuthenticationUnavailable = errors.New("authentication unavailable")
 	// ErrVersionConflict protects mutable directory records from lost updates.
 	ErrVersionConflict = errors.New("version conflict")
 	// ErrGroupMutationsDisabled keeps the initially dark Groups rollout read-only.
@@ -17,6 +23,9 @@ var (
 	ErrGroupExists = errors.New("group already exists")
 	// ErrDirectoryInvariant signals corrupt or ambiguous indexed identity data.
 	ErrDirectoryInvariant = errors.New("identity directory invariant violated")
+	// ErrDirectoryBackfillInProgress keeps all but the distributed migration
+	// owner from serving Identity while legacy data is being projected.
+	ErrDirectoryBackfillInProgress = errors.New("identity directory backfill in progress")
 	// ErrInvalidToken indicates the supplied token is malformed or invalid.
 	ErrInvalidToken = errors.New("invalid token")
 	// ErrInvalidAudience indicates the supplied audience is missing or not allowed.

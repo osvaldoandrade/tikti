@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,7 @@ func TestUserServiceSpec_TokenExchange_WorkerClaimsContract(t *testing.T) {
 		Role:         domain.RoleCompanyEmployee,
 		Status:       domain.UserStatusActive,
 		TokenVersion: 7,
+		CompanyId:    testStringPointer("tenant-1"),
 	}
 
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
@@ -134,7 +136,7 @@ func TestUserServiceSpec_TokenExchange_WorkerClaimsContract(t *testing.T) {
 	}
 
 	svc := NewUserService(repo, membership, nil, clientSvc, "secret", "https://api.storifly.ai", "tikti", makePEMKey(t), "kid-2026").(*userService)
-	idToken := signIDToken(t, "secret", "user@company.com")
+	idToken := signCurrentIDToken(t, "secret", "user@company.com", "https://api.storifly.ai", "tikti", 7)
 
 	resp, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
 		IdToken:    idToken,
@@ -142,7 +144,6 @@ func TestUserServiceSpec_TokenExchange_WorkerClaimsContract(t *testing.T) {
 		Scopes:     []string{"codeq:claim", "codeq:result"},
 		EventTypes: []string{"render_video", "generate_master"},
 		TTLSeconds: 1800,
-		Subject:    "worker-1",
 		TenantID:   "tenant-1",
 	})
 	if err != nil {
@@ -168,7 +169,7 @@ func TestUserServiceSpec_TokenExchange_WorkerClaimsContract(t *testing.T) {
 		t.Fatalf("token must validate against public key/issuer/audience: %v", err)
 	}
 
-	if claims["sub"] != "worker-1" {
+	if claims["sub"] != "user-1" {
 		t.Fatalf("unexpected sub: %v", claims["sub"])
 	}
 	if claims["tid"] != "tenant-1" {
@@ -221,6 +222,7 @@ func TestUserServiceSpec_TokenExchange_DefaultSubject_MustBeValidatable(t *testi
 				Role:         domain.RoleCompanyEmployee,
 				Status:       domain.UserStatusActive,
 				TokenVersion: 2,
+				CompanyId:    testStringPointer("tenant-1"),
 			}, nil
 		case "user-1":
 			// Simulates repo keyed by email only.
@@ -233,11 +235,11 @@ func TestUserServiceSpec_TokenExchange_DefaultSubject_MustBeValidatable(t *testi
 		return []string{"tenant-1"}, nil
 	}
 	clientSvc.getClientFn = func(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
-		return &domain.Client{Id: clientID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
+		return &domain.Client{Id: clientID, TenantId: tenantID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
 	}
 
 	svc := NewUserService(repo, membership, nil, clientSvc, "secret", "https://api.storifly.ai", "tikti", makePEMKey(t), "kid").(*userService)
-	idToken := signIDToken(t, "secret", "user@company.com")
+	idToken := signCurrentIDToken(t, "secret", "user@company.com", "https://api.storifly.ai", "tikti", 2)
 
 	resp, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
 		IdToken:  idToken,
@@ -360,6 +362,12 @@ func TestUserServiceSpec_ResetPassword_RejectsMalformedPayload(t *testing.T) {
 	if err != domain.ErrInvalidArgument {
 		t.Fatalf("expected ErrInvalidArgument for blank newPassword, got %v", err)
 	}
+	for length := 1; length < directoryPasswordMinimum; length++ {
+		err = svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "oob-1", NewPassword: strings.Repeat("x", length)})
+		if err != domain.ErrInvalidArgument {
+			t.Fatalf("expected ErrInvalidArgument for %d-byte password, got %v", length, err)
+		}
+	}
 	if consumeCalls != 0 {
 		t.Fatalf("consume must not run for malformed payload, got %d calls", consumeCalls)
 	}
@@ -413,6 +421,7 @@ func TestUserServiceSpec_TokenExchange_TTLBoundaries(t *testing.T) {
 			Role:         domain.RoleCompanyEmployee,
 			Status:       domain.UserStatusActive,
 			TokenVersion: 1,
+			CompanyId:    testStringPointer("tenant-1"),
 		}, nil
 	}
 	membership.listTenantIDsByUser = func(ctx context.Context, userID string) ([]string, error) {
@@ -423,7 +432,7 @@ func TestUserServiceSpec_TokenExchange_TTLBoundaries(t *testing.T) {
 	}
 
 	svc := NewUserService(repo, membership, nil, clientSvc, "secret", "https://api.storifly.ai", "tikti", makePEMKey(t), "kid").(*userService)
-	idToken := signIDToken(t, "secret", "user@company.com")
+	idToken := signCurrentIDToken(t, "secret", "user@company.com", "https://api.storifly.ai", "tikti", 1)
 
 	cases := []struct {
 		name      string
@@ -432,7 +441,7 @@ func TestUserServiceSpec_TokenExchange_TTLBoundaries(t *testing.T) {
 	}{
 		{name: "default_when_zero", ttlIn: 0, ttlExpect: 3600},
 		{name: "default_when_negative", ttlIn: -10, ttlExpect: 3600},
-		{name: "max_cap", ttlIn: 99999, ttlExpect: 86400},
+		{name: "request_max_is_capped_by_source_session", ttlIn: 99999, ttlExpect: 3600},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -447,10 +456,81 @@ func TestUserServiceSpec_TokenExchange_TTLBoundaries(t *testing.T) {
 			if err != nil {
 				t.Fatalf("expected token exchange success, got %v", err)
 			}
-			if resp.ExpiresIn != tc.ttlExpect {
-				t.Fatalf("expected expiresIn=%d, got %d", tc.ttlExpect, resp.ExpiresIn)
+			if resp.ExpiresIn < tc.ttlExpect-2 || resp.ExpiresIn > tc.ttlExpect {
+				t.Fatalf("expected expiresIn near %d, got %d", tc.ttlExpect, resp.ExpiresIn)
 			}
 		})
+	}
+}
+
+func TestUserServiceSpec_TokenExchange_InheritsSAMLExpiryAndAMR(t *testing.T) {
+	repo := &mockUserRepo{}
+	membership := &mockMembershipRepo{}
+	clientSvc := &mockClientService{}
+	tenantID := "tenant-1"
+	user := &domain.User{
+		Id: "u1", Email: "user@company.com", Role: domain.RoleCompanyEmployee,
+		Status: domain.UserStatusActive, TokenVersion: 1, CompanyId: &tenantID,
+		AuthSource: domain.AuthSourceSAML,
+	}
+	repo.findByEmailFn = func(context.Context, string) (*domain.User, error) { return user, nil }
+	membership.listTenantIDsByUser = func(context.Context, string) ([]string, error) {
+		return []string{tenantID}, nil
+	}
+	clientSvc.getClientFn = func(context.Context, string, string) (*domain.Client, error) {
+		return &domain.Client{Id: "codeq-worker", Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
+	}
+	svc := NewUserService(repo, membership, nil, clientSvc, "secret", "https://api.storifly.ai", "tikti", makePEMKey(t), "kid").(*userService)
+	deadline := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
+	idToken, _, err := svc.IssueIDTokenWithAMRUntil(user, []string{" SAML ", "saml"}, "", deadline)
+	if err != nil {
+		t.Fatalf("issue short SAML idToken: %v", err)
+	}
+
+	response, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idToken, Audience: "codeq-worker", TenantID: tenantID,
+		Scopes: []string{"codeq:claim"}, EventTypes: []string{"render_video"}, TTLSeconds: 86400,
+	})
+	if err != nil {
+		t.Fatalf("exchange short SAML idToken: %v", err)
+	}
+	if response.ExpiresIn < 298 || response.ExpiresIn > 300 {
+		t.Fatalf("access token ExpiresIn = %d, want source-bound lifetime near 300", response.ExpiresIn)
+	}
+	key, err := svc.getRSAPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := utils.ValidateRS256(response.AccessToken, &key.(*rsa.PrivateKey).PublicKey, "https://api.storifly.ai", "codeq-worker")
+	if err != nil {
+		t.Fatalf("validate exchanged access token: %v", err)
+	}
+	if got := int64(claims["exp"].(float64)); got != deadline.Unix() {
+		t.Fatalf("access token exp = %d, want source exp %d", got, deadline.Unix())
+	}
+	amr, ok := claims["amr"].([]interface{})
+	if !ok || len(amr) != 1 || amr[0] != "saml" {
+		t.Fatalf("canonical SAML provenance missing from access token: %#v", claims["amr"])
+	}
+
+	user.AuthSource = domain.AuthSourcePassword
+	passwordIDToken, _, err := svc.issueIDToken(user, nil)
+	if err != nil {
+		t.Fatalf("issue password idToken: %v", err)
+	}
+	passwordResponse, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: passwordIDToken, Audience: "codeq-worker", TenantID: tenantID,
+		Scopes: []string{"codeq:claim"}, EventTypes: []string{"render_video"}, TTLSeconds: 120,
+	})
+	if err != nil {
+		t.Fatalf("exchange password idToken: %v", err)
+	}
+	passwordClaims, err := utils.ValidateRS256(passwordResponse.AccessToken, &key.(*rsa.PrivateKey).PublicKey, "https://api.storifly.ai", "codeq-worker")
+	if err != nil {
+		t.Fatalf("validate password access token: %v", err)
+	}
+	if _, exists := passwordClaims["amr"]; exists {
+		t.Fatalf("password token invented authentication provenance: %#v", passwordClaims["amr"])
 	}
 }
 
@@ -469,6 +549,7 @@ func TestUserServiceSpec_TokenExchange_EventTypesContract(t *testing.T) {
 			Role:         domain.RoleCompanyEmployee,
 			Status:       domain.UserStatusActive,
 			TokenVersion: 1,
+			CompanyId:    testStringPointer("tenant-1"),
 		}, nil
 	}
 	membership.listTenantIDsByUser = func(ctx context.Context, userID string) ([]string, error) {
@@ -478,7 +559,7 @@ func TestUserServiceSpec_TokenExchange_EventTypesContract(t *testing.T) {
 		return &domain.Client{Id: clientID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
 	}
 	svc := NewUserService(repo, membership, nil, clientSvc, "secret", "https://api.storifly.ai", "tikti", makePEMKey(t), "kid").(*userService)
-	idToken := signIDToken(t, "secret", "user@company.com")
+	idToken := signCurrentIDToken(t, "secret", "user@company.com", "https://api.storifly.ai", "tikti", 1)
 
 	_, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
 		IdToken:  idToken,

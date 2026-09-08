@@ -57,10 +57,11 @@ Request:
   "scopes": ["codeq:claim","codeq:heartbeat","codeq:abandon","codeq:nack","codeq:result","codeq:subscribe"],
   "eventTypes": ["render_video","generate_master"],
   "ttlSeconds": 3600,
-  "subject": "worker-1",
   "tenantId": "tenant-1"
 }
 ```
+
+The resulting access-token subject is the authenticated idToken subject and is not caller-selectable.
 
 Response:
 
@@ -105,7 +106,7 @@ curl -sS -X POST "https://api.storifly.ai/v1/accounts/signInWithPassword" \
 curl -sS -X POST "https://api.storifly.ai/v1/accounts/token/exchange" \
   -H "X-API-Key: API_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"idToken":"<idToken>","audience":"codeq-worker","scopes":["codeq:claim"],"eventTypes":["render_video"],"ttlSeconds":3600,"subject":"worker-1","tenantId":"tenant-1"}'
+  -d '{"idToken":"<idToken>","audience":"codeq-worker","scopes":["codeq:claim"],"eventTypes":["render_video"],"ttlSeconds":3600,"tenantId":"tenant-1"}'
 ```
 
 ## Failure modes

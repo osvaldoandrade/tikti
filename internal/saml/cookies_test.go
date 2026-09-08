@@ -77,7 +77,7 @@ func TestIDTokenCookie_Attributes(t *testing.T) {
 	h := cookieHandler()
 	w := httptest.NewRecorder()
 
-	h.setIDTokenCookie(w, "jwt.token.value")
+	h.setIDTokenCookie(w, "jwt.token.value", 3600)
 
 	cookies := w.Result().Cookies()
 	var found *http.Cookie

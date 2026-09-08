@@ -22,6 +22,19 @@ if ! rg -q '^objectStorageBrowser:$' <<<"$baseline_config"; then
   echo "object storage browser config must render disabled by default" >&2
   exit 1
 fi
+if ! rg -q '^  platformAdministrators: \[\]$' <<<"$baseline_config"; then
+  echo "SAML platform administrators must render empty by default" >&2
+  exit 1
+fi
+
+saml_platform_admin=$(helm template storage-sts "$chart" \
+  --set 'saml.platformAdministrators[0].tenantId=local-tenant' \
+  --set 'saml.platformAdministrators[0].email=owner@example.com')
+saml_platform_admin_config=$(yq ea '[select(.kind == "ConfigMap") | .data."tikti.yaml"] | .[0]' - <<<"$saml_platform_admin")
+if ! rg -Fq 'platformAdministrators: [{"email":"owner@example.com","tenantId":"local-tenant"}]' <<<"$saml_platform_admin_config"; then
+  echo "SAML platform administrator provenance was not rendered" >&2
+  exit 1
+fi
 for contract in \
   'deleteEnabled: false' \
   'deleteCohortTenants: []'; do

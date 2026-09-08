@@ -221,7 +221,6 @@ func tokenCmd(profileName *string, outputJSON *bool) *cobra.Command {
 		scopes     string
 		eventTypes string
 		ttl        int
-		subject    string
 		tenant     string
 	)
 	cmd := &cobra.Command{Use: "token", Short: "Token operations"}
@@ -249,7 +248,6 @@ func tokenCmd(profileName *string, outputJSON *bool) *cobra.Command {
 				"scopes":     splitCSV(scopes),
 				"eventTypes": splitCSV(eventTypes),
 				"ttlSeconds": ttl,
-				"subject":    subject,
 				"tenantId":   tenant,
 			}
 			resp, err := doJSONWithAPIKey(http.MethodPost, prof.BaseURL+"/v1/accounts/token/exchange", "", prof.ApiKey, req)
@@ -275,7 +273,6 @@ func tokenCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	exchange.Flags().StringVar(&scopes, "scopes", "", "Comma-separated scopes")
 	exchange.Flags().StringVar(&eventTypes, "event-types", "", "Comma-separated event types")
 	exchange.Flags().IntVar(&ttl, "ttl", 3600, "TTL in seconds")
-	exchange.Flags().StringVar(&subject, "subject", "", "Subject")
 	exchange.Flags().StringVar(&tenant, "tenant", "", "Tenant id")
 	cmd.AddCommand(exchange)
 	show := &cobra.Command{
@@ -307,7 +304,8 @@ func tokenCmd(profileName *string, outputJSON *bool) *cobra.Command {
 }
 
 func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
-	var email, temporaryPassword string
+	var email string
+	var temporaryPasswordStdin bool
 	cmd := &cobra.Command{Use: "user", Short: "User administration"}
 	get := &cobra.Command{
 		Use:   "get",
@@ -345,8 +343,9 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if email == "" {
 				email = prompt("Email", "", false)
 			}
-			if temporaryPassword == "" {
-				temporaryPassword = prompt("Temporary password", "", true)
+			temporaryPassword, err := readTemporaryPassword(temporaryPasswordStdin)
+			if err != nil {
+				return err
 			}
 			token, err := tenantAdministrationAccessToken(prof)
 			if err != nil {
@@ -361,7 +360,7 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 		},
 	}
 	create.Flags().StringVar(&email, "email", "", "User email")
-	create.Flags().StringVar(&temporaryPassword, "temporary-password", "", "One-time password that must be changed before sign-in")
+	create.Flags().BoolVar(&temporaryPasswordStdin, "temporary-password-stdin", false, "Read the one-time password from standard input")
 	cmd.AddCommand(create)
 
 	del := &cobra.Command{
@@ -446,6 +445,30 @@ func userCmd(profileName *string, outputJSON *bool) *cobra.Command {
 	cmd.AddCommand(suspend)
 	cmd.AddCommand(activate)
 	return cmd
+}
+
+var readTemporaryPassword = func(fromStdin bool) (string, error) {
+	if fromStdin {
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 1025))
+		if err != nil {
+			return "", errors.New("could not read temporary password from stdin")
+		}
+		value := strings.TrimSuffix(strings.TrimSuffix(string(raw), "\n"), "\r")
+		if value == "" || len(value) > 1024 || strings.ContainsAny(value, "\r\n") {
+			return "", errors.New("temporary password from stdin is invalid")
+		}
+		return value, nil
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return "", errors.New("temporary password requires an interactive terminal or --temporary-password-stdin")
+	}
+	fmt.Print("Temporary password: ")
+	raw, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil || len(raw) == 0 {
+		return "", errors.New("temporary password is required")
+	}
+	return string(raw), nil
 }
 
 func tenantCmd(profileName *string, outputJSON *bool) *cobra.Command {
@@ -867,6 +890,7 @@ func configPath() string {
 func loadConfig() (*configFile, string, error) {
 	path := configPath()
 	cfg := &configFile{Profiles: map[string]*profileEntry{}}
+	// #nosec G304 -- path is derived from the current user's fixed Tikti config location.
 	if b, err := os.ReadFile(path); err == nil {
 		if err := yaml.Unmarshal(b, cfg); err != nil {
 			return nil, path, &cliError{msg: err.Error(), exit: 3}

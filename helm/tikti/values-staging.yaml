@@ -19,6 +19,7 @@ image:
 
 saml:
   enabled: true
+  platformAdministrators: []
   # Provide the name of a pre-provisioned Secret containing sp.key and sp.crt.
   # Use external-secrets-operator or a manual kubectl create secret.
   existingSecret: ""

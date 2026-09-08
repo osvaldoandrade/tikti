@@ -142,6 +142,24 @@ func TestSPMetadata_ContainsBothKeyUses(t *testing.T) {
 // IdP Metadata parser tests
 // ---------------------------------------------------------------------------
 
+func TestPickSSOURLRequiresAbsoluteCredentialFreeHTTPSForEveryBinding(t *testing.T) {
+	for _, binding := range []string{BindingHTTPRedirect, BindingHTTPPOST} {
+		for _, location := range []string{
+			"http://idp.example.com/sso",
+			"https:opaque",
+			"https://user:password@idp.example.com/sso",
+			"https://idp.example.com/sso#fragment",
+		} {
+			if _, err := pickSSOURL([]singleSignOnService{{Binding: binding, Location: location}}); !errors.Is(err, ErrMetadataInsecureURL) {
+				t.Fatalf("binding=%q location=%q error=%v", binding, location, err)
+			}
+		}
+		if got, err := pickSSOURL([]singleSignOnService{{Binding: binding, Location: "https://idp.example.com/sso?tenant=code"}}); err != nil || got == "" {
+			t.Fatalf("valid binding=%q rejected: url=%q error=%v", binding, got, err)
+		}
+	}
+}
+
 // loadFixture reads a file from testdata/ relative to this test file.
 func loadFixture(t *testing.T, name string) []byte {
 	t.Helper()
@@ -262,5 +280,30 @@ func TestParseIdP_UnsupportedBinding_Rejected(t *testing.T) {
 	}
 	if !errors.Is(err, ErrMetadataUnsupportedBind) {
 		t.Errorf("expected ErrMetadataUnsupportedBind, got: %v", err)
+	}
+}
+
+func TestPickSLOURLNeverSelectsInsecureSupportedBinding(t *testing.T) {
+	tests := []struct {
+		name    string
+		binding string
+	}{
+		{name: "redirect", binding: BindingHTTPRedirect},
+		{name: "post", binding: BindingHTTPPOST},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			services := []singleLogoutService{
+				{Binding: tc.binding, Location: "http://idp.example.com/slo"},
+				{Binding: tc.binding, Location: "https://idp.example.com/slo"},
+			}
+			if got := pickSLOURL(services); got != "https://idp.example.com/slo" {
+				t.Fatalf("pickSLOURL() = %q, want secure endpoint", got)
+			}
+			if got := pickSLOURL(services[:1]); got != "" {
+				t.Fatalf("pickSLOURL() = %q, want optional SLO disabled", got)
+			}
+		})
 	}
 }

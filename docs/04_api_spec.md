@@ -370,12 +370,11 @@ Request:
   "scopes": ["codeq:claim","codeq:heartbeat","codeq:result"],
   "eventTypes": ["render_video"],
   "ttlSeconds": 3600,
-  "subject": "worker-1",
   "tenantId": "tenant-1"
 }
 ```
 
-The server verifies the `idToken` using HS256 or RS256 depending on configuration. `tenantId` must reference a membership belonging to the token subject. `audience` must be a registered client identifier. `scopes` must be a subset of the union of role permissions and client-allowed scopes. `eventTypes` are validated against tenant or client policy.
+The server verifies the `idToken` using HS256 or RS256 depending on configuration. The access-token subject is always copied from that authenticated identity; callers cannot override it. `tenantId` must have current effective access for the token subject. `audience` must be a registered client identifier. `scopes` must be a subset of the union of effective role permissions and client-allowed scopes. `eventTypes` are validated against tenant or client policy.
 
 Response 200:
 

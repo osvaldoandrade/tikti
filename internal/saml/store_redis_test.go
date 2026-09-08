@@ -206,6 +206,35 @@ func TestPutIdP_Persists(t *testing.T) {
 	}
 }
 
+func TestCompareAndSwapIdPRejectsStaleReplaceAndDelete(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	original := IdPRecord{TenantID: "t-cas", Generation: "generation-1", EntityID: "https://old.example/entity"}
+	if err := store.PutIdP(ctx, original); err != nil {
+		t.Fatal(err)
+	}
+	refreshed := original
+	refreshed.EntityID = "https://old.example/refreshed"
+	if swapped, err := store.CompareAndSwapIdP(ctx, original, refreshed); err != nil || !swapped {
+		t.Fatalf("current refresh swap=%t err=%v", swapped, err)
+	}
+	newer := IdPRecord{TenantID: original.TenantID, Generation: "generation-2", EntityID: "https://new.example/entity"}
+	if err := store.PutIdP(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+	if swapped, err := store.CompareAndSwapIdP(ctx, refreshed, original); err != nil || swapped {
+		t.Fatalf("stale replacement swap=%t err=%v", swapped, err)
+	}
+	if err := store.DeleteIdP(ctx, original.TenantID); err != nil {
+		t.Fatal(err)
+	}
+	deletedRefresh := newer
+	deletedRefresh.EntityID = "https://new.example/refreshed"
+	if swapped, err := store.CompareAndSwapIdP(ctx, newer, deletedRefresh); err != nil || swapped {
+		t.Fatalf("deleted trust was recreated: swap=%t err=%v", swapped, err)
+	}
+}
+
 // TestGetIdP_NotFound_ErrSentinel verifies that GetIdP returns the typed
 // sentinel error when the record does not exist.
 func TestGetIdP_NotFound_ErrSentinel(t *testing.T) {
@@ -275,6 +304,112 @@ func TestPutIndex_TTLBoundByNotOnOrAfter(t *testing.T) {
 	_, err = store.GetIndex(ctx, "user@example.com")
 	if err == nil {
 		t.Error("expected error after TTL expiry, got nil")
+	}
+}
+
+func TestPutSessionIndexes_AtomicUnderConcurrentReplacement(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	const subjectKey = "v2:subject:shared"
+	const nameIDKey = "v2:nameid:shared"
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, suffix := range []string{"a", "b"} {
+		suffix := suffix
+		go func() {
+			<-start
+			errs <- store.PutSessionIndexes(ctx, subjectKey, nameIDKey, IndexRecord{
+				TenantID:     "t-001",
+				Subject:      "user-001",
+				NameID:       "user@example.com",
+				Email:        "user@example.com",
+				SessionIndex: "session-" + suffix,
+				NotOnOrAfter: time.Now().Add(time.Hour),
+			})
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("PutSessionIndexes: %v", err)
+		}
+	}
+
+	bySubject, err := store.GetIndex(ctx, subjectKey)
+	if err != nil {
+		t.Fatalf("GetIndex(subject): %v", err)
+	}
+	byNameID, err := store.GetIndex(ctx, nameIDKey)
+	if err != nil {
+		t.Fatalf("GetIndex(nameID): %v", err)
+	}
+	if bySubject.SessionIndex != byNameID.SessionIndex {
+		t.Fatalf("torn session index pair: subject=%q nameID=%q", bySubject.SessionIndex, byNameID.SessionIndex)
+	}
+}
+
+func TestPutSessionIndexes_RedisFailureLeavesNoPartialPair(t *testing.T) {
+	store, mr := newTestStore(t)
+	ctx := context.Background()
+	mr.SetError("LOADING test failure")
+	err := store.PutSessionIndexes(ctx, "v2:subject:failure", "v2:nameid:failure", IndexRecord{
+		TenantID:     "t-001",
+		Subject:      "user-001",
+		NameID:       "user@example.com",
+		Email:        "user@example.com",
+		SessionIndex: "session-failure",
+		NotOnOrAfter: time.Now().Add(time.Hour),
+	})
+	if err == nil {
+		t.Fatal("PutSessionIndexes unexpectedly succeeded while Redis was failing")
+	}
+	mr.SetError("")
+	for _, key := range []string{"v2:subject:failure", "v2:nameid:failure"} {
+		if _, err := store.GetIndex(ctx, key); err == nil {
+			t.Fatalf("partial session index %q persisted after failed transaction", key)
+		}
+	}
+}
+
+func TestDeleteSessionIndexes_AtomicUnderConcurrentReplacement(t *testing.T) {
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+	const subjectKey = "v2:subject:delete-race"
+	const nameIDKey = "v2:nameid:delete-race"
+	record := IndexRecord{
+		TenantID:     "t-001",
+		Subject:      "user-001",
+		NameID:       "user@example.com",
+		Email:        "user@example.com",
+		SessionIndex: "session-current",
+		NotOnOrAfter: time.Now().Add(time.Hour),
+	}
+	if err := store.PutSessionIndexes(ctx, subjectKey, nameIDKey, record); err != nil {
+		t.Fatalf("seed session indexes: %v", err)
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	go func() {
+		<-start
+		errs <- store.DeleteSessionIndexes(ctx, subjectKey, nameIDKey)
+	}()
+	go func() {
+		<-start
+		errs <- store.PutSessionIndexes(ctx, subjectKey, nameIDKey, record)
+	}()
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("session index transaction: %v", err)
+		}
+	}
+
+	_, subjectErr := store.GetIndex(ctx, subjectKey)
+	_, nameIDErr := store.GetIndex(ctx, nameIDKey)
+	if (subjectErr == nil) != (nameIDErr == nil) {
+		t.Fatalf("torn session index pair after delete/write race: subjectErr=%v nameIDErr=%v", subjectErr, nameIDErr)
 	}
 }
 

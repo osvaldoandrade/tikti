@@ -23,6 +23,16 @@ redis.call('DEL', KEYS[1])
 return v
 `
 
+// luaCompareAndSwapIdP never creates a missing trust record. Comparing the
+// complete encoded record, which contains an administrator-generated
+// generation, prevents stale refreshes as well as delete/recreate ABA races.
+const luaCompareAndSwapIdP = `
+local current = redis.call('GET', KEYS[1])
+if not current or current ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2])
+return 1
+`
+
 // RedisStore implements Store using Redis with Lua-script atomics and
 // msgpack-encoded values.
 type RedisStore struct {
@@ -95,6 +105,29 @@ func (s *RedisStore) PutIdP(ctx context.Context, rec IdPRecord) error {
 		return err
 	}
 	return s.rdb.Set(ctx, rkeys.SAMLIdPPrefix+rec.TenantID, data, 0).Err()
+}
+
+// CompareAndSwapIdP updates metadata only if the complete trust record read by
+// the refresher is still current. A concurrent admin PUT or DELETE always wins.
+func (s *RedisStore) CompareAndSwapIdP(ctx context.Context, expected IdPRecord, replacement IdPRecord) (bool, error) {
+	if expected.TenantID == "" || replacement.TenantID != expected.TenantID || replacement.Generation != expected.Generation {
+		return false, errors.New("saml: invalid IdP compare-and-swap")
+	}
+	expectedData, err := msgpack.Marshal(expected)
+	if err != nil {
+		return false, err
+	}
+	replacementData, err := msgpack.Marshal(replacement)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.rdb.Eval(ctx, luaCompareAndSwapIdP, []string{
+		rkeys.SAMLIdPPrefix + expected.TenantID,
+	}, expectedData, replacementData).Int()
+	if err != nil {
+		return false, err
+	}
+	return result == 1, nil
 }
 
 // GetIdP retrieves IdP trust material for a tenant. Returns ErrIdPNotFound
@@ -190,6 +223,48 @@ func (s *RedisStore) GetIndex(ctx context.Context, nameID string) (IndexRecord, 
 // DeleteIndex removes the session index for a NameID.
 func (s *RedisStore) DeleteIndex(ctx context.Context, nameID string) error {
 	return s.rdb.Del(ctx, rkeys.SAMLIndexPrefix+nameID).Err()
+}
+
+// PutSessionIndexes atomically replaces both lookup paths for one SAML
+// session. Keeping the two SET operations in one Redis transaction prevents
+// concurrent logins from exposing a torn subject/NameID pair.
+const putSessionIndexesScript = `
+redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+redis.call("SET", KEYS[2], ARGV[1], "PX", ARGV[2])
+return 1
+`
+
+func (s *RedisStore) PutSessionIndexes(
+	ctx context.Context,
+	subjectKey, nameIDKey string,
+	rec IndexRecord,
+) error {
+	data, err := msgpack.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	ttl := time.Until(rec.NotOnOrAfter)
+	if ttl <= 0 {
+		ttl = time.Second
+	}
+	ttlMilliseconds := ttl.Milliseconds()
+	if ttlMilliseconds < 1 {
+		ttlMilliseconds = 1
+	}
+	return s.rdb.Eval(ctx, putSessionIndexesScript, []string{
+		rkeys.SAMLIndexPrefix + subjectKey,
+		rkeys.SAMLIndexPrefix + nameIDKey,
+	}, data, ttlMilliseconds).Err()
+}
+
+// DeleteSessionIndexes atomically removes both lookup paths. A concurrent
+// replacement therefore wins or loses as a whole rather than leaving one
+// stale alias behind.
+func (s *RedisStore) DeleteSessionIndexes(ctx context.Context, subjectKey, nameIDKey string) error {
+	return s.rdb.Del(ctx,
+		rkeys.SAMLIndexPrefix+subjectKey,
+		rkeys.SAMLIndexPrefix+nameIDKey,
+	).Err()
 }
 
 // ---------------------------------------------------------------------------

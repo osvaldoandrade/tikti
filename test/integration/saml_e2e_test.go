@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +64,14 @@ func (s *memStore) PutIdP(_ context.Context, rec saml.IdPRecord) error {
 	s.idps[rec.TenantID] = rec
 	return nil
 }
+func (s *memStore) CompareAndSwapIdP(_ context.Context, expected, replacement saml.IdPRecord) (bool, error) {
+	current, ok := s.idps[expected.TenantID]
+	if !ok || !reflect.DeepEqual(current, expected) {
+		return false, nil
+	}
+	s.idps[replacement.TenantID] = replacement
+	return true, nil
+}
 func (s *memStore) GetIdP(_ context.Context, tid string) (saml.IdPRecord, error) {
 	rec, ok := s.idps[tid]
 	if !ok {
@@ -94,6 +103,16 @@ func (s *memStore) GetIndex(_ context.Context, nameID string) (saml.IndexRecord,
 }
 func (s *memStore) DeleteIndex(_ context.Context, nameID string) error {
 	delete(s.indexes, nameID)
+	return nil
+}
+func (s *memStore) PutSessionIndexes(_ context.Context, subjectKey, nameIDKey string, rec saml.IndexRecord) error {
+	s.indexes[subjectKey] = rec
+	s.indexes[nameIDKey] = rec
+	return nil
+}
+func (s *memStore) DeleteSessionIndexes(_ context.Context, subjectKey, nameIDKey string) error {
+	delete(s.indexes, subjectKey)
+	delete(s.indexes, nameIDKey)
 	return nil
 }
 func (s *memStore) MarkSeen(_ context.Context, id string, _ time.Duration) (bool, error) {
@@ -128,6 +147,31 @@ func (b *stubBridge) Issue(_ context.Context, _ saml.IssueInput) (string, error)
 type noopEmitter struct{}
 
 func (noopEmitter) Emit(_ context.Context, _ saml.AuditRecord) error { return nil }
+
+type activeTenantAuthority struct{}
+
+func (activeTenantAuthority) IsTenantActive(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}
+
+var integrationSLOStateKey = []byte("integration-slo-state-key-at-least-32-bytes")
+
+type integrationSessionAuthority struct {
+	identity saml.SessionIdentity
+	revoked  []string
+}
+
+func (a *integrationSessionAuthority) Validate(_ context.Context, _ string) (saml.SessionIdentity, error) {
+	if a.identity.Subject == "" {
+		return saml.SessionIdentity{}, saml.ErrSessionAuthority
+	}
+	return a.identity, nil
+}
+
+func (a *integrationSessionAuthority) Revoke(_ context.Context, _ string, email string) error {
+	a.revoked = append(a.revoked, email)
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // Ephemeral RSA key pair
@@ -568,6 +612,10 @@ func testSSOFlow(t *testing.T) {
 		Cfg:      cfg,
 		Metrics:  saml.NewMetrics(prometheus.NewRegistry()),
 		Audit:    noopEmitter{},
+		Tenants:  activeTenantAuthority{},
+		Authority: &integrationSessionAuthority{identity: saml.SessionIdentity{
+			Subject: "user@example.com", Email: "user@example.com", TenantID: "t-001",
+		}},
 	})
 
 	router.Get("/saml/login/{tid}", handler.Login)
@@ -675,7 +723,7 @@ func testSSOFlow(t *testing.T) {
 	}
 
 	// Step 5: Verify session index was persisted.
-	idx, err := store.GetIndex(context.Background(), "user@example.com")
+	idx, err := store.GetIndex(context.Background(), saml.SessionSubjectIndexKey("t-001", "user@example.com"))
 	if err != nil {
 		t.Fatalf("session index not found after ACS: %v", err)
 	}
@@ -719,8 +767,11 @@ func testSLOIdPInitiated(t *testing.T) {
 			},
 			ACS: config.ACSConfig{CookieName: "tikti_idt"},
 		},
-		Metrics: saml.NewMetrics(prometheus.NewRegistry()),
-		Audit:   noopEmitter{},
+		Metrics:     saml.NewMetrics(prometheus.NewRegistry()),
+		Audit:       noopEmitter{},
+		Tenants:     activeTenantAuthority{},
+		Authority:   &integrationSessionAuthority{},
+		SLOStateKey: integrationSLOStateKey,
 	})
 	router.Get("/saml/slo", handler.SLO)
 	router.Post("/saml/slo", handler.SLO)
@@ -732,12 +783,20 @@ func testSLOIdPInitiated(t *testing.T) {
 		SLOURL:       "https://idp.e2e.test/slo",
 		SigningCerts: [][]byte{idpCert.Raw},
 	})
-	_ = store.PutIndex(context.Background(), "user@example.com", saml.IndexRecord{
+	record := saml.IndexRecord{
 		TenantID:     "t-001",
 		Subject:      "user-001",
+		NameID:       "user@example.com",
+		Email:        "user@example.com",
 		SessionIndex: "_session-e2e",
 		NotOnOrAfter: time.Now().Add(time.Hour),
-	})
+	}
+	_ = store.PutSessionIndexes(
+		context.Background(),
+		saml.SessionSubjectIndexKey(record.TenantID, record.Subject),
+		saml.SessionNameIDIndexKey(record.TenantID, record.NameID),
+		record,
+	)
 
 	reqXML := fmt.Sprintf(`<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
   xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"
@@ -765,8 +824,13 @@ func testSLOIdPInitiated(t *testing.T) {
 	}
 
 	// Assert session index deleted.
-	if _, err := store.GetIndex(context.Background(), "user@example.com"); err == nil {
-		t.Error("session index should be deleted after IdP-initiated SLO")
+	for _, key := range []string{
+		saml.SessionSubjectIndexKey(record.TenantID, record.Subject),
+		saml.SessionNameIDIndexKey(record.TenantID, record.NameID),
+	} {
+		if _, err := store.GetIndex(context.Background(), key); err == nil {
+			t.Errorf("session index %q should be deleted after IdP-initiated SLO", key)
+		}
 	}
 }
 
@@ -804,18 +868,29 @@ func testSLOSPInitiatedTail(t *testing.T) {
 			},
 			ACS: config.ACSConfig{CookieName: "tikti_idt"},
 		},
-		Metrics: saml.NewMetrics(prometheus.NewRegistry()),
-		Audit:   noopEmitter{},
+		Metrics:     saml.NewMetrics(prometheus.NewRegistry()),
+		Audit:       noopEmitter{},
+		Tenants:     activeTenantAuthority{},
+		Authority:   &integrationSessionAuthority{},
+		SLOStateKey: integrationSLOStateKey,
 	})
 	router.Get("/saml/slo", handler.SLO)
 
 	// Pre-populate.
-	_ = store.PutIndex(context.Background(), "user2@example.com", saml.IndexRecord{
+	record := saml.IndexRecord{
 		TenantID:     "t-001",
 		Subject:      "user-002",
+		NameID:       "user2@example.com",
+		Email:        "user2@example.com",
 		SessionIndex: "_session-002",
 		NotOnOrAfter: time.Now().Add(time.Hour),
-	})
+	}
+	_ = store.PutSessionIndexes(
+		context.Background(),
+		saml.SessionSubjectIndexKey(record.TenantID, record.Subject),
+		saml.SessionNameIDIndexKey(record.TenantID, record.NameID),
+		record,
+	)
 	_ = store.PutIdP(context.Background(), saml.IdPRecord{
 		TenantID: "t-001",
 		EntityID: "https://idp.e2e.test",
@@ -838,8 +913,7 @@ func testSLOSPInitiatedTail(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet,
 		sp.URL+"/saml/slo?SAMLResponse="+url.QueryEscape(encoded), nil)
-	state := base64.RawURLEncoding.EncodeToString([]byte("user2@example.com")) + "." +
-		base64.RawURLEncoding.EncodeToString([]byte("_req-slo-001"))
+	state := saml.EncodeSLOState("t-001", "user-002", "_req-slo-001", integrationSLOStateKey)
 	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: state})
 
 	resp, err := noFollow.Do(req)
@@ -857,8 +931,13 @@ func testSLOSPInitiatedTail(t *testing.T) {
 	}
 
 	// Assert session index deleted.
-	if _, err := store.GetIndex(context.Background(), "user2@example.com"); err == nil {
-		t.Error("session index should be deleted after SP-initiated SLO tail")
+	for _, key := range []string{
+		saml.SessionSubjectIndexKey(record.TenantID, record.Subject),
+		saml.SessionNameIDIndexKey(record.TenantID, record.NameID),
+	} {
+		if _, err := store.GetIndex(context.Background(), key); err == nil {
+			t.Errorf("session index %q should be deleted after SP-initiated SLO tail", key)
+		}
 	}
 
 	// Assert SLO cookie cleared.

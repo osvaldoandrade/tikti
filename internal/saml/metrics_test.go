@@ -40,7 +40,7 @@ func TestMetrics_AllPresent(t *testing.T) {
 	m.IdPAdminChanges.WithLabelValues("update", "ok").Inc()
 	m.ValidationDuration.WithLabelValues("t1").Observe(0.042)
 	m.IdPRoundtrip.WithLabelValues("t1").Observe(0.15)
-	m.IdPCertExpiry.WithLabelValues("t1", "CN=idp").Set(86400)
+	m.IdPCertExpiry.WithLabelValues("t1", "0123456789abcdef").Set(86400)
 	m.SPCertExpiry.Set(172800)
 	m.RefreshConsecFailures.WithLabelValues("t1").Set(0)
 	for _, result := range []string{"repost", "success", "failure"} {

@@ -166,20 +166,22 @@ func TestTenantRepo_ListIsStableAndPaginated(t *testing.T) {
 	}
 }
 
-func TestTenantRepoListRejectsPersistedMasterSpoof(t *testing.T) {
+func TestTenantRepoListRejectsPersistedUnsafeOrMasterSpoofedNames(t *testing.T) {
 	rdb, repo := newTenantRepoForTest(t)
 	ctx := context.Background()
 	if err := repo.Create(ctx, &domain.Tenant{Id: domain.MasterTenantID, Name: "Legacy", Slug: domain.MasterTenantID}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.Create(ctx, &domain.Tenant{Id: "spoof", Name: domain.MasterTenantName, Slug: "spoof"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := repo.List(ctx, 0, 20); !errors.Is(err, domain.ErrTenantInvariant) {
-		t.Fatalf("spoofed master was accepted: %v", err)
-	}
-	if err := rdb.HDel(ctx, tenantsHash, "spoof").Err(); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{domain.MasterTenantName, "code-foundry", "Cоde Foundry", "Code\u200bFoundry", "Bereia\u202e"} {
+		if err := repo.Create(ctx, &domain.Tenant{Id: "spoof", Name: name, Slug: "spoof"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := repo.List(ctx, 0, 20); !errors.Is(err, domain.ErrTenantInvariant) {
+			t.Fatalf("unsafe or spoofed persisted name %q was accepted: %v", name, err)
+		}
+		if err := rdb.HDel(ctx, tenantsHash, "spoof").Err(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := rdb.HDel(ctx, tenantsHash, domain.MasterTenantID).Err(); err != nil {
 		t.Fatal(err)

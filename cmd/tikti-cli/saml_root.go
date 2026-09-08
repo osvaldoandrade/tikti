@@ -65,6 +65,7 @@ func samlSPMetadataCmd(profileName *string, outputJSON *bool) *cobra.Command {
 		Use:   "metadata",
 		Short: "Emit SP metadata XML",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// #nosec G304 -- signingCert is an explicit local administrator CLI argument.
 			sigCertPEM, err := os.ReadFile(signingCert)
 			if err != nil {
 				return &cliError{msg: fmt.Sprintf("read signing cert: %v", err), exit: 1}
@@ -74,6 +75,7 @@ func samlSPMetadataCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			if encCertPath == "" {
 				encCertPath = signingCert
 			}
+			// #nosec G304 -- encCertPath is an explicit local administrator CLI argument.
 			encCertPEM, err := os.ReadFile(encCertPath)
 			if err != nil {
 				return &cliError{msg: fmt.Sprintf("read encryption cert: %v", err), exit: 1}
@@ -102,7 +104,7 @@ func samlSPMetadataCmd(profileName *string, outputJSON *bool) *cobra.Command {
 			}
 
 			if outFile != "" {
-				if err := os.WriteFile(outFile, meta, 0o644); err != nil {
+				if err := os.WriteFile(outFile, meta, 0o600); err != nil {
 					return &cliError{msg: fmt.Sprintf("write file: %v", err), exit: 1}
 				}
 				return nil
@@ -386,10 +388,12 @@ func samlTestCmd(_ *string, outputJSON *bool) *cobra.Command {
 			defer rdb.Close()
 			store := saml.NewRedisStore(rdb)
 
+			// #nosec G304 -- signingKey is an explicit local administrator CLI argument.
 			keyPEM, err := os.ReadFile(signingKey)
 			if err != nil {
 				return &cliError{msg: fmt.Sprintf("read signing key: %v", err), exit: 1}
 			}
+			// #nosec G304 -- signingCrt is an explicit local administrator CLI argument.
 			certPEM, err := os.ReadFile(signingCrt)
 			if err != nil {
 				return &cliError{msg: fmt.Sprintf("read signing cert: %v", err), exit: 1}

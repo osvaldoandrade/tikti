@@ -39,6 +39,9 @@ exact tenant. SAML `groups` claims are not imported into this model.
 Disable `identityGroupsV1` to stop group create, update, member, delete, and
 group-assignment mutations. Reads, direct assignments, and already stored group
 data remain intact. Do not delete V2 Redis keys or restore the removed HTTP
-routes. If the application binary must be rolled back, first coordinate all
-API and Console callers because endpoint rollback is intentionally not
-supported; data rollback is unnecessary and destructive cleanup is prohibited.
+routes beside V2. If the application binary must be rolled back, select and
+deploy the pinned pre-V2 Tikti, API, and Console version set together; a mixed
+version is unsupported. Tenant IDs, directory users, password hashes and
+password-change state, groups, members, direct and group assignments, SAML
+configuration, and Secret data remain in place. Data rollback is unnecessary,
+destructive cleanup is prohibited, and rollback must not create a runtime.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -25,6 +26,7 @@ func TestSignInController_Handle(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+	assertSensitiveResponseHeaders(t, rec)
 
 	svc.signInFn = func(ctx context.Context, req domain.SignInReq) (*domain.SignInResp, error) {
 		return nil, domain.ErrInvalidCreds
@@ -33,6 +35,11 @@ func TestSignInController_Handle(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
+	svc.signInFn = func(context.Context, domain.SignInReq) (*domain.SignInResp, error) {
+		return nil, errors.New("dial redis.internal:6379 credential=signin-canary")
+	}
+	rec = performJSON(t, r, http.MethodPost, "/signin", domain.SignInReq{Email: "a", Password: "b"}, "")
+	assertAuthenticationErrorRedacted(t, rec, http.StatusInternalServerError, "signin-canary")
 
 	svc.signInFn = func(ctx context.Context, req domain.SignInReq) (*domain.SignInResp, error) {
 		return &domain.SignInResp{IdToken: "tok", Email: req.Email}, nil
@@ -41,6 +48,7 @@ func TestSignInController_Handle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+	assertSensitiveResponseHeaders(t, rec)
 }
 
 func TestLookupController_Handle(t *testing.T) {
@@ -62,6 +70,11 @@ func TestLookupController_Handle(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d", rec.Code)
 	}
+	svc.lookupFn = func(context.Context, domain.LookupReq) (*domain.LookupResp, error) {
+		return nil, errors.New("dial redis.internal:6379 credential=lookup-canary")
+	}
+	rec = performJSON(t, r, http.MethodPost, "/lookup", domain.LookupReq{IdToken: "x"}, "")
+	assertAuthenticationErrorRedacted(t, rec, http.StatusInternalServerError, "lookup-canary")
 
 	svc.lookupFn = func(ctx context.Context, req domain.LookupReq) (*domain.LookupResp, error) {
 		return &domain.LookupResp{Users: []domain.UserInfo{{LocalId: "u1"}}}, nil
@@ -83,7 +96,9 @@ func TestTokenExchangeController_Handle(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+	assertSensitiveResponseHeaders(t, rec)
 
+	internalErr := errors.New("dial redis.internal:6379 credential=exchange-canary")
 	cases := []struct {
 		err  error
 		code int
@@ -94,7 +109,7 @@ func TestTokenExchangeController_Handle(t *testing.T) {
 		{domain.ErrInvalidTenant, http.StatusBadRequest},
 		{domain.ErrInvalidArgument, http.StatusBadRequest},
 		{domain.ErrNotFound, http.StatusNotFound},
-		{errors.New("other"), http.StatusBadRequest},
+		{internalErr, http.StatusInternalServerError},
 	}
 	for _, tc := range cases {
 		svc.tokenExchangeFn = func(ctx context.Context, req domain.TokenExchangeReq) (*domain.TokenExchangeResp, error) {
@@ -103,6 +118,9 @@ func TestTokenExchangeController_Handle(t *testing.T) {
 		rec = performJSON(t, r, http.MethodPost, "/exchange", domain.TokenExchangeReq{IdToken: "x", Audience: "a"}, "")
 		if rec.Code != tc.code {
 			t.Fatalf("err %v: expected %d got %d", tc.err, tc.code, rec.Code)
+		}
+		if tc.err == internalErr {
+			assertAuthenticationErrorRedacted(t, rec, http.StatusInternalServerError, "exchange-canary")
 		}
 	}
 
@@ -113,6 +131,7 @@ func TestTokenExchangeController_Handle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
 	}
+	assertSensitiveResponseHeaders(t, rec)
 }
 
 func TestUpdateDeleteControllers_Handle(t *testing.T) {
@@ -137,6 +156,11 @@ func TestUpdateDeleteControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("update err: expected 401, got %d", rec.Code)
 	}
+	svc.updateUserFn = func(context.Context, domain.UpdateReq) (*domain.UpdateResp, error) {
+		return nil, errors.New("dial redis.internal:6379 credential=update-canary")
+	}
+	rec = performJSON(t, r, http.MethodPost, "/update", domain.UpdateReq{IdToken: "x"}, "")
+	assertAuthenticationErrorRedacted(t, rec, http.StatusInternalServerError, "update-canary")
 	svc.updateUserFn = func(ctx context.Context, req domain.UpdateReq) (*domain.UpdateResp, error) {
 		return &domain.UpdateResp{LocalId: "u1"}, nil
 	}
@@ -154,6 +178,11 @@ func TestUpdateDeleteControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("delete err: expected 401, got %d", rec.Code)
 	}
+	svc.deleteUserFn = func(context.Context, domain.DeleteReq) error {
+		return errors.New("dial redis.internal:6379 credential=delete-canary")
+	}
+	rec = performJSON(t, r, http.MethodPost, "/delete", domain.DeleteReq{IdToken: "x"}, "")
+	assertAuthenticationErrorRedacted(t, rec, http.StatusInternalServerError, "delete-canary")
 	svc.deleteUserFn = func(ctx context.Context, req domain.DeleteReq) error { return nil }
 	rec = performJSON(t, r, http.MethodPost, "/delete", domain.DeleteReq{IdToken: "x"}, "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "DeleteAccountResponse") {
@@ -238,6 +267,11 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("send-oob not found: expected 404, got %d", rec.Code)
 	}
+	svc.sendOobFn = func(context.Context, domain.SendOobReq) (*domain.SendOobResp, error) {
+		return nil, errors.New("dial redis.internal:6379 credential=send-oob-canary")
+	}
+	rec = performJSON(t, r, http.MethodPost, "/send-oob", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}, "")
+	assertAuthenticationErrorRedacted(t, rec, http.StatusInternalServerError, "send-oob-canary")
 	svc.sendOobFn = func(ctx context.Context, req domain.SendOobReq) (*domain.SendOobResp, error) {
 		return &domain.SendOobResp{OobCode: "c1"}, nil
 	}
@@ -260,11 +294,11 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("reset-oob not found: expected 404, got %d", rec.Code)
 	}
-	svc.resetPasswordFn = func(ctx context.Context, req domain.ResetPwdReq) error { return errors.New("x") }
-	rec = performJSON(t, r, http.MethodPost, "/reset-oob", domain.ResetPwdReq{OobCode: "x", NewPassword: "p"}, "")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("reset-oob default err: expected 401, got %d", rec.Code)
+	svc.resetPasswordFn = func(context.Context, domain.ResetPwdReq) error {
+		return errors.New("dial redis.internal:6379 credential=reset-oob-canary")
 	}
+	rec = performJSON(t, r, http.MethodPost, "/reset-oob", domain.ResetPwdReq{OobCode: "x", NewPassword: "p"}, "")
+	assertAuthenticationErrorRedacted(t, rec, http.StatusInternalServerError, "reset-oob-canary")
 	svc.resetPasswordFn = func(ctx context.Context, req domain.ResetPwdReq) error { return nil }
 	rec = performJSON(t, r, http.MethodPost, "/reset-oob", domain.ResetPwdReq{OobCode: "x", NewPassword: "p"}, "")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "SetAccountPasswordResponse") {
@@ -275,6 +309,7 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("signin-oob bad req: expected 400, got %d", rec.Code)
 	}
+	assertSensitiveResponseHeaders(t, rec)
 	svc.signInWithOobCodeFn = func(ctx context.Context, req domain.SignInWithOobCodeReq) (*domain.SignInResp, error) {
 		return nil, domain.ErrInvalidArgument
 	}
@@ -290,11 +325,14 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 		t.Fatalf("signin-oob invalid code: expected 401, got %d", rec.Code)
 	}
 	svc.signInWithOobCodeFn = func(ctx context.Context, req domain.SignInWithOobCodeReq) (*domain.SignInResp, error) {
-		return nil, errors.New("x")
+		return nil, errors.New("dial tcp redis.internal.example:6379: connection refused")
 	}
 	rec = performJSON(t, r, http.MethodPost, "/signin-oob", domain.SignInWithOobCodeReq{Email: "u@x.com", OobCode: "c"}, "")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("signin-oob default err: expected 400, got %d", rec.Code)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("signin-oob default err: expected 500, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "redis.internal") || !strings.Contains(rec.Body.String(), "authentication unavailable") {
+		t.Fatalf("signin-oob leaked internal error: %s", rec.Body.String())
 	}
 	svc.signInWithOobCodeFn = func(ctx context.Context, req domain.SignInWithOobCodeReq) (*domain.SignInResp, error) {
 		return &domain.SignInResp{IdToken: "tok"}, nil
@@ -303,6 +341,7 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("signin-oob ok: expected 200, got %d", rec.Code)
 	}
+	assertSensitiveResponseHeaders(t, rec)
 
 	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/oob/send", nil, "")
 	if rec.Code != http.StatusBadRequest {
@@ -330,11 +369,15 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 		t.Fatalf("oob-dispatch not found: expected 404, got %d", rec.Code)
 	}
 	svc.sendOobForTenantFn = func(ctx context.Context, tenantID string, req domain.SendOobReq) (*domain.SendOobTenantResp, error) {
-		return nil, errors.New("x")
+		return nil, errors.New("dial tcp redis.internal.example:6379: credential=canary")
 	}
 	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/oob/send", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}, "")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("oob-dispatch default err: expected 500, got %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "redis.internal") || strings.Contains(rec.Body.String(), "canary") ||
+		!strings.Contains(rec.Body.String(), domain.ErrAuthenticationUnavailable.Error()) {
+		t.Fatalf("oob-dispatch leaked internal error: %s", rec.Body.String())
 	}
 	svc.sendOobForTenantFn = func(ctx context.Context, tenantID string, req domain.SendOobReq) (*domain.SendOobTenantResp, error) {
 		return &domain.SendOobTenantResp{OobCode: "x"}, nil
@@ -342,5 +385,24 @@ func TestJWKSValidateAndOobControllers_Handle(t *testing.T) {
 	rec = performJSON(t, r, http.MethodPost, "/tenants/t1/oob/send", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}, "")
 	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("X-Tikti-OOB-Delivery") != "external-required" {
 		t.Fatalf("oob-dispatch compatibility contract unexpected: %d headers=%v", rec.Code, rec.Header())
+	}
+}
+
+func assertSensitiveResponseHeaders(t *testing.T, recorder *httptest.ResponseRecorder) {
+	t.Helper()
+	if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
+	if got := recorder.Header().Get("Pragma"); got != "no-cache" {
+		t.Fatalf("Pragma = %q, want no-cache", got)
+	}
+}
+
+func assertAuthenticationErrorRedacted(t *testing.T, recorder *httptest.ResponseRecorder, status int, canary string) {
+	t.Helper()
+	if recorder.Code != status || strings.Contains(recorder.Body.String(), canary) ||
+		strings.Contains(recorder.Body.String(), "redis.internal") ||
+		!strings.Contains(recorder.Body.String(), domain.ErrAuthenticationUnavailable.Error()) {
+		t.Fatalf("authentication error was not redacted: status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }

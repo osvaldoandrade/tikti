@@ -2,6 +2,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -29,13 +30,26 @@ func (ctrl *lookupController) Handle(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {
-		return ctrl.userSvc.Lookup(ctx, req)
+	authContext := authenticationAPIRequestContext(c, ctrl.cfg)
+	ch := runCommandAsync(func(context.Context) (interface{}, error) {
+		return ctrl.userSvc.Lookup(authContext, req)
 	})
 	result := <-ch
 
 	if err, ok := result.(error); ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
+		switch {
+		case errors.Is(err, domain.ErrRateLimited):
+			c.Header("Retry-After", "60")
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": domain.ErrRateLimited.Error()})
+		case errors.Is(err, domain.ErrPasswordChangeRequired):
+			c.JSON(http.StatusPreconditionRequired, gin.H{"error": domain.ErrPasswordChangeRequired.Error(), "code": "PASSWORD_CHANGE_REQUIRED"})
+		case errors.Is(err, domain.ErrInvalidToken), errors.Is(err, domain.ErrInvalidCreds), errors.Is(err, domain.ErrNotFound):
+			c.JSON(http.StatusUnauthorized, gin.H{"error": domain.ErrInvalidToken.Error()})
+		case errors.Is(err, domain.ErrAuthenticationUnavailable):
+			writeAuthenticationUnavailable(c, http.StatusServiceUnavailable)
+		default:
+			writeAuthenticationUnavailable(c)
+		}
 		return
 	}
 	c.JSON(http.StatusOK, result)

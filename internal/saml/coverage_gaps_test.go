@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -173,8 +174,8 @@ type failingPutStore struct {
 	putErr error
 }
 
-func (s *failingPutStore) PutIdP(_ context.Context, _ IdPRecord) error {
-	return s.putErr
+func (s *failingPutStore) CompareAndSwapIdP(_ context.Context, _, _ IdPRecord) (bool, error) {
+	return false, s.putErr
 }
 
 func TestRefresh_Tick_ListError(t *testing.T) {
@@ -414,13 +415,15 @@ func TestLogout_IdPLookupError_400(t *testing.T) {
 		idpErr: ErrIdPNotFound,
 		index: IndexRecord{
 			TenantID:     "t-001",
-			Subject:      "user@example.com",
+			Subject:      "user-001",
+			NameID:       "user@example.com",
+			Email:        "user@example.com",
 			SessionIndex: "si-001",
 		},
 	}
 	prov := &logoutTestProvider{}
 	h := newLogoutTestHandler(prov, store)
-	token := fakeJWT("user@example.com")
+	token := fakeJWT("user-001")
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/logout/t-001", nil)
 	req.AddCookie(&http.Cookie{Name: "tikti_idt", Value: token})
@@ -440,13 +443,15 @@ func TestLogout_BuildLogoutRequestError_500(t *testing.T) {
 		},
 		index: IndexRecord{
 			TenantID:     "t-001",
-			Subject:      "user@example.com",
+			Subject:      "user-001",
+			NameID:       "user@example.com",
+			Email:        "user@example.com",
 			SessionIndex: "si-001",
 		},
 	}
 	prov := &logoutTestProvider{logoutErr: errors.New("build error")}
 	h := newLogoutTestHandler(prov, store)
-	token := fakeJWT("user@example.com")
+	token := fakeJWT("user-001")
 
 	req := httptest.NewRequest(http.MethodGet, "/saml/logout/t-001", nil)
 	req.AddCookie(&http.Cookie{Name: "tikti_idt", Value: token})
@@ -462,17 +467,29 @@ func TestLogout_BuildLogoutRequestError_500(t *testing.T) {
 // ===========================================================================
 
 func addSLOTestState(req *http.Request, store *mockSLOInternalStore) {
-	store.indexes["user@example.com"] = IndexRecord{TenantID: "t-001"}
-	store.idps["t-001"] = IdPRecord{TenantID: "t-001"}
-	state := base64.RawURLEncoding.EncodeToString([]byte("user@example.com")) + "." +
-		base64.RawURLEncoding.EncodeToString([]byte("_req1"))
+	record := internalSLOSession("t-001", "user-001", "user@example.com")
+	seedInternalSLOSession(store, record)
+	store.idps["t-001"] = IdPRecord{TenantID: "t-001", EntityID: "https://idp.example.com"}
+	state := EncodeSLOState("t-001", "user-001", "_req1", testSLOStateKey)
 	req.AddCookie(&http.Cookie{Name: "tikti_saml_slo", Value: state})
 }
 
 func encodedSLOTestRequest(nameID string) string {
 	raw := `<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_req1"><saml:NameID>` +
-		nameID + `</saml:NameID></samlp:LogoutRequest>`
+		nameID + `</saml:NameID><saml:Issuer>https://idp.example.com</saml:Issuer><samlp:SessionIndex>si-001</samlp:SessionIndex></samlp:LogoutRequest>`
 	return base64.StdEncoding.EncodeToString([]byte(raw))
+}
+
+func internalSLOSession(tenantID, subject, nameID string) IndexRecord {
+	return IndexRecord{
+		TenantID: tenantID, Subject: subject, NameID: nameID, Email: nameID,
+		SessionIndex: "si-001", NotOnOrAfter: time.Now().Add(time.Hour),
+	}
+}
+
+func seedInternalSLOSession(store *mockSLOInternalStore, record IndexRecord) {
+	store.indexes[SessionSubjectIndexKey(record.TenantID, record.Subject)] = record
+	store.indexes[SessionNameIDIndexKey(record.TenantID, record.NameID)] = record
 }
 
 func TestSLO_MethodNotAllowed(t *testing.T) {
@@ -587,8 +604,8 @@ func TestSLO_POST_ValidationIsResponse(t *testing.T) {
 	}
 	h := newSLOInternalHandler(prov, store)
 
-	store.indexes["user@example.com"] = IndexRecord{TenantID: "t-001"}
-	store.idps["t-001"] = IdPRecord{TenantID: "t-001"}
+	seedInternalSLOSession(store, internalSLOSession("t-001", "user-001", "user@example.com"))
+	store.idps["t-001"] = IdPRecord{TenantID: "t-001", EntityID: "https://idp.example.com"}
 	encoded := encodedSLOTestRequest("user@example.com")
 	form := url.Values{"SAMLRequest": {encoded}}
 	req := httptest.NewRequest(http.MethodPost, "/saml/slo", strings.NewReader(form.Encode()))
@@ -606,11 +623,13 @@ func TestSLO_POST_GetIndexError(t *testing.T) {
 	// No indexes in store → GetIndex will fail.
 	prov := &sloInternalMockProvider{
 		validateResult: &VerifiedLogout{
-			IsResponse: false,
-			NameID:     "unknown@example.com",
+			IsResponse:   false,
+			NameID:       "unknown@example.com",
+			SessionIndex: "si-001",
 		},
 	}
 	h := newSLOInternalHandler(prov, store)
+	store.idps["t-001"] = IdPRecord{TenantID: "t-001", EntityID: "https://idp.example.com"}
 
 	encoded := encodedSLOTestRequest("unknown@example.com")
 	form := url.Values{"SAMLRequest": {encoded}}
@@ -626,12 +645,12 @@ func TestSLO_POST_GetIndexError(t *testing.T) {
 
 func TestSLO_POST_GetIdPError(t *testing.T) {
 	store := newMockSLOStore_internal()
-	store.indexes["user@example.com"] = IndexRecord{TenantID: "t-missing"}
-	// No idps → GetIdP will fail.
+	// No IdP matches the untrusted issuer, so validation is never attempted.
 	prov := &sloInternalMockProvider{
 		validateResult: &VerifiedLogout{
-			IsResponse: false,
-			NameID:     "user@example.com",
+			IsResponse:   false,
+			NameID:       "user@example.com",
+			SessionIndex: "si-001",
 		},
 	}
 	h := newSLOInternalHandler(prov, store)
@@ -650,14 +669,17 @@ func TestSLO_POST_GetIdPError(t *testing.T) {
 
 func TestSLO_POST_BuildLogoutResponseError(t *testing.T) {
 	store := newMockSLOStore_internal()
-	store.indexes["user@example.com"] = IndexRecord{TenantID: "t-001"}
-	store.idps["t-001"] = IdPRecord{TenantID: "t-001", SLOURL: "https://idp.example.com/slo"}
+	seedInternalSLOSession(store, internalSLOSession("t-001", "user-001", "user@example.com"))
+	store.idps["t-001"] = IdPRecord{
+		TenantID: "t-001", EntityID: "https://idp.example.com", SLOURL: "https://idp.example.com/slo",
+	}
 
 	prov := &sloInternalMockProvider{
 		validateResult: &VerifiedLogout{
-			MessageID:  "_req1",
-			IsResponse: false,
-			NameID:     "user@example.com",
+			MessageID:    "_req1",
+			IsResponse:   false,
+			NameID:       "user@example.com",
+			SessionIndex: "si-001",
 		},
 		buildResponseErr: errors.New("build failed"),
 	}
@@ -722,6 +744,28 @@ func (s *mockSLOInternalStore) DeleteIndex(_ context.Context, nameID string) err
 	return nil
 }
 
+func (s *mockSLOInternalStore) ListIdPs(_ context.Context) ([]IdPRecord, error) {
+	records := make([]IdPRecord, 0, len(s.idps))
+	for _, record := range s.idps {
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func (s *mockSLOInternalStore) PutSessionIndexes(_ context.Context, subjectKey, nameIDKey string, record IndexRecord) error {
+	s.indexes[subjectKey] = record
+	s.indexes[nameIDKey] = record
+	return nil
+}
+
+func (s *mockSLOInternalStore) DeleteSessionIndexes(_ context.Context, subjectKey, nameIDKey string) error {
+	s.deleted[subjectKey] = true
+	s.deleted[nameIDKey] = true
+	delete(s.indexes, subjectKey)
+	delete(s.indexes, nameIDKey)
+	return nil
+}
+
 func (s *mockSLOInternalStore) GetIdP(_ context.Context, tid string) (IdPRecord, error) {
 	if rec, ok := s.idps[tid]; ok {
 		return rec, nil
@@ -731,10 +775,15 @@ func (s *mockSLOInternalStore) GetIdP(_ context.Context, tid string) (IdPRecord,
 
 func newSLOInternalHandler(prov Provider, store Store) *Handler {
 	return NewHandler(Deps{
-		Provider: prov,
-		Store:    store,
-		Clock:    NewFakeClock(),
-		Metrics:  NewMetrics(prometheus.NewRegistry()),
+		Provider:    prov,
+		Store:       store,
+		Clock:       NewFakeClock(),
+		Metrics:     NewMetrics(prometheus.NewRegistry()),
+		Authority:   &logoutTestAuthority{},
+		SLOStateKey: testSLOStateKey,
+		Cfg: config.SAMLConfig{ACS: config.ACSConfig{
+			CookieName: "tikti_idt", CookieHTTPOnly: true,
+		}},
 	})
 }
 
@@ -1270,34 +1319,6 @@ func TestCrewjam_BuildLogoutResponse(t *testing.T) {
 }
 
 // ===========================================================================
-// handler.go — subjectFromToken edge cases
-// ===========================================================================
-
-func TestSubjectFromToken_InvalidBase64(t *testing.T) {
-	// JWT with invalid base64 payload.
-	s := subjectFromToken("header.%%%invalid.sig")
-	if s != "" {
-		t.Errorf("subjectFromToken = %q, want empty", s)
-	}
-}
-
-func TestSubjectFromToken_InvalidJSON(t *testing.T) {
-	// JWT with valid base64 but invalid JSON payload.
-	payload := base64.RawURLEncoding.EncodeToString([]byte("not json"))
-	s := subjectFromToken("header." + payload + ".sig")
-	if s != "" {
-		t.Errorf("subjectFromToken = %q, want empty", s)
-	}
-}
-
-func TestSubjectFromToken_TooFewParts(t *testing.T) {
-	s := subjectFromToken("onlyonepart")
-	if s != "" {
-		t.Errorf("subjectFromToken = %q, want empty", s)
-	}
-}
-
-// ===========================================================================
 // audit.go — Emit error path (marshal failure)
 // ===========================================================================
 
@@ -1563,6 +1584,7 @@ func TestSessionBridge_IssuerError(t *testing.T) {
 		ExternalSubject: "ext-1",
 		Email:           "alice@example.com",
 		AMR:             []string{"saml"},
+		NotOnOrAfter:    time.Now().Add(time.Hour),
 	})
 	if err == nil {
 		t.Fatal("expected error from issuer failure")
@@ -1581,6 +1603,7 @@ func TestSessionBridge_EmptyTID(t *testing.T) {
 		ExternalSubject: "ext-1",
 		Email:           "alice@example.com",
 		AMR:             []string{"saml"},
+		NotOnOrAfter:    time.Now().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

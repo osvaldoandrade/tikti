@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/utils"
+	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -44,11 +46,16 @@ type userService struct {
 	membershipRepo                    repository.MembershipRepository
 	exactMembershipRepo               repository.ExactMembershipRepository
 	directoryAccess                   repository.IdentityDirectoryRepository
+	authenticationAttempts            authenticationAttemptLimiter
+	authenticationRateLimits          config.AuthenticationRateLimitsConfig
+	verifyPassword                    func(string, string) bool
 	tenantRepo                        repository.TenantRepository
 	tenantScopedTokenClaimsV1         bool
 	tenantScopedTokenAllowlist        map[string]struct{}
 	tenantTargetDiscoveryV2           bool
 	tenantTargetDiscoveryV2Principals map[string]struct{}
+	platformAdministrators            map[string]struct{}
+	platformAuthorityConfigured       bool
 	jwtSecret                         string
 	issuerBaseURL                     string
 	defaultAudience                   string
@@ -64,27 +71,70 @@ type userService struct {
 
 type UserServiceOption func(*userService)
 
+type authenticationAttemptLimiter interface {
+	AllowAuthenticationAttempt(context.Context, string, string, int, time.Duration) (bool, error)
+}
+
+const (
+	platformAuthorityOriginClaim = "tikti_platform_authority_origin"
+	platformAuthorityOriginSAML  = "saml-allowlist-v1"
+)
+
 // WithIdentityDirectoryAccess makes mutable direct and inherited assignments
 // the token authority after the startup backfill. Legacy memberships remain a
 // migration input only.
 func WithIdentityDirectoryAccess(access repository.IdentityDirectoryRepository) UserServiceOption {
-	return func(service *userService) { service.directoryAccess = access }
+	return func(service *userService) {
+		service.directoryAccess = access
+		service.authenticationAttempts = access
+	}
+}
+
+// WithPasswordAttemptLimiter injects the distributed authentication throttle
+// independently of the wider directory contract.
+func WithPasswordAttemptLimiter(limiter authenticationAttemptLimiter) UserServiceOption {
+	return func(service *userService) { service.authenticationAttempts = limiter }
+}
+
+func WithAuthenticationRateLimits(limits config.AuthenticationRateLimitsConfig) UserServiceOption {
+	return func(service *userService) {
+		service.authenticationRateLimits = effectiveAuthenticationRateLimits(limits)
+	}
+}
+
+// WithCurrentPlatformAdministrators binds SAML platform authority to the
+// current server-side allowlist. Passing an empty slice intentionally enables
+// the authority and revokes every previously allowlisted SAML administrator.
+func WithCurrentPlatformAdministrators(administrators []config.SAMLPlatformAdministrator) UserServiceOption {
+	configured := append([]config.SAMLPlatformAdministrator(nil), administrators...)
+	return func(service *userService) {
+		service.platformAuthorityConfigured = true
+		service.platformAdministrators = make(map[string]struct{}, len(configured))
+		for _, administrator := range configured {
+			key := currentPlatformAdministratorKey(administrator.TenantID, administrator.Email)
+			if key != "" {
+				service.platformAdministrators[key] = struct{}{}
+			}
+		}
+	}
 }
 
 // NewUserService builds a service instance that signs JWTs with the provided secret.
 func NewUserService(r repository.UserRepository, membershipRepo repository.MembershipRepository, roleSvc RoleService, clientSvc ClientService, jwtSecret string, issuerBaseURL string, defaultAudience string, jwksPrivateKey string, jwksKeyID string, options ...UserServiceOption) UserService {
 	exactMembershipRepo, _ := membershipRepo.(repository.ExactMembershipRepository)
 	service := &userService{
-		repo:                r,
-		membershipRepo:      membershipRepo,
-		exactMembershipRepo: exactMembershipRepo,
-		roleSvc:             roleSvc,
-		clientSvc:           clientSvc,
-		jwtSecret:           jwtSecret,
-		issuerBaseURL:       issuerBaseURL,
-		defaultAudience:     defaultAudience,
-		jwksPrivateKey:      jwksPrivateKey,
-		jwksKeyID:           jwksKeyID,
+		repo:                     r,
+		membershipRepo:           membershipRepo,
+		exactMembershipRepo:      exactMembershipRepo,
+		roleSvc:                  roleSvc,
+		clientSvc:                clientSvc,
+		jwtSecret:                jwtSecret,
+		issuerBaseURL:            issuerBaseURL,
+		defaultAudience:          defaultAudience,
+		jwksPrivateKey:           jwksPrivateKey,
+		jwksKeyID:                jwksKeyID,
+		verifyPassword:           utils.VerifyPassword,
+		authenticationRateLimits: config.DefaultAuthenticationRateLimits(),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -96,14 +146,35 @@ func NewUserService(r repository.UserRepository, membershipRepo repository.Membe
 
 // SignIn verifies credentials and returns a signed JWT alongside metadata.
 func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain.SignInResp, error) {
-	u, err := s.repo.FindByEmail(ctx, req.Email)
-	if err != nil || u == nil {
+	email := normalizeIdentityEmail(req.Email)
+	if s.authenticationAttempts != nil {
+		limit := s.authenticationRateLimits.Login
+		allowed, limitErr := s.allowAuthenticationAttempt(ctx, authenticationBucketPasswordIP, authenticationClientIP(ctx), limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+		if allowed && limitErr == nil {
+			allowed, limitErr = s.allowAuthenticationAttempt(ctx, authenticationBucketPasswordEmail, email, limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+		}
+		if limitErr != nil || !allowed {
+			// Preserve one cost-matched password operation even when the request is
+			// rejected before directory lookup.
+			_ = s.verifyPassword(temporaryPasswordDummyHash, req.Password)
+			if !allowed && limitErr == nil {
+				return nil, domain.ErrRateLimited
+			}
+			return nil, domain.ErrInvalidCreds
+		}
+	}
+
+	u, err := s.repo.FindByEmail(ctx, email)
+	eligible := err == nil && u != nil && u.Status == domain.UserStatusActive && passwordCredentialEligible(u)
+	passwordHash := temporaryPasswordDummyHash
+	if eligible {
+		passwordHash = u.Password
+	}
+	verified := s.verifyPassword(passwordHash, req.Password)
+	if !eligible || !verified {
 		return nil, domain.ErrInvalidCreds
 	}
-	if u.Status == domain.UserStatusSuspended {
-		return nil, domain.ErrInvalidCreds
-	}
-	if !utils.VerifyPassword(u.Password, req.Password) {
+	if u.PasswordChangeRequired && s.directoryAccess == nil {
 		return nil, domain.ErrInvalidCreds
 	}
 	if u.PasswordChangeRequired {
@@ -123,15 +194,29 @@ func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain
 
 // SignInWithOobCode authenticates the user using a one-time code delivered via email.
 func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWithOobCodeReq) (*domain.SignInResp, error) {
-	email := strings.TrimSpace(req.Email)
+	email := normalizeIdentityEmail(req.Email)
 	code := strings.TrimSpace(req.OobCode)
 	if email == "" || code == "" {
 		return nil, domain.ErrInvalidArgument
 	}
+	limit := s.authenticationRateLimits.OOBSignIn
+	allowed, limitErr := s.allowAuthenticationAttempt(ctx, authenticationBucketOOBSignInIP, authenticationClientIP(ctx), limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+	if allowed && limitErr == nil {
+		allowed, limitErr = s.allowAuthenticationAttempt(ctx, authenticationBucketOOBSignInEmail, email, limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+	}
+	if limitErr != nil {
+		return nil, domain.ErrAuthenticationUnavailable
+	}
+	if !allowed {
+		return nil, domain.ErrRateLimited
+	}
 
 	oobEmail, err := s.repo.ConsumeOobCode(ctx, code, "EMAIL_SIGNIN")
 	if err != nil {
-		return nil, err
+		if errors.Is(err, domain.ErrInvalidOob) {
+			return nil, domain.ErrInvalidOob
+		}
+		return nil, domain.ErrAuthenticationUnavailable
 	}
 	if !strings.EqualFold(oobEmail, email) {
 		return nil, domain.ErrInvalidOob
@@ -141,7 +226,10 @@ func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWi
 	if findErr != nil || u == nil {
 		return nil, domain.ErrInvalidCreds
 	}
-	if u.Status == domain.UserStatusSuspended {
+	if u.Status != domain.UserStatusActive {
+		return nil, domain.ErrInvalidCreds
+	}
+	if !passwordCredentialEligible(u) {
 		return nil, domain.ErrInvalidCreds
 	}
 	if u.PasswordChangeRequired {
@@ -162,24 +250,17 @@ func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWi
 
 // Lookup converts an idToken into a LookupResp by pulling the stored user.
 func (s *userService) Lookup(ctx context.Context, req domain.LookupReq) (*domain.LookupResp, error) {
-	claims, e := utils.ParseToken(req.IdToken, s.jwtSecret)
-	if e != nil {
-		return nil, domain.ErrInvalidToken
+	limit := s.authenticationRateLimits.Lookup
+	allowed, limitErr := s.allowAuthenticationAttempt(ctx, authenticationBucketLookupAPIKey, authenticationAPIKeyID(ctx), limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+	if limitErr != nil {
+		return nil, domain.ErrAuthenticationUnavailable
 	}
-	sub, _ := claims["sub"].(string)
-	if strings.TrimSpace(sub) == "" {
-		return nil, domain.ErrInvalidToken
+	if !allowed {
+		return nil, domain.ErrRateLimited
 	}
-	email, _ := claims["email"].(string)
-	if strings.TrimSpace(email) == "" {
-		return nil, domain.ErrInvalidToken
-	}
-	u, _ := s.repo.FindByEmail(ctx, email)
-	if u == nil {
-		return nil, domain.ErrNotFound
-	}
-	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
-		return nil, domain.ErrInvalidToken
+	_, u, err := s.validateCurrentIDToken(ctx, req.IdToken, s.issuerBaseURL, s.defaultAudience)
+	if err != nil {
+		return nil, err
 	}
 	return &domain.LookupResp{
 		Users: []domain.UserInfo{{
@@ -211,78 +292,20 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		return nil, domain.ErrInvalidAudience
 	}
 
-	claims, err := utils.ParseToken(req.IdToken, s.jwtSecret)
+	claims, u, err := s.validateCurrentIDToken(ctx, req.IdToken, s.issuerBaseURL, s.defaultAudience)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, err
 	}
-	sub, _ := claims["sub"].(string)
-	if strings.TrimSpace(sub) == "" {
-		return nil, domain.ErrInvalidToken
+	limit := s.authenticationRateLimits.TokenExchange
+	allowed, limitErr := s.allowAuthenticationAttempt(ctx, authenticationBucketTokenExchangeUser, u.Id, limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+	if limitErr != nil {
+		return nil, domain.ErrAuthenticationUnavailable
 	}
-	if expectedIss := strings.TrimSpace(s.issuerBaseURL); expectedIss != "" {
-		if rawIss, hasIss := claims["iss"]; hasIss {
-			iss, ok := rawIss.(string)
-			if !ok || strings.TrimSpace(iss) == "" || iss != expectedIss {
-				return nil, domain.ErrInvalidToken
-			}
-		}
+	if !allowed {
+		return nil, domain.ErrRateLimited
 	}
-	if expectedAud := strings.TrimSpace(s.defaultAudience); expectedAud != "" {
-		if rawAud, hasAud := claims["aud"]; hasAud {
-			switch aud := rawAud.(type) {
-			case string:
-				if strings.TrimSpace(aud) == "" || aud != expectedAud {
-					return nil, domain.ErrInvalidToken
-				}
-			case []interface{}:
-				found := false
-				for _, v := range aud {
-					if s, ok := v.(string); ok && s == expectedAud {
-						found = true
-						break
-					}
-				}
-				if !found {
-					return nil, domain.ErrInvalidToken
-				}
-			case []string:
-				found := false
-				for _, v := range aud {
-					if v == expectedAud {
-						found = true
-						break
-					}
-				}
-				if !found {
-					return nil, domain.ErrInvalidToken
-				}
-			default:
-				return nil, domain.ErrInvalidToken
-			}
-		}
-	}
-	email, _ := claims["email"].(string)
-	if email == "" {
-		return nil, domain.ErrInvalidToken
-	}
-	u, userErr := s.repo.FindByEmail(ctx, email)
 	strictTarget, protectedTarget := s.tenantScopedTokenTarget(req.TenantID)
 	discoveryRequested := req.DiscoverTenantTargetsV1 || req.DiscoverTenantTargetsV2
-	if (protectedTarget || discoveryRequested) && userErr != nil {
-		return nil, domain.ErrInvalidToken
-	}
-	if u == nil {
-		return nil, domain.ErrNotFound
-	}
-	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
-		return nil, domain.ErrInvalidToken
-	}
-	if u.Status == domain.UserStatusSuspended {
-		return nil, domain.ErrInvalidCreds
-	}
-	if u.PasswordChangeRequired {
-		return nil, domain.ErrPasswordChangeRequired
-	}
 	platformPrivilege := validatedPlatformPrivilege(u, claims)
 	if protectedTarget && strictTarget == "" {
 		return nil, domain.ErrInvalidTenant
@@ -301,29 +324,29 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if discoveryRequested && !discoveryExchange {
 		return nil, domain.ErrInvalidArgument
 	}
-	if discoveryExchange {
-		version, valid := tokenVersion(claims)
-		if !valid || version != u.TokenVersion {
-			return nil, domain.ErrInvalidToken
-		}
-	}
-
 	tenantID := strictTarget
 	var tenantRoles, tenantPermissions []string
 	var discovery tenantDiscoveryAuthorization
 	var scopes []string
 	if discoveryExchange {
 		dynamicTargets := discoveryExchangeV2
+		signedHome := claimStringValue(claims, "tid")
+		home, directoryPrincipal, homeErr := s.resolveDiscoveryHome(
+			ctx, u, signedHome, claimStringValue(claims, "role"), platformPrivilege,
+		)
+		if homeErr != nil {
+			return nil, homeErr
+		}
 		discovery, err = s.resolveTenantDiscoveryAuthorization(
-			ctx, u, req.TenantID, claimStringValue(claims, "tid"),
+			ctx, u, req.TenantID, home,
 			claimStringValue(claims, "role"), req.ScopeCeilingV1, req.Scopes,
-			dynamicTargets, discoveryMetricMode, platformPrivilege,
+			dynamicTargets, discoveryMetricMode, platformPrivilege, directoryPrincipal,
 		)
 		if err != nil {
 			return nil, err
 		}
 		tenantID, tenantRoles, scopes = discovery.tenantID, discovery.roles, discovery.scopes
-		if tenantID == discovery.principalTenantID {
+		if tenantID == discovery.principalTenantID && !discovery.directoryPrincipal {
 			strictTarget = ""
 		} else {
 			strictTarget = tenantID
@@ -353,6 +376,25 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			}
 			if len(memberTenants) == 0 && u.CompanyId != nil && *u.CompanyId != tenantID {
 				return nil, domain.ErrInvalidTenant
+			}
+			if u.CompanyId == nil {
+				if s.directoryAccess == nil || !containsString(memberTenants, tenantID) {
+					return nil, domain.ErrInvalidTenant
+				}
+				roles, _, accessErr := s.directoryAccess.GetEffectiveTenantRoles(ctx, u.Id, tenantID)
+				if accessErr != nil || len(roles) == 0 {
+					return nil, domain.ErrInvalidTenant
+				}
+				if s.roleSvc == nil {
+					return nil, domain.ErrUnauthorizedScope
+				}
+				permissions, permissionErr := s.roleSvc.ResolvePermissions(ctx, tenantID, roles)
+				if permissionErr != nil {
+					return nil, domain.ErrUnauthorizedScope
+				}
+				tenantRoles = append([]string(nil), roles...)
+				tenantPermissions = normalizePermissions(permissions)
+				strictTarget = tenantID
 			}
 		}
 
@@ -401,11 +443,28 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if ttl > 86400 {
 		ttl = 86400
 	}
-
-	subject := strings.TrimSpace(req.Subject)
-	if subject == "" {
-		subject = u.Id
+	now := time.Now()
+	sourceExpiry, expiryErr := claims.GetExpirationTime()
+	if expiryErr != nil || sourceExpiry == nil {
+		return nil, domain.ErrInvalidToken
 	}
+	sourceTTL := int(sourceExpiry.Time.Unix() - now.Unix())
+	if sourceTTL <= 0 {
+		return nil, domain.ErrInvalidToken
+	}
+	if ttl > sourceTTL {
+		ttl = sourceTTL
+	}
+	authenticationMethods, validAMR := canonicalAuthenticationMethods(claims)
+	if !validAMR {
+		return nil, domain.ErrInvalidToken
+	}
+
+	// This endpoint exchanges a human browser session. Its subject is always
+	// the authenticated directory principal; workload delegation has a
+	// separate projected-service-account exchange and must never be smuggled
+	// through a caller-controlled claim.
+	subject := u.Id
 
 	key, err := s.getRSAPrivateKey()
 	if err != nil {
@@ -422,9 +481,14 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		"role":  string(role),
 		"tid":   tenantID,
 		"ver":   u.TokenVersion,
-		"iat":   time.Now().Unix(),
-		"exp":   time.Now().Add(time.Duration(ttl) * time.Second).Unix(),
+		"iat":   now.Unix(),
+		"exp":   now.Unix() + int64(ttl),
 		"jti":   uuid.NewString(),
+	}
+	if u.CompanyId != nil {
+		if principalTenantID := strings.TrimSpace(*u.CompanyId); principalTenantID != "" {
+			claimsOut["principal_tid"] = principalTenantID
+		}
 	}
 	if strictTarget != "" {
 		delete(claimsOut, "role")
@@ -433,11 +497,20 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if strictTarget == "" && role == domain.RoleAdmin && containsString(scopes, domain.PlatformTenantAdminScope) {
 		claimsOut[domain.PlatformPrivilegeClaim] = domain.PlatformPrivilegeAdmin
 	}
+	if platformPrivilege == domain.PlatformPrivilegeAdmin {
+		// This private provenance marker is not an authorization input for
+		// downstream services. Tikti uses it only to re-evaluate current
+		// server-side allowlist authority when the bearer token is reused.
+		claimsOut[platformAuthorityOriginClaim] = platformAuthorityOriginSAML
+	}
 	if scopeString != "" {
 		claimsOut["scope"] = scopeString
 	}
 	if len(eventTypes) > 0 {
 		claimsOut["eventTypes"] = eventTypes
+	}
+	if len(authenticationMethods) > 0 {
+		claimsOut["amr"] = authenticationMethods
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claimsOut)
@@ -465,43 +538,96 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 // user status and token version. SAML and password sign-in both issue this
 // token shape, so callers do not need to branch on the authentication method.
 func (s *userService) ValidateIDToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, error) {
+	claims, _, err := s.validateCurrentIDToken(ctx, tokenString, issuer, audience)
+	return claims, err
+}
+
+func (s *userService) validateCurrentIDToken(ctx context.Context, tokenString string, issuer string, audience string) (jwt.MapClaims, *domain.User, error) {
 	claims, err := utils.ParseToken(tokenString, s.jwtSecret)
 	if err != nil {
-		return nil, domain.ErrInvalidToken
+		return nil, nil, domain.ErrInvalidToken
 	}
 	if issuer != "" {
 		claimIssuer, _ := claims["iss"].(string)
 		if claimIssuer != issuer {
-			return nil, domain.ErrInvalidToken
+			return nil, nil, domain.ErrInvalidToken
 		}
 	}
 	if !tokenHasAudience(claims, audience) {
-		return nil, domain.ErrInvalidToken
+		return nil, nil, domain.ErrInvalidToken
 	}
 
 	subject, _ := claims["sub"].(string)
 	email, _ := claims["email"].(string)
 	if strings.TrimSpace(subject) == "" || strings.TrimSpace(email) == "" {
-		return nil, domain.ErrInvalidToken
+		return nil, nil, domain.ErrInvalidToken
 	}
-	user, repoErr := s.repo.FindByEmail(ctx, email)
-	if repoErr != nil || user == nil {
-		return nil, domain.ErrNotFound
+	user, repoErr := s.resolveCurrentTokenUser(ctx, subject, email)
+	if repoErr != nil {
+		return nil, nil, repoErr
 	}
-	if subject != user.Id && !strings.EqualFold(subject, user.Email) {
-		return nil, domain.ErrInvalidToken
+	_, subjectAuthoritative := s.repo.(repository.UserIDRepository)
+	if subjectAuthoritative && user.AuthSource == domain.AuthSourceSAML && user.CompanyId != nil {
+		if claimStringValue(claims, "tid") != strings.TrimSpace(*user.CompanyId) {
+			return nil, nil, domain.ErrInvalidToken
+		}
+	} else if subjectAuthoritative && user.AuthSource == domain.AuthSourceSAML && claimStringValue(claims, "tid") != "" {
+		return nil, nil, domain.ErrInvalidToken
+	}
+	if tenantID := claimStringValue(claims, "tid"); tenantID != "" && s.tenantRepo != nil {
+		tenant, tenantErr := s.tenantRepo.Get(ctx, tenantID)
+		if tenantErr != nil || tenant == nil || tenant.Id != tenantID || tenant.Status != domain.TenantStatusActive {
+			return nil, nil, domain.ErrInvalidToken
+		}
 	}
 	if user.Status != domain.UserStatusActive {
-		return nil, domain.ErrInvalidCreds
+		return nil, nil, domain.ErrInvalidCreds
 	}
 	if user.PasswordChangeRequired {
-		return nil, domain.ErrPasswordChangeRequired
+		return nil, nil, domain.ErrPasswordChangeRequired
+	}
+	if !s.currentPlatformAuthorityValid(user, claims) {
+		return nil, nil, domain.ErrInvalidToken
 	}
 	version, ok := tokenVersion(claims)
 	if !ok || version != user.TokenVersion {
+		return nil, nil, domain.ErrInvalidToken
+	}
+	return claims, user, nil
+}
+
+// resolveCurrentTokenUser binds a signed human token to its immutable subject.
+// Production repositories implement UserIDRepository, including tenant-local
+// SAML principals. The email lookup is only a compatibility seam for older
+// in-memory implementations and still has to match both signed identifiers.
+func (s *userService) resolveCurrentTokenUser(ctx context.Context, subject, email string) (*domain.User, error) {
+	if strings.TrimSpace(subject) == "" || strings.TrimSpace(email) == "" {
 		return nil, domain.ErrInvalidToken
 	}
-	return claims, nil
+	if byID, ok := s.repo.(repository.UserIDRepository); ok {
+		user, err := byID.FindByID(ctx, subject)
+		if err != nil {
+			return nil, domain.ErrInvalidToken
+		}
+		if user == nil {
+			return nil, domain.ErrNotFound
+		}
+		if user.Id != subject || !strings.EqualFold(user.Email, email) {
+			return nil, domain.ErrInvalidToken
+		}
+		return user, nil
+	}
+	user, err := s.repo.FindByEmail(ctx, email)
+	if err != nil {
+		return nil, domain.ErrInvalidToken
+	}
+	if user == nil {
+		return nil, domain.ErrNotFound
+	}
+	if subject != user.Id && !strings.EqualFold(subject, user.Email) || !strings.EqualFold(user.Email, email) {
+		return nil, domain.ErrInvalidToken
+	}
+	return user, nil
 }
 
 // ValidateAccessToken validates an RS256 access token. User tokens enforce the
@@ -532,22 +658,17 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 		return nil, domain.ErrInvalidToken
 	}
 	sub, _ := claims["sub"].(string)
-	if sub == "" {
-		if email, _ := claims["email"].(string); email != "" {
-			sub = email
-		}
-	}
-	if sub == "" {
+	email, _ := claims["email"].(string)
+	if strings.TrimSpace(sub) == "" || strings.TrimSpace(email) == "" {
 		return nil, domain.ErrInvalidToken
 	}
-	u, _ := s.repo.FindByEmail(ctx, sub)
-	if u == nil {
-		if email, _ := claims["email"].(string); strings.TrimSpace(email) != "" && email != sub {
-			u, _ = s.repo.FindByEmail(ctx, email)
-		}
+	u, resolveErr := s.resolveCurrentTokenUser(ctx, sub, email)
+	if resolveErr != nil {
+		return nil, resolveErr
 	}
-	if u == nil {
-		return nil, domain.ErrNotFound
+	_, subjectAuthoritative := s.repo.(repository.UserIDRepository)
+	if subjectAuthoritative && u.AuthSource == domain.AuthSourceSAML && (u.CompanyId == nil || claimStringValue(claims, "principal_tid") != strings.TrimSpace(*u.CompanyId)) {
+		return nil, domain.ErrInvalidToken
 	}
 	if u.Status != domain.UserStatusActive {
 		return nil, domain.ErrInvalidCreds
@@ -555,15 +676,243 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 	if u.PasswordChangeRequired {
 		return nil, domain.ErrPasswordChangeRequired
 	}
+	if !s.currentPlatformAuthorityValid(u, claims) {
+		return nil, domain.ErrInvalidToken
+	}
 	if u.TokenVersion != version {
+		return nil, domain.ErrInvalidToken
+	}
+	if err := s.validateCurrentAccessTokenTarget(ctx, claims); err != nil {
+		return nil, domain.ErrInvalidToken
+	}
+	if err := s.validateCurrentAccessTokenAuthority(ctx, u, claims); err != nil {
 		return nil, domain.ErrInvalidToken
 	}
 	return claims, nil
 }
 
+// validateCurrentAccessTokenTarget re-evaluates the mutable tenant and
+// audience-client authority on every bearer-token use. An access token is a
+// short-lived proof of the authority that existed when it was issued; it must
+// not outlive a disabled tenant/client or scopes removed from that client.
+func (s *userService) validateCurrentAccessTokenTarget(ctx context.Context, claims jwt.MapClaims) error {
+	tenantID := claimStringValue(claims, "tid")
+	if !validRoleTenantID(tenantID) {
+		return domain.ErrInvalidToken
+	}
+	if s.tenantRepo != nil {
+		tenant, err := s.tenantRepo.Get(ctx, tenantID)
+		if err != nil || tenant == nil || tenant.Id != tenantID || tenant.Status != domain.TenantStatusActive {
+			return domain.ErrInvalidToken
+		}
+	}
+	if s.clientSvc == nil {
+		return nil
+	}
+	audience, ok := claims["aud"].(string)
+	if !ok || strings.TrimSpace(audience) == "" || audience != strings.TrimSpace(audience) {
+		return domain.ErrInvalidToken
+	}
+	client, err := s.clientSvc.GetClient(ctx, tenantID, audience)
+	if err != nil || client == nil || client.Id != audience || client.TenantId != tenantID || client.Status != domain.ClientStatusActive {
+		return domain.ErrInvalidToken
+	}
+	signedScopes := strings.Fields(claimStringValue(claims, "scope"))
+	if len(signedScopes) == 0 {
+		return nil
+	}
+	canonicalScopes, valid := scopepolicy.CanonicalAudienceScopes(signedScopes)
+	if !valid {
+		return domain.ErrInvalidToken
+	}
+	currentScopes, valid := scopepolicy.CanonicalAudienceScopes(client.DefaultScopes)
+	if !valid || !subset(canonicalScopes, currentScopes) {
+		return domain.ErrInvalidToken
+	}
+	return nil
+}
+
+func (s *userService) currentPlatformAuthorityValid(user *domain.User, claims jwt.MapClaims) bool {
+	claimedPrivilege := claimStringValue(claims, domain.PlatformPrivilegeClaim)
+	authorityOrigin := claimStringValue(claims, platformAuthorityOriginClaim)
+	if claimedPrivilege != "" && claimedPrivilege != domain.PlatformPrivilegeAdmin {
+		return false
+	}
+	if authorityOrigin != "" && authorityOrigin != platformAuthorityOriginSAML {
+		return false
+	}
+	if user == nil || user.AuthSource != domain.AuthSourceSAML {
+		return authorityOrigin == "" && (claimedPrivilege == "" || user != nil && user.Role == domain.RoleAdmin)
+	}
+	usesPlatformAuthority := user.Role == domain.RoleAdmin || claimedPrivilege == domain.PlatformPrivilegeAdmin || authorityOrigin == platformAuthorityOriginSAML
+	if !usesPlatformAuthority {
+		return true
+	}
+	if user.Role != domain.RoleAdmin || user.CompanyId == nil {
+		return false
+	}
+	if !s.platformAuthorityConfigured {
+		// Compatibility seam for isolated service tests. NewApplication always
+		// enables the server authority, including when its allowlist is empty.
+		return true
+	}
+	_, allowed := s.platformAdministrators[currentPlatformAdministratorKey(*user.CompanyId, user.Email)]
+	return allowed
+}
+
+func currentPlatformAdministratorKey(tenantID, email string) string {
+	tenantID = strings.TrimSpace(tenantID)
+	email = strings.ToLower(strings.TrimSpace(email))
+	if tenantID == "" || email == "" {
+		return ""
+	}
+	return tenantID + "\x00" + email
+}
+
+// validateCurrentAccessTokenAuthority prevents an already-issued tenant token
+// from retaining roles after a direct assignment, group membership, group
+// status, group assignment, or role definition changes. Tokens without the
+// explicit roles claim use the legacy/home authority path and continue to be
+// governed by tokenVersion and the signed role/provenance claims.
+func (s *userService) validateCurrentAccessTokenAuthority(ctx context.Context, user *domain.User, claims jwt.MapClaims) error {
+	rawRoles, tenantScoped := claims["roles"]
+	if !tenantScoped {
+		return nil
+	}
+	platformAuthority := claimStringValue(claims, platformAuthorityOriginClaim) == platformAuthorityOriginSAML
+	signedRoles, valid := canonicalAccessTokenRoles(rawRoles)
+	if rawRoles == nil && platformAuthority {
+		signedRoles, valid = []string{}, true
+	}
+	if !valid {
+		return domain.ErrInvalidToken
+	}
+	tenantID := claimStringValue(claims, "tid")
+	if !validRoleTenantID(tenantID) {
+		return domain.ErrInvalidToken
+	}
+	var currentRoles []string
+	if platformAuthority && len(signedRoles) == 0 {
+		// Cross-tenant SAML platform authority is allowlist-derived and never
+		// manufactures a workload assignment. Its current authority is checked
+		// above against the server allowlist, not against target membership.
+		currentRoles = []string{}
+	} else if s.directoryAccess == nil {
+		if len(signedRoles) != 0 {
+			return domain.ErrInvalidToken
+		}
+	} else {
+		var err error
+		currentRoles, err = s.accessTenantRoles(ctx, user.Id, tenantID)
+		if err != nil || !slices.Equal(currentRoles, signedRoles) {
+			return domain.ErrInvalidToken
+		}
+	}
+	var authorization tenantScopedTokenAuthorization
+	if len(currentRoles) > 0 {
+		if s.roleSvc == nil {
+			return domain.ErrInvalidToken
+		}
+		var resolvable bool
+		authorization, resolvable = s.resolveMembershipRoleAuthorization(ctx, tenantID, currentRoles)
+		if !resolvable {
+			return domain.ErrInvalidToken
+		}
+	}
+
+	signedScopes := strings.Fields(claimStringValue(claims, "scope"))
+	if len(signedScopes) == 0 {
+		return nil
+	}
+	canonicalScopes, valid := scopepolicy.CanonicalAudienceScopes(signedScopes)
+	if !valid {
+		return domain.ErrInvalidToken
+	}
+	currentAuthority := append([]string(nil), authorization.permissions...)
+	if authorization.legacyCreatorAdministrator {
+		currentAuthority = append(currentAuthority, tenantSecretReadScope, tenantSecretWriteScope)
+	}
+	if platformAuthority {
+		currentAuthority = append(currentAuthority, homeAuthority(
+			user, string(domain.RoleAdmin), canonicalScopes, domain.PlatformPrivilegeAdmin,
+		)...)
+	}
+	if user.CompanyId != nil {
+		platformPrivilege := issuablePlatformPrivilege(user, claimStringValue(claims, domain.PlatformPrivilegeClaim))
+		currentRole := string(effectiveUserRole(user, platformPrivilege))
+		currentAuthority = append(currentAuthority, homeGlobalAuthority(user, currentRole, canonicalScopes, platformPrivilege)...)
+	}
+	if !subset(canonicalScopes, normalizePermissions(currentAuthority)) {
+		return domain.ErrInvalidToken
+	}
+	return nil
+}
+
+func canonicalAccessTokenRoles(raw any) ([]string, bool) {
+	var roles []string
+	switch values := raw.(type) {
+	case []interface{}:
+		roles = make([]string, 0, len(values))
+		for _, value := range values {
+			role, ok := value.(string)
+			if !ok {
+				return nil, false
+			}
+			roles = append(roles, role)
+		}
+	case []string:
+		roles = append([]string(nil), values...)
+	default:
+		return nil, false
+	}
+	canonical, valid := canonicalMembershipRoles(roles)
+	return canonical, valid && slices.Equal(roles, canonical)
+}
+
 func claimStringValue(claims jwt.MapClaims, key string) string {
 	value, _ := claims[key].(string)
 	return value
+}
+
+func canonicalAuthenticationMethods(claims jwt.MapClaims) ([]string, bool) {
+	raw, exists := claims["amr"]
+	if !exists {
+		return nil, true
+	}
+	var values []string
+	switch typed := raw.(type) {
+	case []interface{}:
+		values = make([]string, 0, len(typed))
+		for _, item := range typed {
+			value, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, value)
+		}
+	case []string:
+		values = append([]string(nil), typed...)
+	default:
+		return nil, false
+	}
+	if len(values) == 0 || len(values) > 16 {
+		return nil, false
+	}
+	seen := make(map[string]struct{}, len(values))
+	canonical := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value == "" || len(value) > 64 {
+			return nil, false
+		}
+		if _, duplicate := seen[value]; duplicate {
+			continue
+		}
+		seen[value] = struct{}{}
+		canonical = append(canonical, value)
+	}
+	sort.Strings(canonical)
+	return canonical, len(canonical) > 0
 }
 
 func tokenVersion(claims jwt.MapClaims) (int, bool) {
@@ -682,6 +1031,18 @@ func (s *userService) RevokeTokens(ctx context.Context, email string, tenantID s
 		TokenVersion: ver,
 		RevokedAt:    time.Now().UTC().Format(time.RFC3339),
 	}, nil
+}
+
+// RevokeIDTokenSubject revokes browser sessions by the signed, immutable
+// subject. This also covers tenant-local federated principals that are not
+// indexed by global email.
+func (s *userService) RevokeIDTokenSubject(ctx context.Context, subject string) error {
+	byID, ok := s.repo.(repository.UserIDRepository)
+	if !ok || strings.TrimSpace(subject) == "" {
+		return domain.ErrInvalidArgument
+	}
+	_, _, err := byID.IncrementTokenVersionByID(ctx, subject)
+	return err
 }
 
 func (s *userService) getRSAPrivateKey() (interface{}, error) {
@@ -844,29 +1205,20 @@ func derefString(v *string) string {
 
 // UpdateUser allows authenticated users to change email and/or password.
 func (s *userService) UpdateUser(ctx context.Context, req domain.UpdateReq) (*domain.UpdateResp, error) {
-	claims, er := utils.ParseToken(req.IdToken, s.jwtSecret)
-	if er != nil {
-		return nil, er
-	}
-	sub, _ := claims["sub"].(string)
-	if strings.TrimSpace(sub) == "" {
-		return nil, domain.ErrInvalidToken
-	}
-	email, _ := claims["email"].(string)
-	if strings.TrimSpace(email) == "" {
-		return nil, domain.ErrInvalidToken
-	}
-	u, findErr := s.repo.FindByEmail(ctx, email)
-	if findErr != nil || u == nil {
-		return nil, domain.ErrNotFound
-	}
-	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
-		return nil, domain.ErrInvalidToken
+	_, u, err := s.validateCurrentIDToken(ctx, req.IdToken, s.issuerBaseURL, s.defaultAudience)
+	if err != nil {
+		return nil, err
 	}
 	if req.Email != "" {
 		u.Email = req.Email
 	}
 	if req.Password != "" {
+		if !passwordCredentialEligible(u) {
+			return nil, domain.ErrInvalidArgument
+		}
+		if !validDirectoryPassword(req.Password) {
+			return nil, domain.ErrInvalidArgument
+		}
 		hash, hashErr := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 		if hashErr != nil {
 			return nil, domain.ErrInvalidArgument
@@ -886,26 +1238,17 @@ func (s *userService) UpdateUser(ctx context.Context, req domain.UpdateReq) (*do
 
 // DeleteUser removes the authenticated user identified by the idToken.
 func (s *userService) DeleteUser(ctx context.Context, req domain.DeleteReq) error {
-	claims, er := utils.ParseToken(req.IdToken, s.jwtSecret)
-	if er != nil {
-		return er
+	_, u, err := s.validateCurrentIDToken(ctx, req.IdToken, s.issuerBaseURL, s.defaultAudience)
+	if err != nil {
+		return err
 	}
-	sub, _ := claims["sub"].(string)
-	if strings.TrimSpace(sub) == "" {
-		return domain.ErrInvalidToken
+	// Tenant-local SAML principals are keyed by immutable subject, not email.
+	// The legacy self-delete contract has only email semantics; rejecting it is
+	// safer than deleting an unrelated global user with the same address.
+	if u.AuthSource == domain.AuthSourceSAML {
+		return domain.ErrInvalidArgument
 	}
-	email, _ := claims["email"].(string)
-	if strings.TrimSpace(email) == "" {
-		return domain.ErrInvalidToken
-	}
-	u, findErr := s.repo.FindByEmail(ctx, email)
-	if findErr != nil || u == nil {
-		return domain.ErrNotFound
-	}
-	if sub != u.Id && !strings.EqualFold(sub, u.Email) {
-		return domain.ErrInvalidToken
-	}
-	return s.repo.DeleteByEmail(ctx, email)
+	return s.repo.DeleteByEmail(ctx, u.Email)
 }
 
 // SendOob generates a one-time code and stores payload metadata for subsequent resets.
@@ -917,13 +1260,21 @@ func (s *userService) SendOob(ctx context.Context, req domain.SendOobReq) (*doma
 		return nil, domain.ErrInvalidArgument
 	}
 
-	email := strings.TrimSpace(req.Email)
+	email := normalizeIdentityEmail(req.Email)
 	if email == "" {
 		return nil, domain.ErrInvalidArgument
 	}
+	limit := s.authenticationRateLimits.OOB
+	allowed, limitErr := s.allowAuthenticationAttempt(ctx, authenticationBucketOOBEmail, email, limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+	if limitErr != nil {
+		return nil, domain.ErrAuthenticationUnavailable
+	}
+	if !allowed {
+		return nil, domain.ErrRateLimited
+	}
 
 	u, e := s.repo.FindByEmail(ctx, email)
-	if e != nil || u == nil || u.Status == domain.UserStatusSuspended {
+	if e != nil || u == nil || u.Status != domain.UserStatusActive || !passwordCredentialEligible(u) {
 		if reqType == "EMAIL_SIGNIN" {
 			// Anti-enumeration: always return success for email sign-in requests.
 			return &domain.SendOobResp{
@@ -958,60 +1309,53 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 		return nil, domain.ErrInvalidArgument
 	}
 
-	email := strings.TrimSpace(req.Email)
+	email := normalizeIdentityEmail(req.Email)
 	if email == "" {
 		return nil, domain.ErrInvalidArgument
+	}
+	limit := s.authenticationRateLimits.OOB
+	allowed, limitErr := s.allowAuthenticationAttempt(ctx, authenticationBucketOOBEmail, email, limit.Requests, time.Duration(limit.WindowSeconds)*time.Second)
+	if limitErr != nil {
+		return nil, domain.ErrAuthenticationUnavailable
+	}
+	if !allowed {
+		return nil, domain.ErrRateLimited
 	}
 
 	u, e := s.repo.FindByEmail(ctx, email)
 	if e != nil {
 		return nil, e
 	}
+	antiEnumerationResponse := func() (*domain.SendOobTenantResp, error) {
+		return &domain.SendOobTenantResp{
+			Kind:        "tikti#SendOobResponse",
+			Email:       email,
+			RequestType: reqType,
+			ExpiresIn:   900,
+			OobCode:     uuid.NewString(),
+		}, nil
+	}
 	if u == nil {
 		if reqType == "PASSWORD_RESET" {
 			return nil, domain.ErrNotFound
 		}
-
-		// EMAIL_SIGNIN: allow onboarding by creating the user record when missing.
-		role := domain.RoleCompanyEmployee
-		rawPassword := uuid.NewString()
-		hash, err := bcrypt.GenerateFromPassword([]byte(rawPassword), bcrypt.DefaultCost)
-		if err != nil {
-			return nil, err
-		}
-		u = &domain.User{
-			Id:        uuid.NewString(),
-			Email:     email,
-			Password:  string(hash),
-			Role:      role,
-			Status:    domain.UserStatusActive,
-			CompanyId: &tenantID,
-			CreatedAt: time.Now(),
-		}
-		if err := s.repo.CreateUser(ctx, u); err != nil {
-			return nil, err
-		}
-		if s.directoryAccess != nil {
-			if _, _, assignmentErr := s.directoryAccess.PutAccessAssignment(ctx, tenantID, domain.AccessPrincipalUser, u.Id, []string{string(role)}, ""); assignmentErr != nil {
-				_ = s.repo.DeleteByEmail(ctx, u.Email)
-				return nil, assignmentErr
-			}
-		} else if s.membershipRepo != nil {
-			_ = s.membershipRepo.Create(ctx, &domain.Membership{
-				Id:        uuid.NewString(),
-				TenantId:  tenantID,
-				UserId:    u.Id,
-				Roles:     []string{string(role)},
-				CreatedAt: time.Now(),
-			})
-		}
+		// Identity V2 provisions users only through the audited global directory.
+		// Preserve the public anti-enumeration response without persisting a user,
+		// membership, assignment, or usable OOB code.
+		return antiEnumerationResponse()
 	}
 
-	if u.Status == domain.UserStatusSuspended {
+	if u.Status != domain.UserStatusActive {
 		if reqType == "PASSWORD_RESET" {
 			return nil, domain.ErrNotFound
 		}
-		return nil, domain.ErrInvalidCreds
+		return antiEnumerationResponse()
+	}
+	if !passwordCredentialEligible(u) {
+		if reqType == "PASSWORD_RESET" {
+			return nil, domain.ErrNotFound
+		}
+		return antiEnumerationResponse()
 	}
 
 	// Every tenant-scoped OOB operation, including PASSWORD_RESET, must be
@@ -1024,6 +1368,9 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 			return nil, accessErr
 		}
 		if len(roles) == 0 && (u.CompanyId == nil || *u.CompanyId != tenantID) {
+			if reqType == "EMAIL_SIGNIN" {
+				return antiEnumerationResponse()
+			}
 			return nil, domain.ErrInvalidTenant
 		}
 	} else if s.membershipRepo != nil {
@@ -1032,9 +1379,15 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 			return nil, err
 		}
 		if membership == nil && (u.CompanyId == nil || *u.CompanyId != tenantID) {
+			if reqType == "EMAIL_SIGNIN" {
+				return antiEnumerationResponse()
+			}
 			return nil, domain.ErrInvalidTenant
 		}
 	} else if u.CompanyId == nil || *u.CompanyId != tenantID {
+		if reqType == "EMAIL_SIGNIN" {
+			return antiEnumerationResponse()
+		}
 		return nil, domain.ErrInvalidTenant
 	}
 
@@ -1055,8 +1408,8 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 // ResetPassword exchanges an OOB code for the stored email and updates the password hash.
 func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq) error {
 	code := strings.TrimSpace(req.OobCode)
-	newPassword := strings.TrimSpace(req.NewPassword)
-	if code == "" || newPassword == "" {
+	newPassword := req.NewPassword
+	if code == "" || !validDirectoryPassword(newPassword) {
 		return domain.ErrInvalidArgument
 	}
 
@@ -1066,6 +1419,9 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 	}
 	u, e2 := s.repo.FindByEmail(ctx, email)
 	if e2 != nil || u == nil {
+		return domain.ErrNotFound
+	}
+	if !passwordCredentialEligible(u) {
 		return domain.ErrNotFound
 	}
 	hash, hashErr := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
@@ -1081,16 +1437,37 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 	return nil
 }
 
+func passwordCredentialEligible(user *domain.User) bool {
+	return user != nil && (user.AuthSource == "" || user.AuthSource == domain.AuthSourcePassword)
+}
+
 func (s *userService) issueIDToken(u *domain.User, amr []string) (string, int, error) {
 	return s.issueIDTokenWithPlatformPrivilege(u, amr, "")
 }
 
 func (s *userService) issueIDTokenWithPlatformPrivilege(u *domain.User, amr []string, requestedPlatformPrivilege string) (string, int, error) {
+	return s.issueIDTokenWithPlatformPrivilegeUntil(u, amr, requestedPlatformPrivilege, time.Time{})
+}
+
+func (s *userService) issueIDTokenWithPlatformPrivilegeUntil(u *domain.User, amr []string, requestedPlatformPrivilege string, absoluteExpiry time.Time) (string, int, error) {
 	if u == nil {
 		return "", 0, domain.ErrInvalidArgument
 	}
+	if u.Status != domain.UserStatusActive {
+		return "", 0, domain.ErrInvalidCreds
+	}
 	if u.PasswordChangeRequired {
 		return "", 0, domain.ErrPasswordChangeRequired
+	}
+	now := time.Now()
+	expiresAt := now.Add(time.Hour)
+	if !absoluteExpiry.IsZero() && absoluteExpiry.Before(expiresAt) {
+		expiresAt = absoluteExpiry
+	}
+	nowUnix := now.Unix()
+	expiresUnix := expiresAt.Unix()
+	if expiresUnix <= nowUnix {
+		return "", 0, domain.ErrInvalidArgument
 	}
 	platformPrivilege := issuablePlatformPrivilege(u, requestedPlatformPrivilege)
 	claims := jwt.MapClaims{
@@ -1101,8 +1478,8 @@ func (s *userService) issueIDTokenWithPlatformPrivilege(u *domain.User, amr []st
 		"iss":    s.issuerBaseURL,
 		"aud":    s.defaultAudience,
 		"ver":    u.TokenVersion,
-		"exp":    time.Now().Add(time.Hour).Unix(),
-		"iat":    time.Now().Unix(),
+		"exp":    expiresUnix,
+		"iat":    nowUnix,
 	}
 	if u.CompanyId != nil {
 		if tid := strings.TrimSpace(*u.CompanyId); tid != "" {
@@ -1120,7 +1497,7 @@ func (s *userService) issueIDTokenWithPlatformPrivilege(u *domain.User, amr []st
 	if err != nil {
 		return "", 0, err
 	}
-	return signed, 3600, nil
+	return signed, int(expiresUnix - nowUnix), nil
 }
 
 func effectiveUserRole(user *domain.User, platformPrivilege ...string) domain.UserRole {
@@ -1163,4 +1540,13 @@ func validatedPlatformPrivilege(user *domain.User, claims jwt.MapClaims) string 
 // interface so the SAML SessionBridge can reuse the existing HS256 issuer.
 func (s *userService) IssueIDTokenWithAMR(u *domain.User, amr []string, platformPrivilege string) (string, int, error) {
 	return s.issueIDTokenWithPlatformPrivilege(u, amr, platformPrivilege)
+}
+
+// IssueIDTokenWithAMRUntil issues a SAML-backed local session whose absolute
+// expiry can never exceed the assertion/session NotOnOrAfter boundary.
+func (s *userService) IssueIDTokenWithAMRUntil(u *domain.User, amr []string, platformPrivilege string, notOnOrAfter time.Time) (string, int, error) {
+	if notOnOrAfter.IsZero() {
+		return "", 0, domain.ErrInvalidArgument
+	}
+	return s.issueIDTokenWithPlatformPrivilegeUntil(u, amr, platformPrivilege, notOnOrAfter)
 }

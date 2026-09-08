@@ -32,13 +32,14 @@ type Application struct {
 	Engine *gin.Engine
 	Redis  *redis.Client
 
-	UserService        services.UserService
-	TenantSvc          services.TenantService
-	RoleSvc            services.RoleService
-	ClientSvc          services.ClientService
-	WorkloadSvc        services.WorkloadIdentityService
-	WorkloadAccountSvc services.WorkloadAccountBFFService
-	DirectorySvc       services.IdentityDirectoryService
+	UserService           services.UserService
+	TenantSvc             services.TenantService
+	RoleSvc               services.RoleService
+	ClientSvc             services.ClientService
+	WorkloadSvc           services.WorkloadIdentityService
+	WorkloadAccountSvc    services.WorkloadAccountBFFService
+	DirectorySvc          services.IdentityDirectoryService
+	AuthenticationLimiter repository.AuthenticationAttemptLimiter
 }
 
 // NewApplication assembles dependencies (Redis, repository, services) using the provided config.
@@ -85,6 +86,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}
 	directoryService := services.NewIdentityDirectoryService(
 		directoryRepo, userRepo, exactTenants, exactRoles, cfg.IdentityGroupsV1,
+		services.WithIdentityDirectoryRateLimits(cfg.HTTP.RateLimits),
 	)
 
 	userService := services.NewUserService(
@@ -111,6 +113,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 			services.NewTenantDiscoveryMetrics(prometheus.DefaultRegisterer),
 		),
 		services.WithIdentityDirectoryAccess(directoryRepo),
+		services.WithAuthenticationRateLimits(cfg.HTTP.RateLimits),
+		services.WithPasswordAttemptLimiter(directoryRepo),
+		services.WithCurrentPlatformAdministrators(cfg.SAML.PlatformAdministrators),
 	)
 	workloadVerifier, err := newWorkloadTokenVerifier(cfg.WorkloadIdentity)
 	if err != nil {
@@ -157,21 +162,22 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	setupStorageOIDCMappings(engine, cfg, storageOIDCController)
 	setupStorageSTSMappings(engine, cfg, storageSTSController)
 	setupObjectStorageBrowserMappings(engine, cfg, storageAdminController)
-	setupIdentityDirectoryMappings(engine, cfg, directoryService)
+	setupIdentityDirectoryMappings(engine, cfg, directoryService, userService)
 
 	_, _ = tenantService.EnsureDefault(context.Background())
 
 	return &Application{
-		Config:             cfg,
-		Engine:             engine,
-		Redis:              redisClient,
-		UserService:        userService,
-		TenantSvc:          tenantService,
-		RoleSvc:            roleService,
-		ClientSvc:          clientService,
-		WorkloadSvc:        workloadService,
-		WorkloadAccountSvc: workloadAccountService,
-		DirectorySvc:       directoryService,
+		Config:                cfg,
+		Engine:                engine,
+		Redis:                 redisClient,
+		UserService:           userService,
+		TenantSvc:             tenantService,
+		RoleSvc:               roleService,
+		ClientSvc:             clientService,
+		WorkloadSvc:           workloadService,
+		WorkloadAccountSvc:    workloadAccountService,
+		DirectorySvc:          directoryService,
+		AuthenticationLimiter: directoryRepo,
 	}, nil
 }
 

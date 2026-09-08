@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026-09-04.2",
+  "policyVersion": "2026-09-08.1",
   "scopes": [
     {
       "scope": "code-admin:audit:read",
@@ -59,8 +59,8 @@
     },
     {
       "scope": "code-admin:environments:read",
-      "boundary": "global",
-      "tenantAssignable": false
+      "boundary": "tenant",
+      "tenantAssignable": true
     },
     {
       "scope": "code-admin:explorer:read",
@@ -172,9 +172,8 @@
     },
     {
       "scope": "code-admin:repositories:read",
-      "boundary": "mixed",
-      "tenantAssignable": false,
-      "reason": "Shared by tenant repository resources and the global repository-template catalog."
+      "boundary": "tenant",
+      "tenantAssignable": true
     },
     {
       "scope": "code-admin:repositories:write",

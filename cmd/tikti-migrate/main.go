@@ -97,6 +97,7 @@ func main() {
 			st.skipped++
 		} else {
 			if !dryRun {
+				// #nosec G117 -- migration persists the existing one-way password hash.
 				data, _ := json.Marshal(u)
 				if err := client.HSet(ctx, usersHashV2, u.Id, data).Err(); err != nil {
 					log.Printf("failed to write user %s: %v", u.Email, err)

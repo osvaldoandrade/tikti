@@ -68,6 +68,21 @@ config:
   tenantTargetDiscoveryV2: false
   tenantTargetDiscoveryV2PrincipalTenants: []
   identityGroupsV1: false
+  http:
+    allowedOrigins: []
+    trustedProxyCIDRs: []
+    readHeaderTimeoutSeconds: 2
+    readTimeoutSeconds: 5
+    writeTimeoutSeconds: 10
+    idleTimeoutSeconds: 60
+    maxHeaderBytes: 1048576
+    rateLimits:
+      login: {requests: 5, windowSeconds: 60}
+      oobSignIn: {requests: 10, windowSeconds: 60}
+      tokenExchange: {requests: 5, windowSeconds: 60}
+      lookup: {requests: 60, windowSeconds: 60}
+      oob: {requests: 3, windowSeconds: 3600}
+      saml: {requests: 10, windowSeconds: 60}
   workloadIdentity:
     clusterRef: ""
     issuer: ""
@@ -107,7 +122,9 @@ config:
 
 secrets:
   enabled: true
-  existingSecret: ""
+  # The chart never manufactures authentication credentials. Installations
+  # must provide this Secret (or explicitly override the name).
+  existingSecret: "tikti-runtime"
   jwtSecret: ""
   apiKey: ""
   redisPassword: ""
@@ -118,6 +135,10 @@ secrets:
 saml:
   enabled: true
   existingSecret: ""
+  # Platform authority may only originate from the immutable MASTER tenant.
+  # Each entry is an exact lowercase identity; keep this list empty unless the
+  # installation intentionally delegates platform administration through SAML.
+  platformAdministrators: []
   sp:
     key: ""
     crt: ""

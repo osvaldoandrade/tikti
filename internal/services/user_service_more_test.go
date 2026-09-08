@@ -212,11 +212,22 @@ func makePEMKey(t *testing.T) string {
 }
 
 func signIDToken(t *testing.T, secret string, email string) string {
+	return signCurrentIDToken(t, secret, email, "https://issuer", "tikti", 0)
+}
+
+func testStringPointer(value string) *string {
+	return &value
+}
+
+func signCurrentIDToken(t *testing.T, secret string, email string, issuer string, audience string, version int) string {
 	t.Helper()
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":   email,
 		"email": email,
 		"role":  string(domain.RoleCompanyEmployee),
+		"iss":   issuer,
+		"aud":   audience,
+		"ver":   version,
 		"exp":   time.Now().Add(time.Hour).Unix(),
 		"iat":   time.Now().Unix(),
 	})
@@ -236,6 +247,137 @@ func bcryptHash(t *testing.T, raw string) string {
 	return string(h)
 }
 
+func TestSAMLUserCannotUsePasswordOrOOBFallbackCredentials(t *testing.T) {
+	passwordHash := bcryptHash(t, "legacy-password-123")
+	samlUser := &domain.User{
+		Id: "user-saml", Email: "saml@example.com", Password: passwordHash,
+		Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourceSAML, ExternalSubject: "idp-subject", TokenVersion: 3,
+	}
+	repo := &mockUserRepo{}
+	repo.findByEmailFn = func(context.Context, string) (*domain.User, error) {
+		copy := *samlUser
+		return &copy, nil
+	}
+	repo.consumeOobCodeFn = func(context.Context, string, string) (string, error) {
+		return samlUser.Email, nil
+	}
+	saveCalls, updateCalls := 0, 0
+	repo.saveOobCodeFn = func(context.Context, string, string, string) error {
+		saveCalls++
+		return nil
+	}
+	repo.updateUserFn = func(context.Context, *domain.User) error {
+		updateCalls++
+		return nil
+	}
+	svc := NewUserService(
+		repo, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+	).(*userService)
+
+	if _, err := svc.SignIn(context.Background(), domain.SignInReq{
+		Email: samlUser.Email, Password: "legacy-password-123",
+	}); err != domain.ErrInvalidCreds {
+		t.Fatalf("password sign-in error = %v, want ErrInvalidCreds", err)
+	}
+	if _, err := svc.SignInWithOobCode(context.Background(), domain.SignInWithOobCodeReq{
+		Email: samlUser.Email, OobCode: "email-code",
+	}); err != domain.ErrInvalidCreds {
+		t.Fatalf("OOB sign-in error = %v, want ErrInvalidCreds", err)
+	}
+	if response, err := svc.SendOob(context.Background(), domain.SendOobReq{
+		Email: samlUser.Email, RequestType: "EMAIL_SIGNIN",
+	}); err != nil || response == nil {
+		t.Fatalf("anti-enumeration OOB response = %#v, %v", response, err)
+	}
+	if _, err := svc.SendOob(context.Background(), domain.SendOobReq{
+		Email: samlUser.Email, RequestType: "PASSWORD_RESET",
+	}); err != domain.ErrNotFound {
+		t.Fatalf("password reset OOB error = %v, want ErrNotFound", err)
+	}
+	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{
+		OobCode: "reset-code", NewPassword: "new-password-123",
+	}); err != domain.ErrNotFound {
+		t.Fatalf("reset error = %v, want ErrNotFound", err)
+	}
+	token := signCurrentIDToken(t, "secret", samlUser.Email, "https://issuer", "tikti", samlUser.TokenVersion)
+	if _, err := svc.UpdateUser(context.Background(), domain.UpdateReq{
+		IdToken: token, Password: "new-password-123",
+	}); err != domain.ErrInvalidArgument {
+		t.Fatalf("authenticated password update error = %v, want ErrInvalidArgument", err)
+	}
+	if saveCalls != 0 || updateCalls != 0 {
+		t.Fatalf("SAML fallback credential mutation occurred: saves=%d updates=%d", saveCalls, updateCalls)
+	}
+}
+
+type passwordAttemptLimiterStub struct {
+	counts map[string]int
+}
+
+func (s *passwordAttemptLimiterStub) AllowAuthenticationAttempt(
+	_ context.Context,
+	bucket string,
+	subject string,
+	limit int,
+	_ time.Duration,
+) (bool, error) {
+	if s.counts == nil {
+		s.counts = map[string]int{}
+	}
+	key := bucket + ":" + subject
+	s.counts[key]++
+	return s.counts[key] <= limit, nil
+}
+
+func TestSignInUsesUniformPasswordWorkAndThrottleBeforeUserLookup(t *testing.T) {
+	repo := &mockUserRepo{}
+	repo.findByEmailFn = func(_ context.Context, email string) (*domain.User, error) {
+		switch email {
+		case "active@example.com":
+			return &domain.User{Id: "active", Email: email, Password: "active-hash", Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword}, nil
+		case "saml@example.com":
+			return &domain.User{Id: "saml", Email: email, Password: "stale-saml-hash", Status: domain.UserStatusActive, AuthSource: domain.AuthSourceSAML}, nil
+		case "temporary-rate@example.com":
+			return &domain.User{Id: "temporary", Email: email, Password: "temporary-hash", Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, PasswordChangeRequired: true}, nil
+		default:
+			return nil, nil
+		}
+	}
+	limiter := &passwordAttemptLimiterStub{}
+	service := NewUserService(
+		repo, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid",
+		WithPasswordAttemptLimiter(limiter),
+	).(*userService)
+	checked := []string{}
+	service.verifyPassword = func(hash, _ string) bool {
+		checked = append(checked, hash)
+		return false
+	}
+
+	for _, email := range []string{"missing-shape@example.com", "saml@example.com", "active@example.com"} {
+		if _, err := service.SignIn(context.Background(), domain.SignInReq{Email: email, Password: "wrong"}); err != domain.ErrInvalidCreds {
+			t.Fatalf("%s sign-in error = %v", email, err)
+		}
+	}
+	if len(checked) != 3 || checked[0] != temporaryPasswordDummyHash ||
+		checked[1] != temporaryPasswordDummyHash || checked[2] != "active-hash" {
+		t.Fatalf("password work was not uniform: %#v", checked)
+	}
+
+	for _, email := range []string{"missing-rate@example.com", "temporary-rate@example.com"} {
+		for attempt := 1; attempt <= temporaryPasswordChangeAttemptLimit+1; attempt++ {
+			_, err := service.SignIn(context.Background(), domain.SignInReq{Email: email, Password: "wrong"})
+			if attempt <= temporaryPasswordChangeAttemptLimit && err != domain.ErrInvalidCreds {
+				t.Fatalf("%s attempt %d = %v, want ErrInvalidCreds", email, attempt, err)
+			}
+			if attempt > temporaryPasswordChangeAttemptLimit && err != domain.ErrRateLimited {
+				t.Fatalf("%s attempt %d = %v, want ErrRateLimited", email, attempt, err)
+			}
+		}
+	}
+}
+
 func TestUserService_SignIn(t *testing.T) {
 	repo := &mockUserRepo{}
 	svc := NewUserService(repo, nil, nil, nil, "secret", "http://issuer", "tikti", makePEMKey(t), "kid").(*userService)
@@ -250,6 +392,13 @@ func TestUserService_SignIn(t *testing.T) {
 	}
 	if _, err := svc.SignIn(context.Background(), domain.SignInReq{Email: "a@x.com", Password: "p"}); err != domain.ErrInvalidCreds {
 		t.Fatalf("expected ErrInvalidCreds, got %v", err)
+	}
+
+	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
+		return &domain.User{Id: "u1", Email: email, Password: bcryptHash(t, "p"), Status: domain.UserStatusInactive}, nil
+	}
+	if _, err := svc.SignIn(context.Background(), domain.SignInReq{Email: "a@x.com", Password: "p"}); err != domain.ErrInvalidCreds {
+		t.Fatalf("inactive account issued a password session: %v", err)
 	}
 
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
@@ -289,7 +438,7 @@ func TestUserService_LookupAndUserMutations(t *testing.T) {
 		t.Fatalf("expected ErrInvalidToken, got %v", err)
 	}
 
-	tok := signIDToken(t, "secret", "u@x.com")
+	tok := signCurrentIDToken(t, "secret", "u@x.com", "http://issuer", "tikti", 0)
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) { return nil, nil }
 	if _, err := svc.Lookup(context.Background(), domain.LookupReq{IdToken: tok}); err != domain.ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
@@ -308,7 +457,7 @@ func TestUserService_LookupAndUserMutations(t *testing.T) {
 	}
 
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
-		return &domain.User{Id: "u1", Email: "u@x.com", Password: "old"}, nil
+		return &domain.User{Id: "u1", Email: "u@x.com", Password: "old", Status: domain.UserStatusActive}, nil
 	}
 	repo.updateUserFn = func(ctx context.Context, user *domain.User) error { return errors.New("update-fail") }
 	if _, err := svc.UpdateUser(context.Background(), domain.UpdateReq{IdToken: tok, Email: "new@x.com"}); err == nil {
@@ -316,7 +465,10 @@ func TestUserService_LookupAndUserMutations(t *testing.T) {
 	}
 
 	repo.updateUserFn = func(ctx context.Context, user *domain.User) error { return nil }
-	ur, err := svc.UpdateUser(context.Background(), domain.UpdateReq{IdToken: tok, Email: "new@x.com", Password: "np"})
+	if _, err := svc.UpdateUser(context.Background(), domain.UpdateReq{IdToken: tok, Password: "short"}); err != domain.ErrInvalidArgument {
+		t.Fatalf("expected weak password rejection, got %v", err)
+	}
+	ur, err := svc.UpdateUser(context.Background(), domain.UpdateReq{IdToken: tok, Email: "new@x.com", Password: "permanent-1234"})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
@@ -373,6 +525,12 @@ func TestUserService_TokenExchangeAndAccessValidation(t *testing.T) {
 	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{IdToken: idTok, Audience: "a"}); err != domain.ErrInvalidCreds {
 		t.Fatalf("expected ErrInvalidCreds, got %v", err)
 	}
+	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
+		return &domain.User{Id: "u1", Email: email, Status: domain.UserStatusInactive}, nil
+	}
+	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{IdToken: idTok, Audience: "a"}); err != domain.ErrInvalidCreds {
+		t.Fatalf("inactive account exchanged an ID token: %v", err)
+	}
 
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
 		return &domain.User{Id: "u1", Email: email, Status: domain.UserStatusActive}, nil
@@ -414,7 +572,7 @@ func TestUserService_TokenExchangeAndAccessValidation(t *testing.T) {
 	}
 
 	clientSvc.getClientFn = func(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
-		return &domain.Client{Id: clientID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
+		return &domain.Client{Id: clientID, TenantId: tenantID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
 	}
 	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
 		IdToken: idTok, Audience: "a", TenantID: "t1", Scopes: []string{"codeq:result"},
@@ -448,7 +606,7 @@ func TestUserService_TokenExchangeAndAccessValidation(t *testing.T) {
 		return &domain.User{Id: "u1", Email: email, Status: domain.UserStatusActive, CompanyId: &tenant, Role: domain.RoleCompanyEmployee}, nil
 	}
 	clientSvc.getClientFn = func(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
-		return &domain.Client{Id: clientID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
+		return &domain.Client{Id: clientID, TenantId: tenantID, Status: "ACTIVE", DefaultScopes: []string{"codeq:claim"}}, nil
 	}
 
 	badKeySvc := NewUserService(repo, membership, roleSvc, clientSvc, "secret", "https://issuer", "tikti", "bad-pem", "kid").(*userService)
@@ -459,12 +617,12 @@ func TestUserService_TokenExchangeAndAccessValidation(t *testing.T) {
 	}
 
 	teResp, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
-		IdToken: idTok, Audience: "a", TenantID: "t1", Scopes: []string{"codeq:claim"}, TTLSeconds: 90000, Subject: "",
+		IdToken: idTok, Audience: "a", TenantID: "t1", Scopes: []string{"codeq:claim"}, TTLSeconds: 90000,
 	})
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if teResp.AccessToken == "" || teResp.ExpiresIn != 86400 {
+	if teResp.AccessToken == "" || teResp.ExpiresIn < 3598 || teResp.ExpiresIn > 3600 {
 		t.Fatalf("unexpected token exchange response: %+v", teResp)
 	}
 
@@ -504,12 +662,14 @@ func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 	}
 	priv := key.(*rsa.PrivateKey)
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
-		"iss": "https://issuer",
-		"aud": "tikti",
-		"sub": "u@x.com",
-		"ver": 1,
-		"exp": time.Now().Add(time.Hour).Unix(),
-		"iat": time.Now().Unix(),
+		"iss":   "https://issuer",
+		"aud":   "tikti",
+		"sub":   "u1",
+		"email": "u@x.com",
+		"tid":   "t1",
+		"ver":   1,
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"iat":   time.Now().Unix(),
 	})
 	signed, err := token.SignedString(priv)
 	if err != nil {
@@ -556,8 +716,8 @@ func TestUserService_ValidateJWKSAndHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign email fallback token: %v", err)
 	}
-	if _, err := svc.ValidateAccessToken(context.Background(), emailFallbackSigned, "https://issuer", "tikti"); err != nil {
-		t.Fatalf("expected email-claim fallback to validate, got %v", err)
+	if _, err := svc.ValidateAccessToken(context.Background(), emailFallbackSigned, "https://issuer", "tikti"); err != domain.ErrInvalidToken {
+		t.Fatalf("missing immutable subject was accepted: %v", err)
 	}
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
 		return &domain.User{Id: "u1", Email: email, TokenVersion: 1, Status: domain.UserStatusSuspended}, nil
@@ -756,17 +916,21 @@ func TestUserService_StatusRevokeOobAndReset(t *testing.T) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 
-	createErr := errors.New("create-fail")
-	repo.createUserFn = func(ctx context.Context, user *domain.User) error { return createErr }
-	if _, err := svc.SendOobForTenant(context.Background(), "t1", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "new@x.com"}); !errors.Is(err, createErr) {
-		t.Fatalf("expected create error, got %v", err)
+	created, saved := false, false
+	repo.createUserFn = func(ctx context.Context, user *domain.User) error {
+		created = true
+		return errors.New("unexpected create")
 	}
-
-	repo.createUserFn = func(ctx context.Context, user *domain.User) error { return nil }
-	repo.saveOobCodeFn = func(ctx context.Context, code, email, reqType string) error { return nil }
+	repo.saveOobCodeFn = func(ctx context.Context, code, email, reqType string) error {
+		saved = true
+		return nil
+	}
 	resp, err := svc.SendOobForTenant(context.Background(), "t1", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "new@x.com"})
 	if err != nil || resp.OobCode == "" {
 		t.Fatalf("unexpected send oob tenant response: %+v err=%v", resp, err)
+	}
+	if created || saved {
+		t.Fatalf("unknown EMAIL_SIGNIN persisted state: created=%v saved=%v", created, saved)
 	}
 
 	otherTenant := "t2"
@@ -774,37 +938,37 @@ func TestUserService_StatusRevokeOobAndReset(t *testing.T) {
 		return &domain.User{Id: "u1", Email: email, Status: domain.UserStatusActive, CompanyId: &otherTenant}, nil
 	}
 	membership.getFn = func(ctx context.Context, tenantID string, userID string) (*domain.Membership, error) { return nil, nil }
-	if _, err := svc.SendOobForTenant(context.Background(), "t1", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}); err != domain.ErrInvalidTenant {
-		t.Fatalf("expected ErrInvalidTenant, got %v", err)
+	if response, err := svc.SendOobForTenant(context.Background(), "t1", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}); err != nil || response == nil || response.OobCode == "" {
+		t.Fatalf("foreign EMAIL_SIGNIN leaked tenant access: response=%+v err=%v", response, err)
 	}
 
 	svcNoMembership := NewUserService(repo, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
-	if _, err := svcNoMembership.SendOobForTenant(context.Background(), "t1", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}); err != domain.ErrInvalidTenant {
-		t.Fatalf("expected ErrInvalidTenant, got %v", err)
+	if response, err := svcNoMembership.SendOobForTenant(context.Background(), "t1", domain.SendOobReq{RequestType: "EMAIL_SIGNIN", Email: "u@x.com"}); err != nil || response == nil || response.OobCode == "" {
+		t.Fatalf("unassigned EMAIL_SIGNIN leaked tenant access: response=%+v err=%v", response, err)
 	}
 
 	repo.consumeOobCodeFn = func(ctx context.Context, code string, expectedReqType string) (string, error) {
 		return "", errors.New("consume-fail")
 	}
-	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "p"}); err != domain.ErrInvalidOob {
+	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "permanent-1234"}); err != domain.ErrInvalidOob {
 		t.Fatalf("expected ErrInvalidOob, got %v", err)
 	}
 	repo.consumeOobCodeFn = func(ctx context.Context, code string, expectedReqType string) (string, error) {
 		return "u@x.com", nil
 	}
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) { return nil, nil }
-	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "p"}); err != domain.ErrNotFound {
+	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "permanent-1234"}); err != domain.ErrNotFound {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 	repo.findByEmailFn = func(ctx context.Context, email string) (*domain.User, error) {
 		return &domain.User{Id: "u1", Email: email}, nil
 	}
 	repo.updateUserFn = func(ctx context.Context, user *domain.User) error { return errors.New("update-fail") }
-	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "p"}); err == nil {
+	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "permanent-1234"}); err == nil {
 		t.Fatalf("expected update error")
 	}
 	repo.updateUserFn = func(ctx context.Context, user *domain.User) error { return nil }
-	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "p"}); err != nil {
+	if err := svc.ResetPassword(context.Background(), domain.ResetPwdReq{OobCode: "c", NewPassword: "permanent-1234"}); err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
 }
@@ -852,7 +1016,10 @@ func TestUserService_IssueIDTokenAndGetRSAPrivateKey(t *testing.T) {
 	if _, _, err := svc.issueIDToken(nil, nil); err != domain.ErrInvalidArgument {
 		t.Fatalf("expected ErrInvalidArgument, got %v", err)
 	}
-	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u1", Email: "u@x.com", Role: domain.RoleCompanyEmployee}, nil)
+	if _, _, err := svc.issueIDToken(&domain.User{Id: "inactive", Email: "inactive@x.com", Status: domain.UserStatusInactive}, nil); err != domain.ErrInvalidCreds {
+		t.Fatalf("inactive account reached the ID token issuer: %v", err)
+	}
+	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u1", Email: "u@x.com", Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive}, nil)
 	if err != nil || tok == "" || exp != 3600 {
 		t.Fatalf("unexpected token response: tok=%q exp=%d err=%v", tok, exp, err)
 	}
@@ -881,6 +1048,7 @@ func TestUserService_IssueIDTokenAndGetRSAPrivateKey(t *testing.T) {
 		Id:        "u2",
 		Email:     "u2@x.com",
 		Role:      domain.RoleCompanyEmployee,
+		Status:    domain.UserStatusActive,
 		CompanyId: &tenantID,
 	}, nil)
 	if err != nil {
@@ -913,11 +1081,41 @@ func TestUserService_IssueIDTokenAndGetRSAPrivateKey(t *testing.T) {
 	}
 }
 
+func TestUserService_IssueIDTokenWithAMRUntilBoundsSAMLSession(t *testing.T) {
+	svc := NewUserService(&mockUserRepo{}, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
+	user := &domain.User{
+		Id: "saml-user", Email: "saml@example.com", Role: domain.RoleCompanyEmployee,
+		Status: domain.UserStatusActive, AuthSource: domain.AuthSourceSAML,
+	}
+	deadline := time.Now().Add(5 * time.Minute).UTC().Truncate(time.Second)
+	token, expiresIn, err := svc.IssueIDTokenWithAMRUntil(user, []string{"saml"}, "", deadline)
+	if err != nil {
+		t.Fatalf("issue bounded SAML session: %v", err)
+	}
+	if expiresIn < 298 || expiresIn > 300 {
+		t.Fatalf("expiresIn = %d, want assertion-bound lifetime near 300 seconds", expiresIn)
+	}
+	claims, err := utils.ParseToken(token, "secret")
+	if err != nil {
+		t.Fatalf("parse bounded SAML session: %v", err)
+	}
+	if got := int64(claims["exp"].(float64)); got != deadline.Unix() {
+		t.Fatalf("token exp = %d, want assertion NotOnOrAfter %d", got, deadline.Unix())
+	}
+
+	if _, _, err := svc.IssueIDTokenWithAMRUntil(user, []string{"saml"}, "", time.Now().Add(-time.Second)); err != domain.ErrInvalidArgument {
+		t.Fatalf("expired assertion error = %v, want ErrInvalidArgument", err)
+	}
+	if _, _, err := svc.IssueIDTokenWithAMRUntil(user, []string{"saml"}, "", time.Time{}); err != domain.ErrInvalidArgument {
+		t.Fatalf("missing assertion expiry error = %v, want ErrInvalidArgument", err)
+	}
+}
+
 func TestIDToken_AMR_Password(t *testing.T) {
 	svc := NewUserService(&mockUserRepo{}, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
 
 	// Password path: nil amr → token must not contain amr.
-	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u-pwd", Email: "pwd@example.com", Role: domain.RoleCompanyEmployee}, nil)
+	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u-pwd", Email: "pwd@example.com", Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive}, nil)
 	if err != nil || tok == "" || exp != 3600 {
 		t.Fatalf("unexpected: tok=%q exp=%d err=%v", tok, exp, err)
 	}
@@ -937,7 +1135,7 @@ func TestIDToken_AMR_SAML(t *testing.T) {
 	svc := NewUserService(&mockUserRepo{}, nil, nil, nil, "secret", "https://issuer", "tikti", makePEMKey(t), "kid").(*userService)
 
 	// SAML path: amr=["saml"] → token must include that claim.
-	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u-saml", Email: "saml@example.com", Role: domain.RoleCompanyEmployee}, []string{"saml"})
+	tok, exp, err := svc.issueIDToken(&domain.User{Id: "u-saml", Email: "saml@example.com", Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive}, []string{"saml"})
 	if err != nil || tok == "" || exp != 3600 {
 		t.Fatalf("unexpected: tok=%q exp=%d err=%v", tok, exp, err)
 	}

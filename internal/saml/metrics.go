@@ -20,6 +20,7 @@ type Metrics struct {
 	TIDOverrideIgnored  *prometheus.CounterVec
 	IdPAdminChanges     *prometheus.CounterVec
 	StateCookieRecovery *prometheus.CounterVec
+	AuditFailures       *prometheus.CounterVec
 
 	// Histograms — 2 per HLD §18.
 	ValidationDuration *prometheus.HistogramVec
@@ -96,6 +97,11 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help: "Total same-origin state-cookie recovery outcomes.",
 		}, []string{"result"}),
 
+		AuditFailures: f.NewCounterVec(prometheus.CounterOpts{
+			Name: "tikti_saml_audit_failures_total",
+			Help: "Total SAML decisions that could not be durably audited.",
+		}, []string{"tid", "decision"}),
+
 		// ── Histograms ──────────────────────────────────────────────
 		ValidationDuration: f.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "tikti_saml_response_validation_duration_seconds",
@@ -112,7 +118,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		IdPCertExpiry: f.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "tikti_saml_idp_cert_expiry_seconds",
 			Help: "Seconds until IdP signing certificate expires.",
-		}, []string{"tid", "subject"}),
+		}, []string{"tid", "fingerprint"}),
 
 		SPCertExpiry: f.NewGauge(prometheus.GaugeOpts{
 			Name: "tikti_saml_sp_cert_expiry_seconds",

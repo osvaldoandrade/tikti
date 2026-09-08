@@ -45,6 +45,7 @@ func (t *BearerTokenFileTransport) RoundTrip(request *http.Request) (*http.Respo
 }
 
 func readBearerToken(path string) (string, error) {
+	// #nosec G304 -- path is an operator-owned projected-token configuration value.
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err

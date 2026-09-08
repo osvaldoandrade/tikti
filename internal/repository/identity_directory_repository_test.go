@@ -2,10 +2,12 @@ package repository
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +23,46 @@ func newIdentityDirectoryForTest(t *testing.T) (*redis.Client, IdentityDirectory
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 	return client, NewIdentityDirectoryRepository(client)
+}
+
+func TestAuthenticationAttemptLimiterUsesOpaqueIndependentExpiringBuckets(t *testing.T) {
+	client, repo := newIdentityDirectoryForTest(t)
+	ctx := context.Background()
+	const subject = "Sensitive.User@example.com"
+	window := 2 * time.Minute
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		allowed, err := repo.AllowAuthenticationAttempt(ctx, "password:email", subject, 2, window)
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if allowed != (attempt <= 2) {
+			t.Fatalf("attempt %d allowed=%v", attempt, allowed)
+		}
+	}
+	for _, input := range []struct{ bucket, subject string }{
+		{bucket: "password:ip", subject: subject},
+		{bucket: "password:email", subject: "other@example.com"},
+	} {
+		allowed, err := repo.AllowAuthenticationAttempt(ctx, input.bucket, input.subject, 2, window)
+		if err != nil || !allowed {
+			t.Fatalf("independent bucket %+v allowed=%v err=%v", input, allowed, err)
+		}
+	}
+
+	keys, err := client.Keys(ctx, authenticationAttemptPrefix+"*").Result()
+	if err != nil || len(keys) != 3 {
+		t.Fatalf("rate limit keys=%v err=%v", keys, err)
+	}
+	for _, key := range keys {
+		if strings.Contains(strings.ToLower(key), "sensitive") || strings.Contains(strings.ToLower(key), "example.com") || strings.Contains(key, "password") {
+			t.Fatalf("rate limit key exposes bucket or subject: %q", key)
+		}
+		ttl, ttlErr := client.PTTL(ctx, key).Result()
+		if ttlErr != nil || ttl <= 0 || ttl > window {
+			t.Fatalf("rate limit TTL for %q = %v, %v", key, ttl, ttlErr)
+		}
+	}
 }
 
 func TestIdentityDirectoryUserIndexIsBoundedSafeAndNormalized(t *testing.T) {
@@ -53,6 +95,82 @@ func TestIdentityDirectoryUserIndexIsBoundedSafeAndNormalized(t *testing.T) {
 	}
 	if count := client.HLen(context.Background(), membershipsKey("default")).Val(); count != 0 {
 		t.Fatalf("directory creation wrote default membership: %d", count)
+	}
+}
+
+func TestUpdateDirectoryUserRejectsStaleSecuritySnapshot(t *testing.T) {
+	client, repo := newIdentityDirectoryForTest(t)
+	ctx := context.Background()
+	user := &domain.User{
+		Id: "user-cas", Email: "cas@example.com", Password: "old-hash",
+		Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now().UTC(),
+	}
+	if _, err := repo.CreateDirectoryUser(ctx, user); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	stale := *user
+	securityUpdate := *user
+	securityUpdate.Status = domain.UserStatusSuspended
+	securityUpdate.TokenVersion++
+	if _, err := repo.UpdateDirectoryUser(ctx, &securityUpdate); err != nil {
+		t.Fatalf("security update: %v", err)
+	}
+	if securityUpdate.Revision != 1 {
+		t.Fatalf("security update revision = %d, want 1", securityUpdate.Revision)
+	}
+
+	stale.Password = "replacement-hash"
+	stale.PasswordChangeRequired = false
+	stale.TokenVersion++
+	if _, err := repo.UpdateDirectoryUser(ctx, &stale); !errors.Is(err, domain.ErrVersionConflict) {
+		t.Fatalf("stale password update error = %v, want ErrVersionConflict", err)
+	}
+
+	raw, err := client.HGet(ctx, usersHashV2, user.Id).Result()
+	if err != nil {
+		t.Fatalf("read stored user: %v", err)
+	}
+	var stored domain.User
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("decode stored user: %v", err)
+	}
+	if stored.Status != domain.UserStatusSuspended || stored.TokenVersion != 1 ||
+		stored.Password != "old-hash" || stored.Revision != 1 {
+		t.Fatalf("stale write reverted security state: %#v", stored)
+	}
+}
+
+func TestTenantDirectoryPaginationNeverCarriesForeignPrincipalPII(t *testing.T) {
+	_, repo := newIdentityDirectoryForTest(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, user := range []*domain.User{
+		{Id: "user-a", Email: "a-authorized@example.com", Password: "hash", Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, CreatedAt: now},
+		{Id: "user-hidden", Email: "b-hidden@example.com", Password: "hash", Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, CreatedAt: now},
+		{Id: "user-c", Email: "c-authorized@example.com", Password: "hash", Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword, CreatedAt: now},
+	} {
+		if _, err := repo.CreateDirectoryUser(ctx, user); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, userID := range []string{"user-a", "user-c"} {
+		if _, _, err := repo.PutAccessAssignment(ctx, "bereia", domain.AccessPrincipalUser, userID, []string{"reader"}, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := repo.ListTenantDirectoryUsers(ctx, "bereia", "", "", 1)
+	if err != nil || len(first.Users) != 1 || first.Users[0].ID != "user-a" || first.NextPageToken == "" {
+		t.Fatalf("first tenant page = %#v, %v", first, err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(first.NextPageToken)
+	if err != nil || strings.Contains(string(raw), "b-hidden@example.com") || strings.Contains(string(raw), "user-hidden") {
+		t.Fatalf("tenant cursor leaked a foreign principal: %q, %v", raw, err)
+	}
+	second, err := repo.ListTenantDirectoryUsers(ctx, "bereia", "", first.NextPageToken, 1)
+	if err != nil || len(second.Users) != 1 || second.Users[0].ID != "user-c" || second.NextPageToken != "" {
+		t.Fatalf("second tenant page = %#v, %v", second, err)
 	}
 }
 
@@ -261,6 +379,49 @@ func TestIdentityDirectoryBackfillResumesAfterInterruptedBatch(t *testing.T) {
 	}
 }
 
+func TestIdentityDirectoryBackfillHasSingleDistributedOwner(t *testing.T) {
+	server := miniredis.RunT(t)
+	ownerClient := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	contenderClient := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() {
+		_ = ownerClient.Close()
+		_ = contenderClient.Close()
+	})
+	ctx := context.Background()
+	user := domain.User{
+		Id: "user-lock", Email: "lock@example.com", Password: "hash",
+		Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now().UTC(),
+	}
+	raw, _ := json.Marshal(user)
+	if err := ownerClient.HSet(ctx, legacyUsersHash, user.Email, raw).Err(); err != nil {
+		t.Fatal(err)
+	}
+
+	hook := &pauseFirstHScanHook{entered: make(chan struct{}), release: make(chan struct{})}
+	ownerClient.AddHook(hook)
+	ownerRepo := NewIdentityDirectoryRepository(ownerClient)
+	contenderRepo := NewIdentityDirectoryRepository(contenderClient)
+	ownerResult := make(chan error, 1)
+	go func() {
+		_, err := ownerRepo.Backfill(ctx)
+		ownerResult <- err
+	}()
+	<-hook.entered
+
+	if result, err := contenderRepo.Backfill(ctx); result != nil || !errors.Is(err, domain.ErrDirectoryBackfillInProgress) {
+		t.Fatalf("concurrent contender = %#v, %v; want single-owner rejection", result, err)
+	}
+	close(hook.release)
+	if err := <-ownerResult; err != nil {
+		t.Fatalf("owner backfill: %v", err)
+	}
+	if result, err := contenderRepo.Backfill(ctx); err != nil || result == nil ||
+		result.UsersIndexed != 0 || result.AssignmentsCopied != 0 {
+		t.Fatalf("post-cutover replay = %#v, %v", result, err)
+	}
+}
+
 var errBackfillInterrupted = errors.New("backfill interrupted")
 
 type interruptDirectoryPipelineHook struct {
@@ -268,6 +429,28 @@ type interruptDirectoryPipelineHook struct {
 	calls       int
 	interruptAt int
 }
+
+type pauseFirstHScanHook struct {
+	once    sync.Once
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (h *pauseFirstHScanHook) BeforeProcess(ctx context.Context, command redis.Cmder) (context.Context, error) {
+	if command.Name() == "hscan" {
+		h.once.Do(func() {
+			close(h.entered)
+			<-h.release
+		})
+	}
+	return ctx, nil
+}
+
+func (*pauseFirstHScanHook) AfterProcess(context.Context, redis.Cmder) error { return nil }
+func (*pauseFirstHScanHook) BeforeProcessPipeline(ctx context.Context, _ []redis.Cmder) (context.Context, error) {
+	return ctx, nil
+}
+func (*pauseFirstHScanHook) AfterProcessPipeline(context.Context, []redis.Cmder) error { return nil }
 
 func (h *interruptDirectoryPipelineHook) BeforeProcess(ctx context.Context, _ redis.Cmder) (context.Context, error) {
 	return ctx, nil

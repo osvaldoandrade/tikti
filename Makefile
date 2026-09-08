@@ -2,7 +2,10 @@ IMAGE_NAME ?= tikti
 IMAGE_TAG ?= dev
 IMAGE_URI ?= $(IMAGE_NAME):$(IMAGE_TAG)
 
-.PHONY: build docker-build docker-push lint test helm-test fuzz-object-storage
+.PHONY: build docker-build docker-push lint security test helm-test fuzz-object-storage
+
+GOSEC_VERSION ?= v2.28.0
+GOVULNCHECK_VERSION ?= v1.1.4
 
 test:
 	go test ./...
@@ -25,6 +28,10 @@ docker-push:
 
 lint:
 	go vet ./...
+
+security:
+	go run github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION) -exclude-generated ./...
+	go run golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION) ./...
 
 .PHONY: saml-dev saml-integration saml-keys
 

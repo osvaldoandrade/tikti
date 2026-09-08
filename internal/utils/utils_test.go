@@ -23,17 +23,13 @@ func TestParseToken_EmptyToken(t *testing.T) {
 	}
 }
 
-func TestParseToken_DefaultSecret(t *testing.T) {
+func TestParseToken_RejectsEmptySecret(t *testing.T) {
 	signed := signHS256(t, "supersecret", jwt.MapClaims{
 		"sub": "u1",
 		"exp": time.Now().Add(time.Hour).Unix(),
 	})
-	claims, err := ParseToken(signed, "")
-	if err != nil {
-		t.Fatalf("expected nil error, got %v", err)
-	}
-	if claims["sub"] != "u1" {
-		t.Fatalf("unexpected sub claim: %v", claims["sub"])
+	if _, err := ParseToken(signed, ""); err == nil {
+		t.Fatal("empty secret accepted a token signed with the public legacy fallback")
 	}
 }
 

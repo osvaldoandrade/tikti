@@ -34,7 +34,9 @@ type mockACSStore struct {
 	markSeenFresh bool
 	markSeenErr   error
 
-	putIndexErr error
+	putIndexErr    error
+	putIndexRec    IndexRecord
+	deleteIndexRec IndexRecord
 }
 
 func (m *mockACSStore) ConsumeRequest(_ context.Context, id string) (RequestRecord, bool, error) {
@@ -54,6 +56,16 @@ func (m *mockACSStore) PutIndex(_ context.Context, _ string, _ IndexRecord) erro
 	return m.putIndexErr
 }
 
+func (m *mockACSStore) PutSessionIndexes(_ context.Context, _, _ string, record IndexRecord) error {
+	m.putIndexRec = record
+	return m.putIndexErr
+}
+
+func (m *mockACSStore) DeleteSessionIndexes(_ context.Context, _, _ string) error {
+	m.deleteIndexRec = m.putIndexRec
+	return nil
+}
+
 // mockACSProvider is a mock Provider for ACS handler tests.
 type mockACSProvider struct {
 	stubProvider
@@ -69,20 +81,86 @@ func (m *mockACSProvider) ValidateResponse(_ context.Context, _ ValidateResponse
 type mockACSBridge struct {
 	token string
 	err   error
+	input IssueInput
 }
 
-func (m *mockACSBridge) Issue(_ context.Context, _ IssueInput) (string, error) {
+func (m *mockACSBridge) Issue(_ context.Context, input IssueInput) (string, error) {
+	m.input = input
 	return m.token, m.err
 }
 
 // mockACSEmitter captures audit records for verification.
 type mockACSEmitter struct {
 	records []AuditRecord
+	err     error
 }
 
+type mockACSAuthority struct {
+	identity SessionIdentity
+	err      error
+}
+
+type mockTenantStatusAuthority struct {
+	active bool
+	err    error
+	calls  int
+}
+
+func (a *mockTenantStatusAuthority) IsTenantActive(context.Context, string) (bool, error) {
+	a.calls++
+	return a.active, a.err
+}
+
+func (a *mockACSAuthority) Validate(_ context.Context, _ string) (SessionIdentity, error) {
+	if a.err != nil {
+		return SessionIdentity{}, a.err
+	}
+	if a.identity.Subject == "" {
+		return SessionIdentity{Subject: "user-001", Email: "user@example.com", TenantID: "t-001"}, nil
+	}
+	return a.identity, nil
+}
+
+func (*mockACSAuthority) Revoke(_ context.Context, _, _ string) error { return nil }
+
 func (m *mockACSEmitter) Emit(_ context.Context, rec AuditRecord) error {
+	if m.err != nil {
+		return m.err
+	}
 	m.records = append(m.records, rec)
 	return nil
+}
+
+func TestACSFailClosedBeforeCookieWhenAuditPersistenceFails(t *testing.T) {
+	store := happyStore()
+	emitter := &mockACSEmitter{err: errors.New("audit unavailable")}
+	bridge := happyBridge()
+	handler := buildHandler(store, happyProvider(), bridge, emitter)
+	requestID := store.consumeRec.ID
+	request := newACSRequest(responseForRequest(requestID), "/app", requestID)
+	recorder := httptest.NewRecorder()
+	handler.ACS(recorder, request)
+	if recorder.Code != http.StatusInternalServerError || recorder.Header().Get("Location") != "" {
+		t.Fatalf("audit failure response=%d location=%q", recorder.Code, recorder.Header().Get("Location"))
+	}
+	for _, cookie := range recorder.Result().Cookies() {
+		if cookie.Name == goldenSAMLConfig().ACS.CookieName && cookie.Value != "" {
+			t.Fatalf("unaudited idToken cookie was exposed: %#v", cookie)
+		}
+	}
+	if bridge.input.TenantID != "" || store.putIndexRec.Subject != "" || store.deleteIndexRec.Subject != "" {
+		t.Fatalf("audit intent failure allowed a persistent identity mutation: bridge=%#v put=%#v delete=%#v", bridge.input, store.putIndexRec, store.deleteIndexRec)
+	}
+}
+
+func TestACSRejectAuditFailureOverridesClientError(t *testing.T) {
+	emitter := &mockACSEmitter{err: errors.New("audit unavailable")}
+	handler := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+	recorder := httptest.NewRecorder()
+	handler.ACS(recorder, newACSRequestWithRetry("invalid", "", "", true))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("unaudited rejection status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -173,13 +251,15 @@ func buildHandler(
 ) *Handler {
 	reg := prometheus.NewRegistry()
 	return NewHandler(Deps{
-		Provider: prov,
-		Store:    store,
-		Bridge:   bridge,
-		Clock:    NewFakeClock(),
-		Cfg:      goldenSAMLConfig(),
-		Metrics:  NewMetrics(reg),
-		Audit:    emitter,
+		Provider:  prov,
+		Store:     store,
+		Bridge:    bridge,
+		Clock:     NewFakeClock(),
+		Cfg:       goldenSAMLConfig(),
+		Metrics:   NewMetrics(reg),
+		Audit:     emitter,
+		Authority: &mockACSAuthority{},
+		Tenants:   &mockTenantStatusAuthority{active: true},
 	})
 }
 
@@ -214,7 +294,8 @@ func happyBridge() *mockACSBridge {
 
 func TestACS_Accept_SetsCookie(t *testing.T) {
 	emitter := &mockACSEmitter{}
-	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+	bridge := happyBridge()
+	h := buildHandler(happyStore(), happyProvider(), bridge, emitter)
 
 	r := newACSRequest(goldenResponseBase64(), "/app", "req-001")
 	w := httptest.NewRecorder()
@@ -242,6 +323,54 @@ func TestACS_Accept_SetsCookie(t *testing.T) {
 	if !found {
 		t.Fatal("idToken cookie not found in response")
 	}
+	wantExpiry := NewFakeClock().Now().Add(time.Hour)
+	if !bridge.input.NotOnOrAfter.Equal(wantExpiry) {
+		t.Fatalf("bridge expiry = %v, want effective session expiry %v", bridge.input.NotOnOrAfter, wantExpiry)
+	}
+}
+
+func TestACS_Accept_AlignsConfiguredSessionDeadlineAcrossBridgeCookieAndIndex(t *testing.T) {
+	store := happyStore()
+	bridge := happyBridge()
+	h := buildHandler(store, happyProvider(), bridge, &mockACSEmitter{})
+	h.cfg.ACS.SessionTTL = 300
+	w := httptest.NewRecorder()
+
+	h.ACS(w, newACSRequest(goldenResponseBase64(), "/app", "req-001"))
+
+	wantExpiry := NewFakeClock().Now().Add(5 * time.Minute)
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == "tikti_idt" {
+			if cookie.MaxAge != 300 {
+				t.Fatalf("cookie MaxAge = %d, want configured 300", cookie.MaxAge)
+			}
+			if !bridge.input.NotOnOrAfter.Equal(wantExpiry) {
+				t.Fatalf("bridge expiry = %v, want %v", bridge.input.NotOnOrAfter, wantExpiry)
+			}
+			if !store.putIndexRec.NotOnOrAfter.Equal(wantExpiry) {
+				t.Fatalf("index expiry = %v, want %v", store.putIndexRec.NotOnOrAfter, wantExpiry)
+			}
+			return
+		}
+	}
+	t.Fatal("tikti_idt cookie not found")
+}
+
+func TestACS_RejectsMissingSessionAuthority(t *testing.T) {
+	h := buildHandler(happyStore(), happyProvider(), happyBridge(), &mockACSEmitter{})
+	h.authority = nil
+	r := newACSRequest(goldenResponseBase64(), "/app", "req-001")
+	w := httptest.NewRecorder()
+
+	h.ACS(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == "tikti_idt" && cookie.Value != "" {
+			t.Fatal("ACS issued an identity cookie without session authority")
+		}
+	}
 }
 
 func TestACS_Accept_302ToRelayState(t *testing.T) {
@@ -259,9 +388,57 @@ func TestACS_Accept_302ToRelayState(t *testing.T) {
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusFound)
 	}
+	for header, expected := range map[string]string{
+		"Cache-Control": "no-store", "Pragma": "no-cache", "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff",
+	} {
+		if got := resp.Header.Get(header); got != expected {
+			t.Errorf("%s = %q, want %q", header, got, expected)
+		}
+	}
 	loc := resp.Header.Get("Location")
 	if loc != "/app" {
 		t.Errorf("Location = %q, want %q", loc, "/app")
+	}
+}
+
+func TestACS_RejectsRelayStateThatDoesNotMatchLoginRequest(t *testing.T) {
+	store := happyStore()
+	bridge := happyBridge()
+	emitter := &mockACSEmitter{}
+	h := buildHandler(store, happyProvider(), bridge, emitter)
+
+	r := newACSRequest(goldenResponseBase64(), "/different-destination", "req-001")
+	w := httptest.NewRecorder()
+	h.ACS(w, r)
+
+	wantStatus := bucketToStatus(ReasonRequestNotFound.Bucket())
+	if w.Code != wantStatus || w.Header().Get("Location") != "" {
+		t.Fatalf("mismatched RelayState response=%d location=%q, want status=%d without redirect", w.Code, w.Header().Get("Location"), wantStatus)
+	}
+	if bridge.input.TenantID != "" {
+		t.Fatalf("mismatched RelayState reached the session bridge: %#v", bridge.input)
+	}
+	if len(emitter.records) != 1 || emitter.records[0].Reason != string(ReasonRequestNotFound) {
+		t.Fatalf("unexpected mismatch audit records: %#v", emitter.records)
+	}
+}
+
+func TestACSDisabledTenantStopsBeforeJITMutation(t *testing.T) {
+	store := happyStore()
+	bridge := happyBridge()
+	emitter := &mockACSEmitter{}
+	h := buildHandler(store, happyProvider(), bridge, emitter)
+	tenantAuthority := &mockTenantStatusAuthority{active: false}
+	h.tenants = tenantAuthority
+
+	w := httptest.NewRecorder()
+	h.ACS(w, newACSRequest(goldenResponseBase64(), "/app", "req-001"))
+
+	if w.Code != bucketToStatus(ReasonTIDUnknown.Bucket()) || bridge.input.TenantID != "" {
+		t.Fatalf("disabled tenant response=%d bridge=%#v", w.Code, bridge.input)
+	}
+	if tenantAuthority.calls != 1 {
+		t.Fatalf("tenant authority calls=%d, want 1", tenantAuthority.calls)
 	}
 }
 
@@ -378,8 +555,11 @@ func TestACS_Accept_AuditRecord(t *testing.T) {
 
 	h.ACS(w, r)
 
-	if len(emitter.records) == 0 {
-		t.Fatal("no audit records emitted")
+	if len(emitter.records) != 2 {
+		t.Fatalf("audit records=%d, want durable intent and outcome: %#v", len(emitter.records), emitter.records)
+	}
+	if emitter.records[0].Phase != "intent" || emitter.records[1].Phase != "outcome" {
+		t.Fatalf("unexpected audit phases: %#v", emitter.records)
 	}
 	rec := emitter.records[len(emitter.records)-1]
 	if rec.Decision != "accept" {
@@ -672,6 +852,57 @@ func TestACS_BridgeIssueFails_Reject(t *testing.T) {
 	}
 }
 
+func TestACSPostIntentFailuresEmitCorrelatedSafeOutcome(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		disrupt func(*mockACSStore, *mockACSBridge, *Handler)
+	}{
+		{name: "bridge", disrupt: func(_ *mockACSStore, bridge *mockACSBridge, _ *Handler) {
+			bridge.err = errors.New("bridge unavailable")
+		}},
+		{name: "authority", disrupt: func(_ *mockACSStore, _ *mockACSBridge, handler *Handler) {
+			handler.authority = &mockACSAuthority{err: errors.New("authority unavailable")}
+		}},
+		{name: "session index", disrupt: func(store *mockACSStore, _ *mockACSBridge, _ *Handler) {
+			store.putIndexErr = errors.New("index unavailable")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := happyStore()
+			bridge := happyBridge()
+			emitter := &mockACSEmitter{}
+			handler := buildHandler(store, happyProvider(), bridge, emitter)
+			test.disrupt(store, bridge, handler)
+
+			recorder := httptest.NewRecorder()
+			handler.ACS(recorder, newACSRequest(goldenResponseBase64(), "/app", "req-001"))
+
+			if recorder.Code != http.StatusInternalServerError || len(emitter.records) != 2 {
+				t.Fatalf("response=%d records=%#v", recorder.Code, emitter.records)
+			}
+			intent, outcome := emitter.records[0], emitter.records[1]
+			if intent.Phase != "intent" || intent.Decision != "accept" || outcome.Phase != "outcome" || outcome.Decision != "reject" || outcome.Reason != string(ReasonInternal) {
+				t.Fatalf("invalid intent/outcome pair: %#v", emitter.records)
+			}
+			for field, values := range map[string][2]string{
+				"requestID":   {intent.RequestID, outcome.RequestID},
+				"assertionID": {intent.AssertionID, outcome.AssertionID},
+				"subjectHash": {intent.SubjectHash, outcome.SubjectHash},
+				"issuer":      {intent.Issuer, outcome.Issuer},
+				"audience":    {intent.Audience, outcome.Audience},
+				"attrHash":    {intent.AttrHash, outcome.AttrHash},
+			} {
+				if values[0] == "" || values[0] != values[1] {
+					t.Errorf("uncorrelated %s: intent=%q outcome=%q", field, values[0], values[1])
+				}
+			}
+			if outcome.SubjectHash == goldenAssertion().NameID {
+				t.Fatalf("raw external subject leaked in audit outcome: %#v", outcome)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Validation reject reasons — covers every ACS-reachable reason per HLD §19
 // ---------------------------------------------------------------------------
@@ -786,13 +1017,15 @@ func TestACS_Accept_ValidationDurationObserved(t *testing.T) {
 
 	emitter := &mockACSEmitter{}
 	h := NewHandler(Deps{
-		Provider: happyProvider(),
-		Store:    happyStore(),
-		Bridge:   happyBridge(),
-		Clock:    NewFakeClock(),
-		Cfg:      goldenSAMLConfig(),
-		Metrics:  metrics,
-		Audit:    emitter,
+		Provider:  happyProvider(),
+		Store:     happyStore(),
+		Bridge:    happyBridge(),
+		Clock:     NewFakeClock(),
+		Cfg:       goldenSAMLConfig(),
+		Metrics:   metrics,
+		Audit:     emitter,
+		Authority: &mockACSAuthority{},
+		Tenants:   &mockTenantStatusAuthority{active: true},
 	})
 
 	r := newACSRequest(goldenResponseBase64(), "/app", "req-001")
@@ -836,6 +1069,7 @@ func TestACS_ReplayedAssertion_ReplayBlockedMetric(t *testing.T) {
 		Cfg:      goldenSAMLConfig(),
 		Metrics:  metrics,
 		Audit:    emitter,
+		Tenants:  &mockTenantStatusAuthority{active: true},
 	})
 
 	r := newACSRequest(goldenResponseBase64(), "/app", "req-001")
@@ -919,27 +1153,6 @@ func TestAllAttrs(t *testing.T) {
 	if got := allAttrs(va, "missing"); got != nil {
 		t.Errorf("allAttrs(missing) = %v, want nil", got)
 	}
-}
-
-func TestSubjectFromToken(t *testing.T) {
-	t.Run("ValidJWT", func(t *testing.T) {
-		got := subjectFromToken(goldenIDToken())
-		if got != "user-001" {
-			t.Errorf("subjectFromToken = %q, want %q", got, "user-001")
-		}
-	})
-
-	t.Run("InvalidJWT", func(t *testing.T) {
-		if got := subjectFromToken("not.a.jwt"); got != "" {
-			t.Errorf("subjectFromToken(invalid) = %q, want empty", got)
-		}
-	})
-
-	t.Run("EmptyString", func(t *testing.T) {
-		if got := subjectFromToken(""); got != "" {
-			t.Errorf("subjectFromToken(empty) = %q, want empty", got)
-		}
-	})
 }
 
 func TestBucketToStatus(t *testing.T) {
@@ -1096,7 +1309,9 @@ func TestIsSafeRedirect(t *testing.T) {
 
 func TestACS_AbsoluteRelayState_FallsBackToPostLoginURL(t *testing.T) {
 	emitter := &mockACSEmitter{}
-	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+	store := happyStore()
+	store.consumeRec.RelayState = "https://evil.com/phish"
+	h := buildHandler(store, happyProvider(), happyBridge(), emitter)
 
 	// Attacker-controlled RelayState pointing to an external site.
 	r := newACSRequest(goldenResponseBase64(), "https://evil.com/phish", "req-001")
@@ -1118,7 +1333,9 @@ func TestACS_AbsoluteRelayState_FallsBackToPostLoginURL(t *testing.T) {
 
 func TestACS_ProtocolRelativeRelayState_FallsBackToPostLoginURL(t *testing.T) {
 	emitter := &mockACSEmitter{}
-	h := buildHandler(happyStore(), happyProvider(), happyBridge(), emitter)
+	store := happyStore()
+	store.consumeRec.RelayState = "//evil.com"
+	h := buildHandler(store, happyProvider(), happyBridge(), emitter)
 
 	r := newACSRequest(goldenResponseBase64(), "//evil.com", "req-001")
 	w := httptest.NewRecorder()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/pkg/config"
@@ -13,7 +14,7 @@ import (
 // IDTokenIssuer is the minimal interface needed from the existing token issuer
 // to produce HS256 idTokens with optional AMR claims.
 type IDTokenIssuer interface {
-	IssueIDTokenWithAMR(u *domain.User, amr []string, platformPrivilege string) (string, int, error)
+	IssueIDTokenWithAMRUntil(u *domain.User, amr []string, platformPrivilege string, notOnOrAfter time.Time) (string, int, error)
 }
 
 // sessionBridgeAuth implements SessionBridge by looking up (or upserting) the
@@ -61,6 +62,9 @@ func NewSessionBridge(repo repository.UserRepository, issuer IDTokenIssuer, opti
 // Issue implements SessionBridge. It upserts the SAML-authenticated user and
 // issues an HS256 idToken that includes the amr claim from the input.
 func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, error) {
+	if in.NotOnOrAfter.IsZero() || !in.NotOnOrAfter.After(time.Now()) {
+		return "", fmt.Errorf("session bridge: assertion session has expired")
+	}
 	u, _, err := b.repo.UpsertFromSAML(
 		ctx,
 		in.TenantID,
@@ -68,7 +72,7 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 		in.Email,
 		in.Name,
 		in.Roles,
-		domain.MergeStrategyEmail,
+		domain.MergeStrategyExternalSubject,
 	)
 	if err != nil {
 		return "", fmt.Errorf("session bridge: upsert: %w", err)
@@ -87,6 +91,9 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 	// exchange observes the same authority and fail closed if persistence fails.
 	platformPrivilege := ""
 	if b.isPlatformAdministrator(in.TenantID, in.Email, u) {
+		if u.Role != domain.RoleAdmin {
+			u.TokenVersion++
+		}
 		u.Role = domain.RoleAdmin
 		if err := b.repo.UpdateUser(ctx, &u); err != nil {
 			return "", fmt.Errorf("session bridge: persist platform administrator: %w", err)
@@ -94,9 +101,13 @@ func (b *sessionBridgeAuth) Issue(ctx context.Context, in IssueInput) (string, e
 		platformPrivilege = domain.PlatformPrivilegeAdmin
 	} else if u.Role == domain.RoleAdmin {
 		u.Role = domain.RoleCompanyAdmin
+		u.TokenVersion++
+		if err := b.repo.UpdateUser(ctx, &u); err != nil {
+			return "", fmt.Errorf("session bridge: revoke platform administrator: %w", err)
+		}
 	}
 
-	signed, _, err := b.issuer.IssueIDTokenWithAMR(&u, in.AMR, platformPrivilege)
+	signed, _, err := b.issuer.IssueIDTokenWithAMRUntil(&u, in.AMR, platformPrivilege, in.NotOnOrAfter)
 	if err != nil {
 		return "", fmt.Errorf("session bridge: issue id token: %w", err)
 	}
