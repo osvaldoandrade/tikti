@@ -28,6 +28,32 @@ func NewTenantController(svc services.TenantService, cfg *config.Config) *tenant
 	return &tenantController{svc: svc, cfg: cfg}
 }
 
+func (t *tenantController) Retire(c *gin.Context) {
+	if _, ok := requirePlatformTenantAdmin(c, t.cfg); !ok {
+		return
+	}
+	if c.Request.URL.RawQuery != "" || c.Request.ContentLength != 0 || c.Param("tenantId") == domain.MasterTenantID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tenant cannot be removed"})
+		return
+	}
+	service, ok := t.svc.(interface {
+		Retire(context.Context, string) error
+	})
+	if !ok {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tenant removal is unavailable"})
+		return
+	}
+	if err := service.Retire(c.Request.Context(), c.Param("tenantId")); err != nil {
+		if errors.Is(err, domain.ErrInvalidTenant) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "tenant cannot be removed"})
+		} else {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "tenant removal is unavailable"})
+		}
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func (t *tenantController) CreateWithID(c *gin.Context) {
 	claims, ok := requirePlatformTenantAdmin(c, t.cfg)
 	if !ok {

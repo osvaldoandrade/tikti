@@ -24,6 +24,8 @@ type Tenant struct {
 	Name      string       `json:"name"`
 	Status    TenantStatus `json:"status"`
 	CreatedAt time.Time    `json:"createdAt"`
+	// RetiredAt is a retained identity tombstone, never a public tenant field.
+	RetiredAt *time.Time `json:"retiredAt,omitempty"`
 }
 
 type TenantCreateReq struct {

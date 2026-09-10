@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -28,6 +29,28 @@ type IdentityDirectoryController struct {
 
 func NewIdentityDirectoryController(service services.IdentityDirectoryService, cfg *config.Config) *IdentityDirectoryController {
 	return &IdentityDirectoryController{service: service, config: cfg}
+}
+
+func (r *IdentityDirectoryController) CreatorAccess(c *gin.Context) {
+	claims, ok := requirePlatformTenantAdmin(c, r.config)
+	if !ok || !identityDirectoryNoQuery(c) {
+		return
+	}
+	resolver, ok := r.service.(interface {
+		CreatorAccess(context.Context, string, string, string) (string, error)
+	})
+	if !ok {
+		writeIdentityDirectoryError(c, domain.ErrDirectoryInvariant)
+		return
+	}
+	subject, target := claimString(claims, "sub"), c.Param("tenantId")
+	mode, err := resolver.CreatorAccess(c.Request.Context(), target, subject, claimString(claims, domain.PlatformPrivilegeClaim))
+	if err != nil {
+		writeIdentityDirectoryError(c, err)
+		return
+	}
+	identityDirectoryResponseHeaders(c)
+	c.JSON(http.StatusOK, gin.H{"tenantId": target, "subject": subject, "mode": mode})
 }
 
 func (r *IdentityDirectoryController) CreateUser(c *gin.Context) {
@@ -528,6 +551,8 @@ func writeIdentityDirectoryError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, domain.ErrInvalidArgument):
 		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
+	case errors.Is(err, domain.ErrInvalidTenant):
+		c.JSON(http.StatusForbidden, gin.H{"error": "tenant identity authority does not permit this assignment"})
 	case errors.Is(err, domain.ErrInvalidCreds):
 		c.JSON(http.StatusUnauthorized, gin.H{"error": domain.ErrInvalidCreds.Error()})
 	case errors.Is(err, domain.ErrPasswordChangeRequired):

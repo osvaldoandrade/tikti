@@ -52,6 +52,19 @@ func NewTenantService(repo repository.TenantRepository) TenantService {
 	return &tenantService{repo: repo}
 }
 
+func (s *tenantService) Retire(ctx context.Context, tenantID string) error {
+	if !validDNSLabel(tenantID) || tenantID == domain.MasterTenantID || tenantID == domain.RetiredDefaultTenantID {
+		return domain.ErrInvalidTenant
+	}
+	repo, ok := s.repo.(interface {
+		Retire(context.Context, string) error
+	})
+	if !ok {
+		return domain.ErrTenantInvariant
+	}
+	return repo.Retire(ctx, tenantID)
+}
+
 func (s *tenantService) CreateWithID(
 	ctx context.Context,
 	tenantID string,

@@ -233,6 +233,18 @@ func TestBootstrapReconcilesWorkloadAccountBFFDependencies(t *testing.T) {
 		!reflect.DeepEqual(audience.DefaultScopes, brokers[0].scopes) {
 		t.Fatalf("audience=%#v err=%v", audience, err)
 	}
+	retirer := data.tenants.(interface {
+		Retire(context.Context, string) error
+	})
+	if err := retirer.Retire(context.Background(), "bereia"); err != nil {
+		t.Fatal(err)
+	}
+	if err := bootstrapAccountBrokers(context.Background(), data, brokers); err != nil {
+		t.Fatalf("a retired legacy broker tenant must not block generic platform deploy: %v", err)
+	}
+	if tenant, err := data.tenants.Get(context.Background(), "bereia"); err != nil || tenant != nil {
+		t.Fatal("bootstrap resurrected a retired broker tenant")
+	}
 }
 
 func TestBootstrapWorkloadAccountBFFFailsClosed(t *testing.T) {

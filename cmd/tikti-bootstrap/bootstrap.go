@@ -162,6 +162,19 @@ func bootstrapAccountBrokers(ctx context.Context, data stores, brokers []account
 		}
 		seen[key] = struct{}{}
 		tenant, err := data.tenants.Get(ctx, broker.tenantID)
+		if err == nil && tenant == nil {
+			// A legacy installation client is not authority to resurrect a
+			// removed tenant or to block a generic platform update. Missing
+			// and unreadable tenants still fail closed without exact proof.
+			if reader, ok := data.tenants.(interface {
+				IsRetired(context.Context, string) (bool, error)
+			}); ok {
+				retired, retirementErr := reader.IsRetired(ctx, broker.tenantID)
+				if retirementErr == nil && retired {
+					continue
+				}
+			}
+		}
 		if err != nil || tenant == nil || tenant.Id != broker.tenantID || tenant.Status != domain.TenantStatusActive {
 			return fmt.Errorf("workload account bootstrap tenant %q is unavailable", broker.tenantID)
 		}

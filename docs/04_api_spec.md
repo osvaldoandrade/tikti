@@ -736,6 +736,26 @@ in the `X-API-Key` header.
 
 Returns tenant metadata. Requires ADMIN or TENANT_ADMIN for the tenant.
 
+Tenant lifecycle additions:
+
+- `DELETE /v1/admin/identity/tenants/{tenantId}` requires current, provenance-bound
+  platform administration and the private service credential. It accepts no
+  body/query, returns 204 idempotently, and refuses MASTER. The retained registry
+  document becomes DISABLED with an internal retirement timestamp. Current token
+  validation, new sessions and discovery deny it; its ID remains reserved.
+  No runtime resource or user data is deleted. Installation bootstrap skips
+  legacy account-broker setup only on exact proof of a retirement tombstone;
+  missing or unreadable tenant state still fails closed.
+- `GET /v1/admin/identity/tenants/{tenantId}/creator-access` returns only the exact
+  target, current subject and PLATFORM/MEMBERSHIP mode. A federated MASTER
+  platform administrator reuses existing token-exchange authority rather than
+  receiving a foreign SAML membership. All other SAML isolation remains intact.
+
+These routes are additive. Promote Tikti before the API consumer; an older
+issuer cannot satisfy creator/removal proof. Rollback retains tombstones and
+DISABLED status, never resurrects IDs or removes runtime data. An older inventory
+may show the disabled entry; its authority still fails closed.
+
 ### GET /v1/admin/identity/tenant-inventory
 
 Lists the tenant directory for global administrators. The response contains

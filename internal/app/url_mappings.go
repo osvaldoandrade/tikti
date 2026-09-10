@@ -67,6 +67,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	identityAdmin.GET("/tenant-inventory", tenantCtrl.List)
 	identityAdmin.GET("/tenants/:tenantId", tenantCtrl.Get)
 	identityAdmin.PUT("/tenants/:tenantId", tenantCtrl.CreateWithID)
+	identityAdmin.DELETE("/tenants/:tenantId", tenantCtrl.Retire)
 	tenantOOB := v1.Group("/tenants/:tenantId/oob", utils.RequiredApiKeyHeader(cfg.ApiKey), currentAdminToken)
 	tenantOOB.POST("/send", controllers.RequireTenantOOBOrchestratorAuthority(cfg), controllers.NewOobDispatchController(userService, cfg).Handle)
 
@@ -127,6 +128,7 @@ func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, serv
 	routes.PUT("/directory/groups/:groupId/members/:userId", controller.PutGroupMember)
 	routes.DELETE("/directory/groups/:groupId/members/:userId", controller.DeleteGroupMember)
 	routes.GET("/tenants/:tenantId/access-assignments", controller.ListAssignments)
+	routes.GET("/tenants/:tenantId/creator-access", controller.CreatorAccess)
 	routes.GET("/tenants/:tenantId/access-assignments/users/:userId", controller.GetUserAssignment)
 	routes.PUT("/tenants/:tenantId/access-assignments/users/:userId", controller.PutUserAssignment)
 	routes.DELETE("/tenants/:tenantId/access-assignments/users/:userId", controller.DeleteUserAssignment)

@@ -31,7 +31,7 @@ type ExactUserRepository interface {
 var (
 	errStoredTenantContract = errors.New("stored tenant contract mismatch")
 	errStoredUserContract   = errors.New("stored user contract mismatch")
-	tenantFields            = fields("id", "slug", "name", "status", "createdAt")
+	tenantFields            = fields("id", "slug", "name", "status", "createdAt", "retiredAt")
 	userFields              = fields("localId", "email", "password", "role", "status", "companyId", "tokenVersion", "createdAt", "authSource", "externalSubject", "passwordChangeRequired")
 )
 
@@ -52,6 +52,9 @@ func (r *tenantRepo) GetExact(ctx context.Context, tenantID string) (*domain.Ten
 		!canonicalTenantIdentity(tenant.Slug) || !validTenantName(tenant.Name) ||
 		!validTenantStatus(tenant.Status) || tenant.CreatedAt.IsZero() {
 		return nil, errStoredTenantContract
+	}
+	if tenant.RetiredAt != nil {
+		return nil, nil
 	}
 	return &tenant, nil
 }
