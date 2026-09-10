@@ -38,34 +38,52 @@ func (r *tenantRepo) Create(ctx context.Context, tenant *domain.Tenant) error {
 		return domain.ErrInvalidArgument
 	}
 	prepareTenant(tenant)
-	data, err := json.Marshal(tenant)
-	if err != nil {
-		return err
-	}
 	// Legacy/bootstrap overwrite must honor the same retirement fence as the
 	// public create-if-absent path, including a concurrent retirement.
 	for attempt := 0; attempt < 8; attempt++ {
-		err = r.client.Watch(ctx, func(tx *redis.Tx) error {
+		var committed domain.Tenant
+		err := r.client.Watch(ctx, func(tx *redis.Tx) error {
+			candidate := *tenant
 			raw, readErr := tx.HGet(ctx, tenantsHash, tenant.Id).Result()
 			if readErr != nil && readErr != redis.Nil {
 				return readErr
 			}
 			if readErr == nil {
-				var current domain.Tenant
-				if json.Unmarshal([]byte(raw), &current) != nil {
+				current, err := decodeRetainedTenant(raw, tenant.Id, time.Now().UTC())
+				if err != nil {
 					return domain.ErrTenantInvariant
 				}
 				if current.RetiredAt != nil {
 					return domain.ErrTenantConflict
+				}
+				candidate.CreatedAt = current.CreatedAt
+				if current.Status == domain.TenantStatusDisabled {
+					candidate.Status = domain.TenantStatusDisabled
+				}
+			}
+			// Marshal only after validating the WATCHed lifetime, on every retry.
+			data, err := json.Marshal(&candidate)
+			if err != nil {
+				return err
+			}
+			if readErr == nil {
+				if _, err := decodeRetainedTenant(string(data), tenant.Id, time.Now().UTC()); err != nil {
+					return domain.ErrTenantInvariant
 				}
 			}
 			_, writeErr := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
 				pipe.HSet(ctx, tenantsHash, tenant.Id, data)
 				return nil
 			})
+			if writeErr == nil {
+				committed = candidate
+			}
 			return writeErr
 		}, tenantsHash)
 		if err != redis.TxFailedErr {
+			if err == nil {
+				*tenant = committed
+			}
 			return err
 		}
 	}
@@ -88,8 +106,18 @@ func (r *tenantRepo) CreateIfAbsent(ctx context.Context, tenant *domain.Tenant) 
 	if created {
 		return tenant, true, nil
 	}
-	existing, err := r.Get(ctx, tenant.Id)
-	if err == nil && existing == nil {
+	raw, err := r.client.HGet(ctx, tenantsHash, tenant.Id).Result()
+	if err == redis.Nil {
+		return nil, false, domain.ErrTenantConflict
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	// Replay does not issue an authority lease. Observe time after the read so
+	// a concurrent retirement between HSETNX and HGET is a retained conflict,
+	// rather than appearing to be a future (corrupt) record.
+	existing, err := decodeRetainedTenant(raw, tenant.Id, time.Now().UTC())
+	if err == nil && existing.RetiredAt != nil {
 		return nil, false, domain.ErrTenantConflict
 	}
 	return existing, false, err
@@ -103,7 +131,7 @@ func prepareTenant(tenant *domain.Tenant) {
 		tenant.Status = domain.TenantStatusActive
 	}
 	if tenant.CreatedAt.IsZero() {
-		tenant.CreatedAt = time.Now()
+		tenant.CreatedAt = time.Now().UTC()
 	}
 }
 
@@ -219,11 +247,8 @@ func (r *tenantRepo) IsRetired(ctx context.Context, tenantID string) (bool, erro
 	if err != nil {
 		return false, err
 	}
-	var tenant domain.Tenant
-	if !decodeExactObject(raw, tenantFields, &tenant) || tenant.Id != tenantID || tenant.Slug != tenantID || !validTenantStatus(tenant.Status) || tenant.CreatedAt.IsZero() {
-		return false, domain.ErrTenantInvariant
-	}
-	if tenant.RetiredAt != nil && (tenant.RetiredAt.IsZero() || tenant.Status != domain.TenantStatusDisabled) {
+	tenant, err := decodeRetainedTenant(raw, tenantID, time.Now().UTC())
+	if err != nil {
 		return false, domain.ErrTenantInvariant
 	}
 	return tenant.RetiredAt != nil, nil
@@ -244,8 +269,8 @@ func (r *tenantRepo) Retire(ctx context.Context, tenantID string) error {
 			if err != nil {
 				return err
 			}
-			var tenant domain.Tenant
-			if !decodeExactObject(raw, tenantFields, &tenant) || tenant.Id != tenantID || tenant.Slug != tenantID || !validTenantStatus(tenant.Status) || tenant.CreatedAt.IsZero() {
+			tenant, err := decodeRetainedTenant(raw, tenantID, time.Now().UTC())
+			if err != nil {
 				return domain.ErrTenantInvariant
 			}
 			if tenant.RetiredAt != nil {

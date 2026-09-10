@@ -47,6 +47,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if err := validateWorkloadIdentityRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
+	if err := cfg.ValidateTenantRuntimeAuthority(); err != nil {
+		return nil, err
+	}
 	if cfg.TenantScopedTokenClaimsV1 || cfg.TenantTargetDiscoveryV2 {
 		if err := scopepolicy.ValidateCompiled(); err != nil {
 			return nil, fmt.Errorf("validate tenant scope policy: %w", err)
@@ -168,6 +171,12 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}
 
 	engine := newSafeEngine()
+	retainedTenants, retainedOK := tenantRepo.(repository.RetainedTenantRepository)
+	if !retainedOK {
+		_ = redisClient.Close()
+		return nil, fmt.Errorf("tenant runtime authority repository is unavailable")
+	}
+	setupTenantRuntimeMappings(engine, cfg, retainedTenants)
 	setupStorageOIDCMappings(engine, cfg, storageOIDCController)
 	setupStorageSTSMappings(engine, cfg, storageSTSController)
 	setupObjectStorageBrowserMappings(engine, cfg, storageAdminController)

@@ -81,16 +81,6 @@ func TestTenantLocalSAMLPrincipalCannotHijackGlobalEmailAndCompletesHomeExchange
 	if _, err := utils.ValidateRS256(exchange.AccessToken, &key.(*rsa.PrivateKey).PublicKey, "https://issuer", domain.CodeAdminAudienceClientID); err != nil {
 		t.Fatal(err)
 	}
-	if err := tenants.Create(ctx, &domain.Tenant{Id: home, Slug: home, Name: "Bereia", Status: domain.TenantStatusDisabled}); err != nil {
-		t.Fatal(err)
-	}
-	if claims, validateErr := tokens.ValidateIDToken(ctx, idToken, "https://issuer", "tikti"); !errors.Is(validateErr, domain.ErrInvalidToken) || claims != nil {
-		t.Fatalf("SAML browser session remained valid after tenant disable: claims=%v err=%v", claims, validateErr)
-	}
-	if err := tenants.Create(ctx, &domain.Tenant{Id: home, Slug: home, Name: "Bereia", Status: domain.TenantStatusActive}); err != nil {
-		t.Fatal(err)
-	}
-
 	request.TenantID = "storifly"
 	if result, crossErr := tokens.TokenExchange(ctx, request); !errors.Is(crossErr, domain.ErrInvalidTenant) || result != nil {
 		t.Fatalf("cross-home exchange=%#v err=%v", result, crossErr)
@@ -116,6 +106,38 @@ func TestTenantLocalSAMLPrincipalCannotHijackGlobalEmailAndCompletesHomeExchange
 	}
 	if _, err := tokens.ValidateAccessToken(ctx, exchange.AccessToken, "https://issuer", domain.CodeAdminAudienceClientID); !errors.Is(err, domain.ErrInvalidToken) {
 		t.Fatalf("revoked federated access token remained valid: %v", err)
+	}
+}
+
+func TestSQLTenantRuntimeDisabledSAMLSessionCannotBeResurrectedByBootstrap(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	ctx := context.Background()
+	users := repository.NewRedisRepo(client)
+	tenants := repository.NewTenantRepo(client)
+	if err := tenants.Create(ctx, &domain.Tenant{Id: "bereia", Slug: "bereia", Name: "Bereia"}); err != nil {
+		t.Fatal(err)
+	}
+	principal, _, err := users.UpsertFromSAML(ctx, "bereia", "tenant-subject", "member@example.com", "Member", []string{"COMPANY_ADMIN"}, domain.MergeStrategyExternalSubject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := NewUserService(users, nil, nil, discoveryClientService(t, false), "jwt-secret", "https://issuer", "tikti", makePEMKey(t), "kid", WithTenantTargetDiscoveryV2(true, []string{domain.MasterTenantID}, tenants)).(*userService)
+	idToken, _, err := tokens.IssueIDTokenWithAMR(&principal, []string{"saml"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claims, err := tokens.ValidateIDToken(ctx, idToken, "https://issuer", "tikti"); err != nil || claims == nil {
+		t.Fatal("active tenant's SAML session was not initially valid")
+	}
+	for _, status := range []domain.TenantStatus{domain.TenantStatusDisabled, domain.TenantStatusActive} {
+		if err := tenants.Create(ctx, &domain.Tenant{Id: "bereia", Slug: "bereia", Name: "Bereia", Status: status}); err != nil {
+			t.Fatal(err)
+		}
+		if claims, err := tokens.ValidateIDToken(ctx, idToken, "https://issuer", "tikti"); !errors.Is(err, domain.ErrInvalidToken) || claims != nil {
+			t.Fatal("tenant disable or bootstrap replay restored SAML authority")
+		}
 	}
 }
 

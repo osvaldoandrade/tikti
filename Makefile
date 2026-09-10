@@ -2,7 +2,7 @@ IMAGE_NAME ?= tikti
 IMAGE_TAG ?= dev
 IMAGE_URI ?= $(IMAGE_NAME):$(IMAGE_TAG)
 
-.PHONY: build docker-build docker-push lint security test helm-test fuzz-object-storage
+.PHONY: build docker-build docker-push lint security test helm-test fuzz-object-storage test-sql-contract
 
 GOSEC_VERSION ?= v2.28.0
 GOVULNCHECK_VERSION ?= v1.1.4
@@ -12,6 +12,12 @@ test:
 
 helm-test:
 	bash hack/test-storage-sts-chart.sh
+	bash hack/test-tenant-runtime-chart.sh
+
+test-sql-contract:
+	go test -count=1 ./internal/repository ./internal/app ./internal/services ./pkg/config -run '^TestSQLTenantRuntime'
+	go test ./testdata/tenant-runtime-authority
+	bash hack/test-tenant-runtime-chart.sh
 
 fuzz-object-storage:
 	go test ./internal/storagests -run '^$$' -fuzz '^FuzzAdministrativeListXMLShapeNeverPanics$$' -fuzztime=10s

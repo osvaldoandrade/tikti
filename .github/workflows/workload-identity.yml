@@ -11,6 +11,9 @@ on:
       - 'internal/app/**'
       - 'internal/controllers/workload_identity*'
       - 'internal/repository/workload_binding*'
+      - 'internal/repository/*tenant*'
+      - 'internal/testredis/**'
+      - 'testdata/tenant-runtime-authority/**'
       - 'internal/services/workload_identity*'
       - 'internal/utils/api_key*'
       - 'internal/workloadidentity/**'
@@ -32,6 +35,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install real Redis contract dependency
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y redis-server
       - name: Test with race detector
         run: go test -race ./...
       - name: Vet

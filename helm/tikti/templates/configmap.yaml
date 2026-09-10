@@ -61,6 +61,7 @@ data:
     tenantTargetDiscoveryV2: {{ .Values.config.tenantTargetDiscoveryV2 }}
     tenantTargetDiscoveryV2PrincipalTenants: {{ .Values.config.tenantTargetDiscoveryV2PrincipalTenants | toJson }}
     identityGroupsV1: {{ .Values.config.identityGroupsV1 }}
+    tenantRuntimeAuthorityV1: {{ .Values.config.tenantRuntimeAuthorityV1 }}
     http:
       allowedOrigins: {{ .Values.config.http.allowedOrigins | toJson }}
       trustedProxyCIDRs: {{ .Values.config.http.trustedProxyCIDRs | toJson }}

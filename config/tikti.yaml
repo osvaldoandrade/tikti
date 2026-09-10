@@ -13,6 +13,7 @@ tenantScopedTokenClaimsV1Tenants: []
 tenantTargetDiscoveryV2: false
 tenantTargetDiscoveryV2PrincipalTenants: []
 identityGroupsV1: false
+tenantRuntimeAuthorityV1: false
 workloadIdentity:
   clusterRef: ${WORKLOAD_IDENTITY_CLUSTER_REF}
   issuer: ${WORKLOAD_IDENTITY_ISSUER}

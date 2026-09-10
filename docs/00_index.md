@@ -20,3 +20,4 @@ Document order:
 12. `12_saml_federation_hld.md` — SAML 2.0 federation high-level design for Tikti as Service Provider, including flows, threat model, rollout, FAQ, and appendices.
 13. `13_workload_identity.md` — Kubernetes workload exchange, explicit bindings, the bounded workload-account broker, revocation, and rollout.
 14. `14_edge_forward_auth.md` — Traefik ForwardAuth contract for bearer access tokens and SAML browser sessions.
+15. `15_tenant_runtime_authority.md` — private tenant-runtime/v1 reads, retained lifetime guarantees, SQL compatibility floor and actual HTTP/Redis contract tests.

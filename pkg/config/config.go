@@ -43,6 +43,7 @@ type Config struct {
 	TenantTargetDiscoveryV2                 bool                       `yaml:"tenantTargetDiscoveryV2"`
 	TenantTargetDiscoveryV2PrincipalTenants []string                   `yaml:"tenantTargetDiscoveryV2PrincipalTenants"`
 	IdentityGroupsV1                        bool                       `yaml:"identityGroupsV1"`
+	TenantRuntimeAuthorityV1                bool                       `yaml:"tenantRuntimeAuthorityV1"`
 }
 
 // HTTPConfig defines the public server boundary.
@@ -75,8 +76,8 @@ type RateLimitConfig struct {
 
 func DefaultAuthenticationRateLimits() AuthenticationRateLimitsConfig {
 	return AuthenticationRateLimitsConfig{
-		Login:         RateLimitConfig{Requests: 5, WindowSeconds: 60},
-		OOBSignIn:     RateLimitConfig{Requests: 10, WindowSeconds: 60},
+		Login:     RateLimitConfig{Requests: 5, WindowSeconds: 60},
+		OOBSignIn: RateLimitConfig{Requests: 10, WindowSeconds: 60},
 		// A cross-tenant Console session exchanges both the selected-tenant token
 		// and the principal-tenant Identity token. Ten requests preserve the
 		// reviewed five logical session starts per user and minute.
@@ -544,6 +545,19 @@ func LoadConfig(filePath string) (*Config, error) {
 		default:
 			return nil, fmt.Errorf("IDENTITY_GROUPS_V1 must be true or false")
 		}
+	}
+	if raw, exists := os.LookupEnv("TENANT_RUNTIME_AUTHORITY_V1"); exists {
+		switch strings.TrimSpace(raw) {
+		case "true":
+			c.TenantRuntimeAuthorityV1 = true
+		case "false":
+			c.TenantRuntimeAuthorityV1 = false
+		default:
+			return nil, fmt.Errorf("TENANT_RUNTIME_AUTHORITY_V1 must be true or false")
+		}
+	}
+	if err := c.ValidateTenantRuntimeAuthority(); err != nil {
+		return nil, err
 	}
 	if c.IssuerBaseURL == "" {
 		log.Println("WARNING: IssuerBaseURL not set. Using http://localhost:8080")

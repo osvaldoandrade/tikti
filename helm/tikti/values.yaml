@@ -68,6 +68,7 @@ config:
   tenantTargetDiscoveryV2: false
   tenantTargetDiscoveryV2PrincipalTenants: []
   identityGroupsV1: false
+  tenantRuntimeAuthorityV1: false
   http:
     allowedOrigins: []
     trustedProxyCIDRs: []
