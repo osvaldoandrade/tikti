@@ -66,6 +66,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Install real Redis contract dependency
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y redis-server
+
       - name: Test
         run: go test ./...
 

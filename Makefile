@@ -15,7 +15,7 @@ helm-test:
 	bash hack/test-tenant-runtime-chart.sh
 
 test-sql-contract:
-	go test -count=1 ./internal/repository ./internal/app ./internal/services ./pkg/config -run '^TestSQLTenantRuntime'
+	go test -count=1 ./internal/repository ./internal/app ./internal/services ./internal/testredis ./pkg/config -run '^TestSQLTenantRuntime'
 	go test ./testdata/tenant-runtime-authority
 	bash hack/test-tenant-runtime-chart.sh
 
