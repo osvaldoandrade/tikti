@@ -140,8 +140,17 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - name: Publish npm package (npmjs)
+      - name: Validate npmjs publishing credentials
+        id: npmjs_auth
         if: ${{ env.NPM_TOKEN != '' }}
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
+        shell: bash
+        run: npm whoami --registry https://registry.npmjs.org/ >/dev/null
+
+      - name: Publish npm package (npmjs)
+        if: ${{ env.NPM_TOKEN != '' && steps.npmjs_auth.outcome == 'success' }}
         env:
           NODE_AUTH_TOKEN: ${{ env.NPM_TOKEN }}
         shell: bash
@@ -150,11 +159,12 @@ jobs:
           cd npm/tikti-cli
           npm publish --access public
 
-      - name: Skip npmjs publish (missing NPM_TOKEN)
-        if: ${{ env.NPM_TOKEN == '' }}
+      - name: Skip npmjs publish (credentials unavailable)
+        if: ${{ env.NPM_TOKEN == '' || steps.npmjs_auth.outcome != 'success' }}
         shell: bash
         run: |
-          echo "NPM_TOKEN is not set; skipping publish to npmjs."
+          echo "NPM_TOKEN is not configured or valid;"
+          echo "skipping the optional npmjs publication."
 
       - name: Set up Node (GitHub Packages)
         uses: actions/setup-node@v4
