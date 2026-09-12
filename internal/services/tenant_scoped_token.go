@@ -18,17 +18,20 @@ type tenantScopedTokenAuthorization struct {
 }
 
 type tenantDiscoveryAuthorization struct {
-	tenantID           string
-	principalTenantID  string
-	directoryPrincipal bool
-	authorizedTenants  []string
-	roles              []string
-	scopes             []string
+	tenantID                      string
+	principalTenantID             string
+	directoryPrincipal            bool
+	directMasterPlatformAuthority bool
+	authorizedTenants             []string
+	roles                         []string
+	scopes                        []string
 }
 
 type tenantDiscoverySnapshot struct {
-	authorizedTenants []string
-	authorizations    map[string]tenantScopedTokenAuthorization
+	principalTenantID             string
+	directMasterPlatformAuthority bool
+	authorizedTenants             []string
+	authorizations                map[string]tenantScopedTokenAuthorization
 }
 
 const (
@@ -211,8 +214,9 @@ func (s *userService) resolveTenantDiscoveryAuthorization(
 		return tenantDiscoveryAuthorization{}, domain.ErrUnauthorizedScope
 	}
 	return tenantDiscoveryAuthorization{
-		tenantID: target, principalTenantID: home, directoryPrincipal: directoryPrincipal,
-		authorizedTenants: discovery.authorizedTenants, roles: roles, scopes: effective,
+		tenantID: target, principalTenantID: discovery.principalTenantID, directoryPrincipal: directoryPrincipal,
+		directMasterPlatformAuthority: discovery.directMasterPlatformAuthority && target == domain.MasterTenantID,
+		authorizedTenants:             discovery.authorizedTenants, roles: roles, scopes: effective,
 	}, nil
 }
 
@@ -343,15 +347,49 @@ func (s *userService) discoverTenantTargets(
 			return tenantDiscoverySnapshot{}, domain.ErrInvalidTenant
 		}
 	}
+	principalTenantID := home
+	directMasterPlatformAuthority := false
+	if dynamicTargets {
+		if authorization, authorized := authorizations[domain.MasterTenantID]; authorized &&
+			slices.Contains(authorization.roles, string(domain.RoleAdmin)) &&
+			s.recoveredMasterPlatformAdministrator(ctx, user) {
+			principalTenantID = domain.MasterTenantID
+			directMasterPlatformAuthority = true
+		}
+	}
 	result := make([]string, 0, len(allowed))
 	for tenantID := range allowed {
 		result = append(result, tenantID)
 	}
 	sort.Strings(result)
 	return tenantDiscoverySnapshot{
-		authorizedTenants: result,
-		authorizations:    authorizations,
+		principalTenantID:             principalTenantID,
+		directMasterPlatformAuthority: directMasterPlatformAuthority,
+		authorizedTenants:             result,
+		authorizations:                authorizations,
 	}, nil
+}
+
+// recoveredMasterPlatformAdministrator recognizes only the installation
+// recovery contract: an active password administrator whose legacy home is a
+// workload tenant and who has an exact direct ADMIN assignment in MASTER.
+// Group inheritance and similarly named tenant roles cannot confer platform
+// authority.
+func (s *userService) recoveredMasterPlatformAdministrator(ctx context.Context, user *domain.User) bool {
+	if s == nil || s.directoryAccess == nil || user == nil || user.Status != domain.UserStatusActive ||
+		user.AuthSource != domain.AuthSourcePassword || user.Role != domain.RoleAdmin || user.CompanyId == nil {
+		return false
+	}
+	home := strings.TrimSpace(*user.CompanyId)
+	if home == "" || home == domain.MasterTenantID {
+		return false
+	}
+	assignment, err := s.directoryAccess.GetAccessAssignment(
+		ctx, domain.MasterTenantID, domain.AccessPrincipalUser, user.Id,
+	)
+	return err == nil && assignment != nil && assignment.TenantID == domain.MasterTenantID &&
+		assignment.PrincipalType == domain.AccessPrincipalUser && assignment.PrincipalID == user.Id &&
+		slices.Equal(assignment.Roles, []string{string(domain.RoleAdmin)})
 }
 
 func isTenantLocalFederatedPrincipal(user *domain.User, home string) bool {

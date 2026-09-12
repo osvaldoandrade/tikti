@@ -349,7 +349,11 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			return nil, err
 		}
 		tenantID, tenantRoles, scopes = discovery.tenantID, discovery.roles, discovery.scopes
-		if tenantID == discovery.principalTenantID && !discovery.directoryPrincipal {
+		// Token shape follows the signed credential home, while
+		// PrincipalTenantID identifies the server-selected tenant that retains
+		// identity authority. They differ only for the existing-user MASTER
+		// recovery contract.
+		if tenantID == home && !discovery.directoryPrincipal {
 			strictTarget = ""
 		} else {
 			strictTarget = tenantID
@@ -493,11 +497,21 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			claimsOut["principal_tid"] = principalTenantID
 		}
 	}
+	if discoveryExchange && discovery.directMasterPlatformAuthority {
+		claimsOut["principal_tid"] = discovery.principalTenantID
+	}
 	if strictTarget != "" {
 		delete(claimsOut, "role")
 		claimsOut["roles"] = tenantRoles
 	}
-	if strictTarget == "" && role == domain.RoleAdmin && containsString(scopes, domain.PlatformTenantAdminScope) {
+	if discovery.directMasterPlatformAuthority && containsString(scopes, domain.PlatformTenantAdminScope) {
+		// The global role is backed by the persisted password ADMIN and the
+		// exact direct MASTER assignment. Retain tenant roles as independently
+		// revocable evidence while adding the claim triple required by platform
+		// consumers.
+		claimsOut["role"] = string(domain.RoleAdmin)
+		claimsOut[domain.PlatformPrivilegeClaim] = domain.PlatformPrivilegeAdmin
+	} else if strictTarget == "" && role == domain.RoleAdmin && containsString(scopes, domain.PlatformTenantAdminScope) {
 		claimsOut[domain.PlatformPrivilegeClaim] = domain.PlatformPrivilegeAdmin
 	}
 	if platformPrivilege == domain.PlatformPrivilegeAdmin {
@@ -845,10 +859,28 @@ func (s *userService) validateCurrentAccessTokenAuthority(ctx context.Context, u
 		currentRole := string(effectiveUserRole(user, platformPrivilege))
 		currentAuthority = append(currentAuthority, homeGlobalAuthority(user, currentRole, canonicalScopes, platformPrivilege)...)
 	}
+	recoveredMasterClaims := recoveredMasterPlatformClaims(claims, signedRoles)
+	if recoveredMasterClaims && !s.recoveredMasterPlatformAdministrator(ctx, user) {
+		return domain.ErrInvalidToken
+	}
+	if recoveredMasterClaims {
+		// These scopes were already bounded by the current MASTER audience
+		// client above. Re-admit them only while the exact direct assignment
+		// that justified issuance still exists.
+		currentAuthority = append(currentAuthority, canonicalScopes...)
+	}
 	if !subset(canonicalScopes, normalizePermissions(currentAuthority)) {
 		return domain.ErrInvalidToken
 	}
 	return nil
+}
+
+func recoveredMasterPlatformClaims(claims jwt.MapClaims, signedRoles []string) bool {
+	return claimStringValue(claims, "tid") == domain.MasterTenantID &&
+		claimStringValue(claims, "principal_tid") == domain.MasterTenantID &&
+		claimStringValue(claims, "role") == string(domain.RoleAdmin) &&
+		claimStringValue(claims, domain.PlatformPrivilegeClaim) == domain.PlatformPrivilegeAdmin &&
+		slices.Contains(signedRoles, string(domain.RoleAdmin))
 }
 
 func canonicalAccessTokenRoles(raw any) ([]string, bool) {
