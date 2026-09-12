@@ -206,6 +206,9 @@ func bootstrapExistingUserMasterAccess(ctx context.Context, data stores, cfg set
 		!slices.Equal(storedClient.DefaultScopes, desiredClient.DefaultScopes) {
 		return fmt.Errorf("ensure existing-user MASTER audience: %w", conflictOr(err, domain.ErrManagedClientConflict))
 	}
+	if err := reconcileExistingUserHomeAudience(ctx, data, cfg, user); err != nil {
+		return err
+	}
 
 	if data.directory == nil {
 		return fmt.Errorf("existing-user MASTER recovery requires the identity directory")
@@ -216,6 +219,80 @@ func bootstrapExistingUserMasterAccess(ctx context.Context, data stores, cfg set
 		return fmt.Errorf("ensure existing-user MASTER access assignment: %w", err)
 	}
 	return nil
+}
+
+func reconcileExistingUserHomeAudience(ctx context.Context, data stores, cfg settings, user *domain.User) error {
+	if user == nil || user.CompanyId == nil {
+		return nil
+	}
+	homeTenantID := strings.TrimSpace(*user.CompanyId)
+	if homeTenantID == "" || homeTenantID == cfg.tenantID {
+		return nil
+	}
+	homeTenant, err := data.tenants.Get(ctx, homeTenantID)
+	if err != nil || homeTenant == nil || homeTenant.Id != homeTenantID ||
+		homeTenant.Slug != homeTenantID || homeTenant.Status != domain.TenantStatusActive {
+		return fmt.Errorf("ensure existing-user home tenant: %w", conflictOr(err, domain.ErrTenantConflict))
+	}
+
+	desiredLegacy := &domain.Client{
+		Id: cfg.audience, TenantId: homeTenantID, Type: domain.ClientTypePublic,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     append([]string(nil), cfg.scopes...), Status: domain.ClientStatusActive,
+	}
+	current, err := data.clients.Get(ctx, homeTenantID, cfg.audience)
+	if err != nil {
+		return fmt.Errorf("read existing-user home audience: %w", err)
+	}
+	if domain.IsManagedCodeAdminAudience(homeTenantID, current) {
+		desiredManaged := *desiredLegacy
+		desiredManaged.Type = domain.ClientTypeService
+		desiredManaged.ManagedBy = domain.CodeAdminAudienceClientManager
+		stored, _, ensureErr := data.clients.EnsureManagedAudience(ctx, homeTenantID, &desiredManaged)
+		if ensureErr != nil || !domain.IsManagedCodeAdminAudience(homeTenantID, stored) ||
+			!slices.Equal(stored.DefaultScopes, desiredManaged.DefaultScopes) {
+			return fmt.Errorf("ensure existing-user managed home audience: %w", conflictOr(ensureErr, domain.ErrManagedClientConflict))
+		}
+		return nil
+	}
+	if current != nil && !adoptableLegacyHomeAudience(current, desiredLegacy) {
+		return fmt.Errorf("ensure existing-user legacy home audience: %w", domain.ErrManagedClientConflict)
+	}
+	if err := data.clients.UpsertBootstrap(ctx, homeTenantID, desiredLegacy); err != nil {
+		return fmt.Errorf("ensure existing-user legacy home audience: %w", err)
+	}
+	stored, err := data.clients.Get(ctx, homeTenantID, cfg.audience)
+	if err != nil || !sameLegacyHomeAudience(stored, desiredLegacy) {
+		return fmt.Errorf("verify existing-user legacy home audience: %w", conflictOr(err, domain.ErrManagedClientConflict))
+	}
+	return nil
+}
+
+func adoptableLegacyHomeAudience(current, desired *domain.Client) bool {
+	if !sameLegacyHomeAudienceOwner(current, desired) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(current.DefaultScopes) {
+		return false
+	}
+	for _, scope := range current.DefaultScopes {
+		if !slices.Contains(desired.DefaultScopes, scope) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameLegacyHomeAudience(current, desired *domain.Client) bool {
+	return sameLegacyHomeAudienceOwner(current, desired) &&
+		slices.Equal(current.DefaultScopes, desired.DefaultScopes)
+}
+
+func sameLegacyHomeAudienceOwner(current, desired *domain.Client) bool {
+	return current != nil && desired != nil && current.Id == desired.Id &&
+		current.TenantId == desired.TenantId && current.SecretHash == "" &&
+		current.Type == domain.ClientTypePublic && current.Status == domain.ClientStatusActive &&
+		current.ManagedBy == "" && slices.Equal(
+		current.AllowedGrantTypes, []string{string(domain.GrantTypeTokenExchange)},
+	)
 }
 
 func conflictOr(err error, fallback error) error {

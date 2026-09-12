@@ -118,6 +118,13 @@ func TestBootstrapExistingUserOnlyPreservesCredentialAndAddsMasterAccess(t *test
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err = data.clients.UpsertBootstrap(context.Background(), workloadTenant, &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: workloadTenant, Type: domain.ClientTypePublic,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     []string{"console:resources:read"}, Status: domain.ClientStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err = data.directory.PutAccessAssignment(
 		context.Background(), workloadTenant, domain.AccessPrincipalUser, user.Id, []string{"ADMIN"}, "",
 	); err != nil {
@@ -127,7 +134,10 @@ func TestBootstrapExistingUserOnlyPreservesCredentialAndAddsMasterAccess(t *test
 	cfg := settings{
 		tenantID: "local-tenant", tenantName: "Code Foundry", email: user.Email,
 		existingUserOnly: true, audience: "code-admin-api",
-		scopes: []string{"code-admin:clusters:read", "code-admin:services:read"},
+		scopes: []string{
+			"code-admin:clusters:read", "code-admin:services:read",
+			"console:resources:read", "console:storage:read",
+		},
 	}
 	if err = bootstrap(context.Background(), data, cfg); err != nil {
 		t.Fatal(err)
@@ -156,8 +166,49 @@ func TestBootstrapExistingUserOnlyPreservesCredentialAndAddsMasterAccess(t *test
 	}
 	clientRecord, err := data.clients.Get(context.Background(), domain.MasterTenantID, domain.CodeAdminAudienceClientID)
 	if err != nil || !domain.IsManagedCodeAdminAudience(domain.MasterTenantID, clientRecord) ||
-		!reflect.DeepEqual(clientRecord.DefaultScopes, []string{"code-admin:clusters:read", "code-admin:services:read"}) {
+		!reflect.DeepEqual(clientRecord.DefaultScopes, []string{
+			"code-admin:clusters:read", "code-admin:services:read",
+			"console:resources:read", "console:storage:read",
+		}) {
 		t.Fatalf("master audience=%#v err=%v", clientRecord, err)
+	}
+	homeClient, err := data.clients.Get(context.Background(), workloadTenant, domain.CodeAdminAudienceClientID)
+	if err != nil || homeClient == nil || homeClient.Type != domain.ClientTypePublic ||
+		homeClient.ManagedBy != "" || !reflect.DeepEqual(homeClient.DefaultScopes, clientRecord.DefaultScopes) {
+		t.Fatalf("home audience=%#v err=%v", homeClient, err)
+	}
+}
+
+func TestAdoptableLegacyHomeAudienceRequiresExactOwnerAndScopeSubset(t *testing.T) {
+	desired := &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: "conveste", Type: domain.ClientTypePublic,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     []string{"console:resources:read", "console:storage:read"},
+		Status:            domain.ClientStatusActive,
+	}
+	valid := *desired
+	valid.DefaultScopes = []string{"console:resources:read"}
+	if !adoptableLegacyHomeAudience(&valid, desired) {
+		t.Fatal("canonical legacy subset was rejected")
+	}
+	for name, mutate := range map[string]func(*domain.Client){
+		"scope outside ceiling": func(client *domain.Client) {
+			client.DefaultScopes = []string{"console:clusters:read"}
+		},
+		"credential":   func(client *domain.Client) { client.SecretHash = "stored-hash" },
+		"wrong tenant": func(client *domain.Client) { client.TenantId = "other" },
+		"managed owner": func(client *domain.Client) {
+			client.Type = domain.ClientTypeService
+			client.ManagedBy = domain.CodeAdminAudienceClientManager
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if adoptableLegacyHomeAudience(&candidate, desired) {
+				t.Fatal("unsafe legacy audience was accepted")
+			}
+		})
 	}
 }
 
