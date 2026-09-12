@@ -89,6 +89,165 @@ func TestBootstrapImportsBoundedArgon2idPasswordHash(t *testing.T) {
 	}
 }
 
+func TestBootstrapExistingUserOnlyPreservesCredentialAndAddsMasterAccess(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+		directory: repository.NewIdentityDirectoryRepository(client),
+	}
+	workloadTenant := "conveste"
+	credential, err := bcrypt.GenerateFromPassword([]byte("existing-password-123"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := &domain.User{
+		Id: "existing-admin", Email: "admin@example.com", Password: string(credential),
+		Role: domain.RoleAdmin, Status: domain.UserStatusActive, CompanyId: &workloadTenant,
+		AuthSource: domain.AuthSourcePassword,
+	}
+	if err = data.users.CreateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	if err = data.tenants.Create(context.Background(), &domain.Tenant{
+		Id: workloadTenant, Slug: workloadTenant, Name: "Conveste",
+		Status: domain.TenantStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = data.directory.PutAccessAssignment(
+		context.Background(), workloadTenant, domain.AccessPrincipalUser, user.Id, []string{"ADMIN"}, "",
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := settings{
+		tenantID: "local-tenant", tenantName: "Code Foundry", email: user.Email,
+		existingUserOnly: true, audience: "code-admin-api",
+		scopes: []string{"code-admin:clusters:read", "code-admin:services:read"},
+	}
+	if err = bootstrap(context.Background(), data, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := data.users.FindByEmail(context.Background(), user.Email)
+	if err != nil || updated == nil {
+		t.Fatalf("updated user=%#v err=%v", updated, err)
+	}
+	if updated.Password != string(credential) || updated.CompanyId == nil || *updated.CompanyId != workloadTenant ||
+		updated.AuthSource != domain.AuthSourcePassword || updated.Role != domain.RoleAdmin ||
+		updated.Status != domain.UserStatusActive {
+		t.Fatalf("existing identity changed unexpectedly: %#v", updated)
+	}
+	tenantIDs, exceeded, err := data.directory.ListEffectiveTenantIDs(context.Background(), user.Id, 10)
+	if err != nil || exceeded || !reflect.DeepEqual(tenantIDs, []string{"conveste", "local-tenant"}) {
+		t.Fatalf("effective tenant access=%v exceeded=%t err=%v", tenantIDs, exceeded, err)
+	}
+	master, err := data.tenants.Get(context.Background(), domain.MasterTenantID)
+	if err != nil || master == nil || master.Name != domain.MasterTenantName || master.Status != domain.TenantStatusActive {
+		t.Fatalf("master tenant=%#v err=%v", master, err)
+	}
+	role, err := data.roles.Get(context.Background(), domain.MasterTenantID, "ADMIN")
+	if err != nil || role == nil || !reflect.DeepEqual(role.Permissions, []string{"code-admin:services:read"}) {
+		t.Fatalf("master role=%#v err=%v", role, err)
+	}
+	clientRecord, err := data.clients.Get(context.Background(), domain.MasterTenantID, domain.CodeAdminAudienceClientID)
+	if err != nil || !domain.IsManagedCodeAdminAudience(domain.MasterTenantID, clientRecord) ||
+		!reflect.DeepEqual(clientRecord.DefaultScopes, []string{"code-admin:clusters:read", "code-admin:services:read"}) {
+		t.Fatalf("master audience=%#v err=%v", clientRecord, err)
+	}
+}
+
+func TestBootstrapExistingUserOnlyFailsBeforeCreatingTenant(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+		directory: repository.NewIdentityDirectoryRepository(client),
+	}
+	cfg := settings{
+		tenantID: domain.MasterTenantID, tenantName: domain.MasterTenantName,
+		email: "missing@example.com", existingUserOnly: true,
+		audience: "code-admin-api", scopes: []string{"code-admin:services:read"},
+	}
+	if err := bootstrap(context.Background(), data, cfg); err == nil {
+		t.Fatal("existing-user-only bootstrap accepted a missing user")
+	}
+	master, err := data.tenants.Get(context.Background(), domain.MasterTenantID)
+	if err != nil || master != nil {
+		t.Fatalf("missing-user recovery mutated the tenant registry: master=%#v err=%v", master, err)
+	}
+}
+
+func TestBootstrapExistingUserOnlyRejectsCredentialInput(t *testing.T) {
+	cfg := settings{
+		tenantID: domain.MasterTenantID, tenantName: domain.MasterTenantName,
+		email: "admin@example.com", password: "must-not-be-replaced", existingUserOnly: true,
+		audience: "code-admin-api", scopes: []string{"code-admin:services:read"},
+	}
+	if err := validateSettings(cfg); err == nil {
+		t.Fatal("existing-user-only bootstrap accepted credential input")
+	}
+}
+
+func TestBootstrapExistingUserOnlyRejectsConflictBeforeGrantingAccess(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
+		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
+		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
+		directory: repository.NewIdentityDirectoryRepository(client),
+	}
+	credential, err := bcrypt.GenerateFromPassword([]byte("existing-password-123"), bcrypt.DefaultCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := &domain.User{
+		Id: "existing-admin", Email: "admin@example.com", Password: string(credential),
+		Role: domain.RoleAdmin, Status: domain.UserStatusActive, AuthSource: domain.AuthSourcePassword,
+	}
+	home := "conveste"
+	user.CompanyId = &home
+	if err = data.users.CreateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	if err = data.tenants.Create(context.Background(), &domain.Tenant{
+		Id: domain.MasterTenantID, Slug: domain.MasterTenantID, Name: domain.MasterTenantName,
+		Status: domain.TenantStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = data.roles.Create(context.Background(), domain.MasterTenantID, &domain.Role{
+		Name: "ADMIN", Scope: domain.RoleScopeTenant, TenantId: domain.MasterTenantID,
+		Permissions: []string{"code-admin:services:write"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := settings{
+		tenantID: domain.MasterTenantID, tenantName: domain.MasterTenantName,
+		email: user.Email, existingUserOnly: true, audience: domain.CodeAdminAudienceClientID,
+		scopes: []string{"code-admin:clusters:read", "code-admin:services:read"},
+	}
+	if err = bootstrap(context.Background(), data, cfg); err == nil {
+		t.Fatal("existing-user-only bootstrap accepted a conflicting MASTER role")
+	}
+	assignment, readErr := data.directory.GetAccessAssignment(
+		context.Background(), domain.MasterTenantID, domain.AccessPrincipalUser, user.Id,
+	)
+	if readErr != nil || assignment != nil {
+		t.Fatalf("conflicting recovery granted access: assignment=%#v err=%v", assignment, readErr)
+	}
+}
+
 func TestBootstrapFailsClosedForV2OwnedMembership(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})

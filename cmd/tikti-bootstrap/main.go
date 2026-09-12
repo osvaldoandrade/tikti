@@ -40,7 +40,8 @@ func main() {
 	cfg := settings{
 		tenantID: required("TIKTI_BOOTSTRAP_TENANT_ID"), tenantName: required("TIKTI_BOOTSTRAP_TENANT_NAME"),
 		email: required("TIKTI_BOOTSTRAP_EMAIL"), password: password, passwordHash: passwordHash,
-		audience: required("TIKTI_BOOTSTRAP_AUDIENCE"), scopes: splitScopes(required("TIKTI_BOOTSTRAP_SCOPES")),
+		existingUserOnly: booleanEnvironment("TIKTI_BOOTSTRAP_EXISTING_USER_ONLY"),
+		audience:         required("TIKTI_BOOTSTRAP_AUDIENCE"), scopes: splitScopes(required("TIKTI_BOOTSTRAP_SCOPES")),
 		workloadSubject: strings.TrimSpace(os.Getenv("TIKTI_BOOTSTRAP_WORKLOAD_SUBJECT")),
 	}
 	accountBrokers, err := parseAccountBrokerSettings(os.Getenv("TIKTI_BOOTSTRAP_ACCOUNT_BFF_CLIENTS"))
@@ -49,7 +50,9 @@ func main() {
 		os.Exit(1)
 	}
 	if redisAddress == "" || cfg.tenantID == "" || cfg.tenantName == "" || cfg.email == "" ||
-		(cfg.password == "" && cfg.passwordHash == "") || cfg.audience == "" || len(cfg.scopes) == 0 {
+		(!cfg.existingUserOnly && cfg.password == "" && cfg.passwordHash == "") ||
+		(cfg.existingUserOnly && (cfg.password != "" || cfg.passwordHash != "")) ||
+		cfg.audience == "" || len(cfg.scopes) == 0 {
 		os.Exit(1)
 	}
 	client := redis.NewClient(&redis.Options{Addr: redisAddress, Password: redisPassword})

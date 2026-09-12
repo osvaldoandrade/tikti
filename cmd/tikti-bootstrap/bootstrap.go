@@ -17,14 +17,15 @@ import (
 )
 
 type settings struct {
-	tenantID        string
-	tenantName      string
-	email           string
-	password        string
-	passwordHash    string
-	audience        string
-	scopes          []string
-	workloadSubject string
+	tenantID         string
+	tenantName       string
+	email            string
+	password         string
+	passwordHash     string
+	existingUserOnly bool
+	audience         string
+	scopes           []string
+	workloadSubject  string
 }
 
 type stores struct {
@@ -48,11 +49,27 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 	if err := validateSettings(cfg); err != nil {
 		return err
 	}
+	user, err := data.users.FindByEmail(ctx, cfg.email)
+	if err != nil {
+		return fmt.Errorf("get bootstrap user: %w", err)
+	}
+	if cfg.existingUserOnly {
+		if user == nil || user.Status != domain.UserStatusActive || user.Role != domain.RoleAdmin ||
+			user.AuthSource != domain.AuthSourcePassword || strings.TrimSpace(user.Password) == "" {
+			return fmt.Errorf("existing bootstrap administrator is unavailable")
+		}
+		if err := utils.ValidatePasswordHash(user.Password); err != nil {
+			return fmt.Errorf("existing bootstrap administrator credential is invalid")
+		}
+	}
 	canonicalScopes, ok := scopepolicy.CanonicalAudienceScopes(cfg.scopes)
 	if !ok {
 		return fmt.Errorf("bootstrap scopes are invalid")
 	}
 	cfg.scopes = canonicalScopes
+	if cfg.existingUserOnly {
+		return bootstrapExistingUserMasterAccess(ctx, data, cfg, user)
+	}
 	tenant, err := data.tenants.Get(ctx, cfg.tenantID)
 	if err != nil {
 		return fmt.Errorf("get tenant: %w", err)
@@ -79,10 +96,6 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 		}
 		passwordHash = string(hash)
 	}
-	user, err := data.users.FindByEmail(ctx, cfg.email)
-	if err != nil {
-		return fmt.Errorf("get bootstrap user: %w", err)
-	}
 	if user == nil {
 		user = &domain.User{Id: uuid.NewString(), Email: cfg.email, CreatedAt: time.Now().UTC()}
 	}
@@ -92,8 +105,8 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 	user.Status = domain.UserStatusActive
 	user.CompanyId = &cfg.tenantID
 	user.AuthSource = domain.AuthSourcePassword
-	if existing, err := data.users.FindByEmail(ctx, cfg.email); err != nil {
-		return fmt.Errorf("verify bootstrap user: %w", err)
+	if existing, verifyErr := data.users.FindByEmail(ctx, cfg.email); verifyErr != nil {
+		return fmt.Errorf("verify bootstrap user: %w", verifyErr)
 	} else if existing == nil {
 		if err := data.users.CreateUser(ctx, user); err != nil {
 			return fmt.Errorf("create bootstrap user: %w", err)
@@ -142,6 +155,74 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 		}
 	}
 	return nil
+}
+
+// bootstrapExistingUserMasterAccess repairs an installation that has an
+// existing workload administrator but no MASTER tenant. It deliberately leaves
+// the user's credential, home tenant and identity fields untouched. Every
+// object is create-once or installation-managed, and conflicting state fails
+// closed before the access assignment is granted.
+func bootstrapExistingUserMasterAccess(ctx context.Context, data stores, cfg settings, user *domain.User) error {
+	roleScopes := make([]string, 0, len(cfg.scopes))
+	for _, scope := range cfg.scopes {
+		if scopepolicy.TenantRoleAssignable(scope) {
+			roleScopes = append(roleScopes, scope)
+		}
+	}
+	if len(roleScopes) == 0 {
+		return fmt.Errorf("existing-user MASTER role has no tenant-assignable scopes")
+	}
+
+	desiredTenant := &domain.Tenant{
+		Id: cfg.tenantID, Slug: cfg.tenantID, Name: cfg.tenantName,
+		Status: domain.TenantStatusActive, CreatedAt: time.Now().UTC(),
+	}
+	storedTenant, _, err := data.tenants.CreateIfAbsent(ctx, desiredTenant)
+	if err != nil || storedTenant == nil || storedTenant.Id != desiredTenant.Id ||
+		storedTenant.Slug != desiredTenant.Slug || storedTenant.Name != desiredTenant.Name ||
+		storedTenant.Status != desiredTenant.Status {
+		return fmt.Errorf("ensure existing-user MASTER tenant: %w", conflictOr(err, domain.ErrTenantConflict))
+	}
+
+	desiredRole := &domain.Role{
+		Name: "ADMIN", Scope: domain.RoleScopeTenant, TenantId: cfg.tenantID,
+		Permissions: roleScopes,
+	}
+	storedRole, _, err := data.roles.CreateIfAbsent(ctx, cfg.tenantID, desiredRole)
+	if err != nil || storedRole == nil || storedRole.Name != desiredRole.Name ||
+		storedRole.Scope != desiredRole.Scope || storedRole.TenantId != desiredRole.TenantId ||
+		storedRole.ResourceId != "" || !slices.Equal(storedRole.Permissions, desiredRole.Permissions) {
+		return fmt.Errorf("ensure existing-user MASTER role: %w", conflictOr(err, domain.ErrRoleConflict))
+	}
+
+	desiredClient := &domain.Client{
+		Id: cfg.audience, TenantId: cfg.tenantID, Type: domain.ClientTypeService,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     append([]string(nil), cfg.scopes...), Status: domain.ClientStatusActive,
+		ManagedBy: domain.CodeAdminAudienceClientManager,
+	}
+	storedClient, _, err := data.clients.EnsureManagedAudience(ctx, cfg.tenantID, desiredClient)
+	if err != nil || !domain.IsManagedCodeAdminAudience(cfg.tenantID, storedClient) ||
+		!slices.Equal(storedClient.DefaultScopes, desiredClient.DefaultScopes) {
+		return fmt.Errorf("ensure existing-user MASTER audience: %w", conflictOr(err, domain.ErrManagedClientConflict))
+	}
+
+	if data.directory == nil {
+		return fmt.Errorf("existing-user MASTER recovery requires the identity directory")
+	}
+	if _, _, err := data.directory.PutAccessAssignment(
+		ctx, cfg.tenantID, domain.AccessPrincipalUser, user.Id, []string{"ADMIN"}, "",
+	); err != nil {
+		return fmt.Errorf("ensure existing-user MASTER access assignment: %w", err)
+	}
+	return nil
+}
+
+func conflictOr(err error, fallback error) error {
+	if err != nil {
+		return err
+	}
+	return fallback
 }
 
 func bootstrapAccountBrokers(ctx context.Context, data stores, brokers []accountBrokerSettings) error {
@@ -210,10 +291,22 @@ func validateSettings(cfg settings) error {
 	if strings.TrimSpace(cfg.email) == "" {
 		return fmt.Errorf("bootstrap email is required")
 	}
-	if cfg.password != "" && cfg.passwordHash != "" {
+	if cfg.existingUserOnly {
+		if cfg.tenantID != domain.MasterTenantID || cfg.tenantName != domain.MasterTenantName {
+			return fmt.Errorf("existing-user-only bootstrap is restricted to the MASTER tenant")
+		}
+		if cfg.audience != domain.CodeAdminAudienceClientID {
+			return fmt.Errorf("existing-user-only bootstrap requires the Code Admin audience")
+		}
+		if cfg.password != "" || cfg.passwordHash != "" {
+			return fmt.Errorf("existing-user-only bootstrap cannot accept credential input")
+		}
+		if cfg.workloadSubject != "" {
+			return fmt.Errorf("existing-user-only bootstrap cannot bind a workload subject")
+		}
+	} else if cfg.password != "" && cfg.passwordHash != "" {
 		return fmt.Errorf("bootstrap password and password hash are mutually exclusive")
-	}
-	if cfg.passwordHash != "" {
+	} else if cfg.passwordHash != "" {
 		if err := utils.ValidatePasswordHash(cfg.passwordHash); err != nil {
 			return fmt.Errorf("bootstrap password hash is invalid: %w", err)
 		}

@@ -2,7 +2,7 @@
 
 Tikti is a multi-tenant identity service written in Go. It stores all state in Redis, issues HS256 idTokens for primary authentication, and exchanges those idTokens for RS256 access tokens consumed by downstream services. Tikti authenticates users through two paths: a credential-based path (`/signIn`, `/signInWithPassword`) and a SAML 2.0 federation path where Tikti acts as Service Provider and delegates authentication to an external Identity Provider. Both paths produce the same HS256 idToken with identical claims, so downstream token exchange and JWKS verification work without modification regardless of how the user authenticated.
 
-Tikti ships with three binaries (server, CLI, migration tool), a Helm chart for Kubernetes deployment, and a full technical specification under `docs/`.
+Tikti ships with four binaries (server, CLI, migration tool, installation bootstrap), a Helm chart for Kubernetes deployment, and a full technical specification under `docs/`.
 
 ## Configuration
 
@@ -71,13 +71,25 @@ go run ./cmd/tikti -f config/tikti.yaml
 
 ## Binaries
 
-The project produces three binaries. The server binary (`tikti`) runs the HTTP API. The CLI binary (`tikti-cli`) provides admin commands for tenant management, token operations, and SAML federation. The migration binary (`tikti-migrate`) handles schema transitions for the Redis keyspace.
+The server binary (`tikti`) runs the HTTP API. The CLI binary (`tikti-cli`) provides admin commands for tenant management, token operations, and SAML federation. The migration binary (`tikti-migrate`) handles schema transitions for the Redis keyspace. The installation-only `tikti-bootstrap` binary reconciles bounded initial identity state from a controlled deployment job.
 
 ```bash
 go build -o tikti ./cmd/tikti
 go build -o tikti-cli ./cmd/tikti-cli
 go build -o tikti-migrate ./cmd/tikti-migrate
+go build -o tikti-bootstrap ./cmd/tikti-bootstrap
 ```
+
+An installation that already has an active password `ADMIN` in a workload
+tenant can recover the reserved `local-tenant` MASTER without receiving or
+replacing that administrator's credential. Set
+`TIKTI_BOOTSTRAP_EXISTING_USER_ONLY=true`, use the exact MASTER identity
+(`local-tenant`, `Code Foundry`) and the `code-admin-api` audience, and omit all
+password and password-hash inputs. This mode preserves the user record and
+home tenant; it creates or verifies the MASTER tenant, an exact tenant-safe
+`ADMIN` role, the managed Code Admin audience, and one direct assignment. Any
+missing administrator or conflicting object stops the job before authority is
+granted.
 
 ## CLI
 
