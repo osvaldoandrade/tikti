@@ -269,11 +269,14 @@ func reconcileExistingUserHomeAudience(ctx context.Context, data stores, cfg set
 }
 
 func adoptableLegacyHomeAudience(current, desired *domain.Client) bool {
-	if !sameLegacyHomeAudienceOwner(current, desired) ||
-		!scopepolicy.ValidCanonicalAudienceScopes(current.DefaultScopes) {
+	if !sameLegacyHomeAudienceOwner(current, desired) {
 		return false
 	}
-	for _, scope := range current.DefaultScopes {
+	canonical, ok := scopepolicy.CanonicalAudienceScopes(current.DefaultScopes)
+	if !ok {
+		return false
+	}
+	for _, scope := range canonical {
 		if !slices.Contains(desired.DefaultScopes, scope) {
 			return false
 		}

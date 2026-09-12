@@ -191,6 +191,13 @@ func TestAdoptableLegacyHomeAudienceRequiresExactOwnerAndScopeSubset(t *testing.
 	if !adoptableLegacyHomeAudience(&valid, desired) {
 		t.Fatal("canonical legacy subset was rejected")
 	}
+	historical := valid
+	historical.DefaultScopes = []string{
+		"console:storage:read", " console:resources:read ", "console:resources:read",
+	}
+	if !adoptableLegacyHomeAudience(&historical, desired) {
+		t.Fatal("historical non-canonical legacy subset was rejected")
+	}
 	for name, mutate := range map[string]func(*domain.Client){
 		"scope outside ceiling": func(client *domain.Client) {
 			client.DefaultScopes = []string{"console:clusters:read"}
