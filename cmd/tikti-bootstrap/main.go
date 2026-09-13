@@ -13,6 +13,7 @@ import (
 
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/pkg/config"
+	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
 func main() {
@@ -74,9 +75,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Tikti bootstrap failed:", err)
 		os.Exit(1)
 	}
-	if err = reconcileManagedCodeAdminAudiences(ctx, data, cfg); err != nil {
-		fmt.Fprintln(os.Stderr, "Tikti managed Code Admin audience reconciliation failed:", err)
-		os.Exit(1)
+	if cfg.audience == domain.CodeAdminAudienceClientID {
+		if err = reconcileManagedCodeAdminAudiences(ctx, data, cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "Tikti managed Code Admin audience reconciliation failed:", err)
+			os.Exit(1)
+		}
 	}
 	if err = bootstrapAccountBrokers(ctx, data, accountBrokers); err != nil {
 		fmt.Fprintln(os.Stderr, "Tikti workload account bootstrap failed:", err)
