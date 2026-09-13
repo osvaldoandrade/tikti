@@ -63,22 +63,22 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Tikti bootstrap could not reach Redis")
 		os.Exit(1)
 	}
-	err = bootstrap(ctx, stores{
+	data := stores{
 		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
 		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
 		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
 		directory: repository.NewIdentityDirectoryRepository(client),
-	}, cfg)
+	}
+	err = bootstrap(ctx, data, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Tikti bootstrap failed:", err)
 		os.Exit(1)
 	}
-	if err = bootstrapAccountBrokers(ctx, stores{
-		users: repository.NewRedisRepo(client), tenants: repository.NewTenantRepo(client),
-		memberships: repository.NewMembershipRepo(client), roles: repository.NewRoleRepo(client),
-		clients: repository.NewClientRepo(client), workloads: repository.NewWorkloadBindingRepo(client),
-		directory: repository.NewIdentityDirectoryRepository(client),
-	}, accountBrokers); err != nil {
+	if err = reconcileManagedCodeAdminAudiences(ctx, data, cfg); err != nil {
+		fmt.Fprintln(os.Stderr, "Tikti managed Code Admin audience reconciliation failed:", err)
+		os.Exit(1)
+	}
+	if err = bootstrapAccountBrokers(ctx, data, accountBrokers); err != nil {
 		fmt.Fprintln(os.Stderr, "Tikti workload account bootstrap failed:", err)
 		os.Exit(1)
 	}

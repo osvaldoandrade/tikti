@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -303,6 +304,65 @@ func conflictOr(err error, fallback error) error {
 		return err
 	}
 	return fallback
+}
+
+// reconcileManagedCodeAdminAudiences propagates the installation's current
+// Code Admin audience ceiling to every active tenant audience owned by Tikti.
+// Legacy PUBLIC home audiences have a different owner and remain untouched.
+func reconcileManagedCodeAdminAudiences(ctx context.Context, data stores, cfg settings) error {
+	if data.tenants == nil || data.clients == nil || cfg.audience != domain.CodeAdminAudienceClientID {
+		return fmt.Errorf("managed Code Admin audience reconciliation is invalid")
+	}
+	desiredScopes, ok := scopepolicy.CanonicalAudienceScopes(cfg.scopes)
+	if !ok {
+		return fmt.Errorf("managed Code Admin audience scopes are invalid")
+	}
+
+	var offset uint64
+	for {
+		tenants, next, err := data.tenants.List(ctx, offset, 200)
+		if err != nil {
+			return fmt.Errorf("list managed Code Admin audience tenants: %w", err)
+		}
+		for index := range tenants {
+			tenant := &tenants[index]
+			if tenant.Id == domain.MasterTenantID || tenant.Status != domain.TenantStatusActive {
+				continue
+			}
+			desired := &domain.Client{
+				Id: cfg.audience, TenantId: tenant.Id, Type: domain.ClientTypeService,
+				AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+				DefaultScopes:     append([]string(nil), desiredScopes...), Status: domain.ClientStatusActive,
+				ManagedBy: domain.CodeAdminAudienceClientManager,
+			}
+			current, readErr := data.clients.Get(ctx, tenant.Id, cfg.audience)
+			if readErr != nil {
+				return fmt.Errorf("read tenant %q Code Admin audience: %w", tenant.Id, readErr)
+			}
+			legacyPublic := *desired
+			legacyPublic.Type = domain.ClientTypePublic
+			legacyPublic.ManagedBy = ""
+			if sameLegacyHomeAudienceOwner(current, &legacyPublic) {
+				continue
+			}
+			stored, _, ensureErr := data.clients.EnsureManagedAudience(ctx, tenant.Id, desired)
+			if ensureErr != nil || !domain.IsManagedCodeAdminAudience(tenant.Id, stored) ||
+				!slices.Equal(stored.DefaultScopes, desiredScopes) {
+				return fmt.Errorf(
+					"ensure tenant %q Code Admin audience: %w",
+					tenant.Id, conflictOr(ensureErr, domain.ErrManagedClientConflict),
+				)
+			}
+		}
+		if next == "" {
+			return nil
+		}
+		nextOffset, parseErr := strconv.ParseUint(next, 10, 64)
+		if parseErr != nil || nextOffset <= offset {
+			return fmt.Errorf("managed Code Admin audience tenant cursor is invalid")
+		}
+		offset = nextOffset
+	}
 }
 
 func bootstrapAccountBrokers(ctx context.Context, data stores, brokers []accountBrokerSettings) error {

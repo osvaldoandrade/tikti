@@ -416,6 +416,88 @@ func TestBootstrapCanonicalizesAudienceScopes(t *testing.T) {
 	}
 }
 
+func TestReconcileManagedCodeAdminAudiencesPropagatesCurrentScopeCeiling(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	data := stores{
+		tenants: repository.NewTenantRepo(client),
+		clients: repository.NewClientRepo(client),
+	}
+	for _, tenant := range []domain.Tenant{
+		{Id: domain.MasterTenantID, Slug: domain.MasterTenantID, Name: domain.MasterTenantName, Status: domain.TenantStatusActive},
+		{Id: "itrasnsform", Slug: "itrasnsform", Name: "iTransform", Status: domain.TenantStatusActive},
+		{Id: "storifly", Slug: "storifly", Name: "Storifly", Status: domain.TenantStatusActive},
+		{Id: "bereia", Slug: "bereia", Name: "Bereia", Status: domain.TenantStatusActive},
+		{Id: "legacy-home", Slug: "legacy-home", Name: "Legacy home", Status: domain.TenantStatusActive},
+		{Id: "disabled", Slug: "disabled", Name: "Disabled tenant", Status: domain.TenantStatusDisabled},
+	} {
+		candidate := tenant
+		if err := data.tenants.Create(context.Background(), &candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleScopes := []string{"console:catalog:read"}
+	if _, _, err := data.clients.EnsureManagedAudience(context.Background(), "itrasnsform", &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: "itrasnsform", Type: domain.ClientTypeService,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     staleScopes, Status: domain.ClientStatusActive,
+		ManagedBy: domain.CodeAdminAudienceClientManager,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := data.clients.UpsertBootstrap(context.Background(), "storifly", &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: "storifly", Type: domain.ClientTypeService,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     staleScopes, Status: domain.ClientStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	master := &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: domain.MasterTenantID, Type: domain.ClientTypePublic,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     staleScopes, Status: domain.ClientStatusActive,
+	}
+	if err := data.clients.UpsertBootstrap(context.Background(), domain.MasterTenantID, master); err != nil {
+		t.Fatal(err)
+	}
+	legacyHome := *master
+	legacyHome.TenantId = "legacy-home"
+	if err := data.clients.UpsertBootstrap(context.Background(), "legacy-home", &legacyHome); err != nil {
+		t.Fatal(err)
+	}
+
+	wantScopes := []string{"code-admin:environments:read", "console:catalog:read"}
+	if err := reconcileManagedCodeAdminAudiences(context.Background(), data, settings{
+		audience: domain.CodeAdminAudienceClientID,
+		scopes:   wantScopes,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tenantID := range []string{"itrasnsform", "storifly", "bereia"} {
+		audience, err := data.clients.Get(context.Background(), tenantID, domain.CodeAdminAudienceClientID)
+		if err != nil || !domain.IsManagedCodeAdminAudience(tenantID, audience) ||
+			!reflect.DeepEqual(audience.DefaultScopes, wantScopes) {
+			t.Fatalf("tenant %s audience=%#v err=%v", tenantID, audience, err)
+		}
+	}
+	unchangedMaster, err := data.clients.Get(context.Background(), domain.MasterTenantID, domain.CodeAdminAudienceClientID)
+	if err != nil || unchangedMaster == nil || unchangedMaster.Type != domain.ClientTypePublic ||
+		!reflect.DeepEqual(unchangedMaster.DefaultScopes, staleScopes) {
+		t.Fatalf("MASTER audience changed unexpectedly: audience=%#v err=%v", unchangedMaster, err)
+	}
+	unchangedLegacyHome, err := data.clients.Get(context.Background(), "legacy-home", domain.CodeAdminAudienceClientID)
+	if err != nil || unchangedLegacyHome == nil || unchangedLegacyHome.Type != domain.ClientTypePublic ||
+		!reflect.DeepEqual(unchangedLegacyHome.DefaultScopes, staleScopes) {
+		t.Fatalf("legacy home audience changed unexpectedly: audience=%#v err=%v", unchangedLegacyHome, err)
+	}
+	disabled, err := data.clients.Get(context.Background(), "disabled", domain.CodeAdminAudienceClientID)
+	if err != nil || disabled != nil {
+		t.Fatalf("disabled tenant audience=%#v err=%v", disabled, err)
+	}
+}
+
 func TestBootstrapReconcilesWorkloadAccountBFFDependencies(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
