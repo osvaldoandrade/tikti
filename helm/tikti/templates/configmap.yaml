@@ -12,7 +12,7 @@
 {{- if or (ne .Values.config.storageSTS.readOnlyPolicy "code-admin-object-readonly-v1") (ne .Values.config.storageSTS.readWritePolicy "code-admin-object-readwrite-v1") }}{{ fail "config.storageSTS policy names must be fixed" }}{{- end }}
 {{- if not (regexMatch `^https://[^/?#]+/?$` .Values.config.issuerBaseUrl) }}{{ fail "config.issuerBaseUrl must be an exact HTTPS origin for storageSTS" }}{{- end }}
 {{- if ne .Values.config.workloadIdentity.audience "tikti-workload-exchange" }}{{ fail "storageSTS requires the exact workload audience" }}{{- end }}
-{{- if and (eq .Values.config.workloadIdentity.issuer "") (eq (len .Values.config.workloadIdentity.providers) 0) }}{{ fail "storageSTS requires workload identity verification" }}{{- end }}
+{{- if and (not .Values.config.objectStorageBrowser.enabled) (eq .Values.config.workloadIdentity.issuer "") (eq (len .Values.config.workloadIdentity.providers) 0) }}{{ fail "workload storageSTS requires workload identity verification" }}{{- end }}
 {{- if and (ne .Values.config.workloadIdentity.issuer "") (or (eq .Values.config.workloadIdentity.clusterRef "") (eq .Values.config.workloadIdentity.jwksUrl "")) }}{{ fail "storageSTS legacy workload issuer requires clusterRef and jwksUrl" }}{{- end }}
 {{- range .Values.config.workloadIdentity.providers }}
 {{- if or (eq .clusterRef "") (eq .issuer "") (eq .jwksUrl "") }}{{ fail "storageSTS workload providers require clusterRef, issuer, and jwksUrl" }}{{- end }}

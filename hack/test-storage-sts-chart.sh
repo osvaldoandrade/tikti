@@ -55,6 +55,12 @@ must_fail \
   --set config.issuerBaseUrl=https://tikti.example.com \
   --set config.storageSTS.authorizerUrl=https://api.example.com/internal/v1/object-storage:authorize \
   --set config.storageSTS.minioStsEndpoint=http://minio.code-admin.svc:9000 \
+  --set config.storageSTS.oidcJwksUrl=https://api.example.com/internal/v1/storage/jwks.json
+must_fail \
+  --set config.storageSTS.enabled=true \
+  --set config.issuerBaseUrl=https://tikti.example.com \
+  --set config.storageSTS.authorizerUrl=https://api.example.com/internal/v1/object-storage:authorize \
+  --set config.storageSTS.minioStsEndpoint=http://minio.code-admin.svc:9000 \
   --set config.storageSTS.oidcJwksUrl=https://api.example.com/internal/v1/storage/jwks.json \
   --set config.workloadIdentity.issuer=https://cluster.example.com \
   --set config.workloadIdentity.clusterRef=code-cloud \
@@ -106,9 +112,6 @@ browser_enabled=$(helm template storage-sts "$chart" \
   --set config.storageSTS.authorizerUrl=https://api.example.com/internal/v1/object-storage:authorize \
   --set config.storageSTS.minioStsEndpoint=http://minio.code-admin.svc:9000 \
   --set config.storageSTS.oidcJwksUrl=https://api.example.com/internal/v1/storage/jwks.json \
-  --set config.workloadIdentity.issuer=https://cluster.example.com \
-  --set config.workloadIdentity.clusterRef=code-cloud \
-  --set config.workloadIdentity.jwksUrl=https://cluster.example.com/jwks \
   --set config.objectStorageBrowser.enabled=true \
   --set config.objectStorageBrowser.adminAuthorizerUrl=https://api.example.com/internal/v1/object-storage/authorize-admin \
   --set 'config.objectStorageBrowser.cohortTenants[0]=payments')
