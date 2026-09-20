@@ -104,3 +104,39 @@ workloadIdentity:
 		t.Fatal("mixed wildcard and named browser cohorts were accepted")
 	}
 }
+
+func TestObjectStorageBrowserDoesNotRequireWorkloadIdentityProvider(t *testing.T) {
+	configuration := `
+issuerBaseUrl: https://tikti.example.com
+defaultAudience: code-admin-api
+storageSTS:
+  enabled: true
+  syntheticAccountId: "000000000000"
+  authorizerUrl: https://code-admin-api.example.com/internal/v1/object-storage:authorize
+  minioStsEndpoint: http://minio.code-admin.svc:9000/
+  oidcJwksUrl: http://tikti.code-admin.svc:8080/internal/v1/storage/jwks.json
+  serviceSubject: tikti:object-storage-sts
+  credentialTtlSeconds: 900
+  serviceAssertionTtlSeconds: 60
+  dependencyTimeoutSeconds: 3
+  maximumConcurrent: 8
+  readOnlyPolicy: code-admin-object-readonly-v1
+  readWritePolicy: code-admin-object-readwrite-v1
+objectStorageBrowser:
+  enabled: true
+  adminAuthorizerUrl: https://code-admin-api.example.com/internal/v1/object-storage/authorize-admin
+  maximumPresignTtlSeconds: 60
+  cohortTenants: [conveste]
+  deleteEnabled: false
+  deleteCohortTenants: []
+workloadIdentity:
+  audience: tikti-workload-exchange
+`
+	cfg, err := LoadConfig(writeTempConfig(t, configuration))
+	if err != nil {
+		t.Fatalf("browser-only storage config: %v", err)
+	}
+	if !cfg.StorageSTS.Enabled || !cfg.ObjectStorageBrowser.Enabled || cfg.WorkloadIdentity.Issuer != "" || len(cfg.WorkloadIdentity.Providers) != 0 {
+		t.Fatalf("browser-only storage config = %#v", cfg)
+	}
+}

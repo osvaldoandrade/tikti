@@ -776,7 +776,7 @@ func validateStorageSTS(c *Config) error {
 		return fmt.Errorf("storageSTS policies must equal the two fixed reviewed policy names")
 	}
 	if c.WorkloadIdentity.Audience != "tikti-workload-exchange" ||
-		(strings.TrimSpace(c.WorkloadIdentity.Issuer) == "" && len(c.WorkloadIdentity.Providers) == 0) ||
+		(!c.ObjectStorageBrowser.Enabled && strings.TrimSpace(c.WorkloadIdentity.Issuer) == "" && len(c.WorkloadIdentity.Providers) == 0) ||
 		(strings.TrimSpace(c.WorkloadIdentity.Issuer) != "" && !validClusterRef(c.WorkloadIdentity.ClusterRef)) {
 		return fmt.Errorf("storageSTS requires exact workload identity issuer, cluster, and audience configuration")
 	}
