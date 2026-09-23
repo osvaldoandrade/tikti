@@ -52,13 +52,14 @@ func (s *workloadIdentityService) VerifyProjectedToken(ctx context.Context, subj
 }
 
 type workloadIdentityService struct {
-	repo       repository.WorkloadBindingRepository
-	verifier   WorkloadTokenVerifier
-	issuer     string
-	privatePEM string
-	keyID      string
-	ttl        time.Duration
-	now        func() time.Time
+	trinoAuthority TrinoIdentityAuthority
+	repo           repository.WorkloadBindingRepository
+	verifier       WorkloadTokenVerifier
+	issuer         string
+	privatePEM     string
+	keyID          string
+	ttl            time.Duration
+	now            func() time.Time
 
 	keyOnce sync.Once
 	key     *rsa.PrivateKey
@@ -72,6 +73,7 @@ func NewWorkloadIdentityService(
 	privatePEM string,
 	keyID string,
 	ttl time.Duration,
+	options ...WorkloadIdentityServiceOption,
 ) WorkloadIdentityService {
 	if ttl <= 0 {
 		ttl = defaultWorkloadAccessTokenTTL
@@ -79,15 +81,22 @@ func NewWorkloadIdentityService(
 	if ttl > time.Hour {
 		ttl = time.Hour
 	}
-	return &workloadIdentityService{
+	service := &workloadIdentityService{
 		repo: repo, verifier: verifier, issuer: strings.TrimSpace(issuer), privatePEM: privatePEM,
 		keyID: strings.TrimSpace(keyID), ttl: ttl, now: time.Now,
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error) {
 	if strings.TrimSpace(req.SubjectToken) == "" || req.SubjectTokenType != domain.WorkloadSubjectTokenType {
 		return nil, domain.ErrWorkloadTokenInvalid
+	}
+	if reservedTrinoAudience(req.Audience) {
+		return s.exchangeTrinoWorkload(ctx, req)
 	}
 	if !workloadAudienceAllowed(req.Audience) || !tenantIDPattern.MatchString(req.TenantID) {
 		return nil, domain.ErrInvalidArgument

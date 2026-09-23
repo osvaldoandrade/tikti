@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026-09-08.1",
+  "policyVersion": "2026-09-23.1",
   "scopes": [
     {
       "scope": "code-admin:audit:read",
@@ -229,6 +229,21 @@
       "scope": "code-admin:tenants:read",
       "boundary": "global",
       "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:trino:query",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:trino:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:trino:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
     },
     {
       "scope": "code-admin:workloads:read",

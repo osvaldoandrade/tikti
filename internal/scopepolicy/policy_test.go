@@ -13,7 +13,7 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		t.Fatalf("compiled policy: %v", err)
 	}
 	digest := sha256.Sum256(manifestJSON)
-	if PolicyVersion != "2026-09-08.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
+	if PolicyVersion != "2026-09-23.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
 		t.Fatalf("unexpected policy identity: %s %x", PolicyVersion, digest)
 	}
 	tests := []struct {
@@ -126,5 +126,19 @@ func TestParseManifestFailsClosed(t *testing.T) {
 				t.Fatalf("invalid manifest accepted: %#v, %v", scopes, err)
 			}
 		})
+	}
+}
+
+func TestPlatformDataAccessQueryScopeContract(t *testing.T) {
+	for _, scope := range []string{"code-admin:trino:read", "code-admin:trino:write", "code-admin:trino:query"} {
+		if !TenantRoleAssignable(scope) {
+			t.Fatalf("scope not assignable: %s", scope)
+		}
+		if _, ok := CanonicalAudienceScopes([]string{scope}); !ok {
+			t.Fatalf("scope not canonical: %s", scope)
+		}
+	}
+	if _, ok := CanonicalAudienceScopes([]string{"code-admin:trino:*"}); ok {
+		t.Fatal("wildcard granted")
 	}
 }
