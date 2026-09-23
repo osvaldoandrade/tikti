@@ -53,4 +53,4 @@ saml-integration:
 
 .PHONY: test-platform-data-access-contract
 test-platform-data-access-contract:
-	go test -count=1 ./pkg/domain ./internal/services ./internal/scopepolicy -run '^TestPlatformDataAccess'
+	go test -count=1 ./pkg/domain ./internal/services ./internal/scopepolicy ./internal/workloadidentity -run '^TestPlatformDataAccess'

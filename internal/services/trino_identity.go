@@ -14,12 +14,23 @@ import (
 // MUST verify an active installation registration, current tenant lifetime,
 // current principal identity, and explicit query-scope entitlement on EVERY call.
 // Workload resolution MUST bind the verified issuer/cluster/namespace/account to
-// the current Service UID. Neither a legacy CodeQ grant nor a subject name alone
+// the current Service UID and its owned ServiceAccount UID (and bound Pod UID).
+// The returned immutable runtime identities are checked against the signed token.
+// Neither a legacy CodeQ grant nor a subject name alone
 // establishes this authority. CFP-111 supplies durable registration and wiring;
 // production constructors leave this nil until then (default OFF).
 type TrinoIdentityAuthority interface {
 	AuthorizeUser(context.Context, string, string, string) (domain.TrinoPrincipal, error)
-	AuthorizeWorkload(context.Context, string, string, domain.WorkloadSubject) (domain.TrinoPrincipal, error)
+	AuthorizeWorkload(context.Context, string, string, domain.WorkloadSubject) (TrinoWorkloadAuthorization, error)
+}
+
+// TrinoWorkloadAuthorization binds a current Service principal to its owned
+// runtime incarnation. The provider must read these UIDs from current authority,
+// not echo the projected token. PodUID is empty only for an unbound token.
+type TrinoWorkloadAuthorization struct {
+	Principal         domain.TrinoPrincipal
+	ServiceAccountUID string
+	PodUID            string
 }
 
 func WithTrinoIdentityAuthority(authority TrinoIdentityAuthority) UserServiceOption {
@@ -114,20 +125,20 @@ func (s *workloadIdentityService) exchangeTrinoWorkload(ctx context.Context, req
 		return nil, err
 	}
 	canonical, valid := domain.ParseWorkloadSubject(subject.Subject)
-	if !valid || canonical.Subject != subject.Subject || canonical.Namespace != subject.Namespace || canonical.ServiceAccount != subject.ServiceAccount || subject.Issuer == "" || subject.ClusterRef == "" {
+	if !valid || canonical.Subject != subject.Subject || canonical.Namespace != subject.Namespace || canonical.ServiceAccount != subject.ServiceAccount || subject.Issuer == "" || subject.ClusterRef == "" || subject.ServiceAccountUID == "" {
 		return nil, domain.ErrWorkloadTokenInvalid
 	}
 	// VerifyProjectedToken supplies attested context; authority must match all of
 	// it to the current Service incarnation rather than reuse a name-only binding.
-	p, err := s.trinoAuthority.AuthorizeWorkload(ctx, installation, req.TenantID, subject)
-	if err != nil {
+	authorization, err := s.trinoAuthority.AuthorizeWorkload(ctx, installation, req.TenantID, subject)
+	if err != nil || authorization.ServiceAccountUID != subject.ServiceAccountUID || authorization.PodUID != subject.PodUID {
 		return nil, domain.ErrWorkloadBindingDenied
 	}
 	ttl := int(s.ttl / time.Second)
 	if ttl <= 0 || ttl > 300 {
 		ttl = 300
 	}
-	claims, err := trinoClaims(p, installation, req.TenantID, "Service", subject.Subject, s.issuer, s.now().UTC(), ttl)
+	claims, err := trinoClaims(authorization.Principal, installation, req.TenantID, "Service", subject.Subject, s.issuer, s.now().UTC(), ttl)
 	if err != nil {
 		return nil, domain.ErrWorkloadBindingDenied
 	}

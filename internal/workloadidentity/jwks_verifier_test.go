@@ -302,3 +302,56 @@ func ExampleJWKSVerifier() {
 	fmt.Println("validates projected Kubernetes ServiceAccount tokens against configured JWKS")
 	// Output: validates projected Kubernetes ServiceAccount tokens against configured JWKS
 }
+
+func TestPlatformDataAccessSignedObjectUIDPropagation(t *testing.T) {
+	key := verifierTestKey(t)
+	server, _ := jwksTestServer(t, key, testWorkloadKid, 0)
+	verifier := newTestVerifier(t, server, time.Minute).WithClusterRef("cluster-1")
+	for _, uid := range []string{"sa-old", "sa-new"} {
+		claims := projectedClaims(time.Now())
+		k := claims["kubernetes.io"].(map[string]interface{})
+		k["serviceaccount"].(map[string]interface{})["uid"] = uid
+		k["pod"] = map[string]interface{}{"name": "same-pod", "uid": "pod-" + uid}
+		subject, err := verifier.Verify(context.Background(), signProjectedToken(t, key, testWorkloadKid, claims))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if subject.ServiceAccountUID != uid || subject.PodUID != "pod-"+uid {
+			t.Fatal("signed lifetime identities discarded")
+		}
+	}
+	claims := projectedClaims(time.Now())
+	delete(claims["kubernetes.io"].(map[string]interface{})["serviceaccount"].(map[string]interface{}), "uid")
+	subject, err := verifier.Verify(context.Background(), signProjectedToken(t, key, testWorkloadKid, claims))
+	if err != nil || subject.ServiceAccountUID != "" {
+		t.Fatal("legacy no-UID token changed")
+	}
+}
+
+func TestPlatformDataAccessMalformedSignedUIDsRejected(t *testing.T) {
+	key := verifierTestKey(t)
+	server, _ := jwksTestServer(t, key, testWorkloadKid, 0)
+	v := newTestVerifier(t, server, time.Minute)
+	for _, change := range []func(map[string]interface{}){
+		func(k map[string]interface{}) { k["serviceaccount"].(map[string]interface{})["uid"] = 123 },
+		func(k map[string]interface{}) { k["serviceaccount"].(map[string]interface{})["uid"] = " uid " },
+		func(k map[string]interface{}) { k["serviceaccount"].(map[string]interface{})["uid"] = "" },
+		func(k map[string]interface{}) { k["pod"] = "bad" },
+		func(k map[string]interface{}) { k["pod"] = map[string]interface{}{"name": "pod"} },
+	} {
+		c := projectedClaims(time.Now())
+		change(c["kubernetes.io"].(map[string]interface{}))
+		if _, err := v.Verify(context.Background(), signProjectedToken(t, key, testWorkloadKid, c)); !errors.Is(err, domain.ErrWorkloadTokenInvalid) {
+			t.Fatal("malformed UID claim accepted")
+		}
+	}
+	c := projectedClaims(time.Now())
+	delete(c, "kubernetes.io")
+	c["kubernetes.io/serviceaccount/namespace"] = "code-admin"
+	c["kubernetes.io/serviceaccount/service-account.name"] = "code-admin-controller-queue"
+	c["kubernetes.io/serviceaccount/service-account.uid"] = "legacy-sa-uid"
+	subject, err := v.Verify(context.Background(), signProjectedToken(t, key, testWorkloadKid, c))
+	if err != nil || subject.ServiceAccountUID != "legacy-sa-uid" || subject.PodUID != "" {
+		t.Fatal("legacy flat UID lost")
+	}
+}

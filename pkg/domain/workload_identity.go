@@ -27,11 +27,14 @@ var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 // WorkloadSubject is the verified Kubernetes ServiceAccount identity carried
 // by a projected token. It contains no token material.
 type WorkloadSubject struct {
-	Subject        string
-	Issuer         string
-	ClusterRef     string
-	Namespace      string
-	ServiceAccount string
+	// Signed object lifetimes; empty only for legacy unbound identity tokens.
+	ServiceAccountUID string
+	PodUID            string
+	Subject           string
+	Issuer            string
+	ClusterRef        string
+	Namespace         string
+	ServiceAccount    string
 }
 
 // ParseWorkloadSubject validates the canonical Kubernetes ServiceAccount

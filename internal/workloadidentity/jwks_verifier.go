@@ -252,6 +252,10 @@ func validatedKubernetesSubject(claims jwt.MapClaims) (domain.WorkloadSubject, e
 	if namespace == "" || serviceAccount == "" || namespace != identity.Namespace || serviceAccount != identity.ServiceAccount {
 		return domain.WorkloadSubject{}, fmt.Errorf("kubernetes identity claims do not match subject")
 	}
+	identity.ServiceAccountUID, identity.PodUID, err = kubernetesObjectUIDs(claims)
+	if err != nil {
+		return domain.WorkloadSubject{}, err
+	}
 	return identity, nil
 }
 
@@ -274,4 +278,48 @@ func isLocalHost(host string) bool {
 	}
 	address := net.ParseIP(host)
 	return address != nil && address.IsLoopback()
+}
+
+// kubernetesObjectUIDs preserves only signed incarnation claims. Absence stays
+// compatible with legacy CodeQ; Trino separately requires the ServiceAccount UID.
+func kubernetesObjectUIDs(claims jwt.MapClaims) (string, string, error) {
+	readUID := func(raw interface{}, present bool) (string, error) {
+		if !present {
+			return "", nil
+		}
+		uid, ok := raw.(string)
+		if !ok || len(uid) == 0 || len(uid) > 128 {
+			return "", fmt.Errorf("invalid workload object UID")
+		}
+		for _, c := range uid {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+				return "", fmt.Errorf("invalid workload object UID")
+			}
+		}
+		return uid, nil
+	}
+	if raw, ok := claims["kubernetes.io"].(map[string]interface{}); ok {
+		sa, _ := raw["serviceaccount"].(map[string]interface{})
+		value, present := sa["uid"]
+		saUID, err := readUID(value, present)
+		if err != nil {
+			return "", "", err
+		}
+		var podUID string
+		if value, present := raw["pod"]; present {
+			pod, ok := value.(map[string]interface{})
+			if !ok {
+				return "", "", fmt.Errorf("invalid bound Pod claim")
+			}
+			// A declared binding must carry its immutable identity, never just its name.
+			podUID, err = readUID(pod["uid"], true)
+			if err != nil {
+				return "", "", err
+			}
+		}
+		return saUID, podUID, nil
+	}
+	value, present := claims["kubernetes.io/serviceaccount/service-account.uid"]
+	saUID, err := readUID(value, present)
+	return saUID, "", err
 }

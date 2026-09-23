@@ -3,10 +3,16 @@ package services
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/osvaldoandrade/tikti/internal/utils"
+	"github.com/osvaldoandrade/tikti/internal/workloadidentity"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -25,10 +31,10 @@ func (a *trinoTestAuthority) AuthorizeUser(_ context.Context, installation, tena
 	a.user = uid
 	return a.principal, a.err
 }
-func (a *trinoTestAuthority) AuthorizeWorkload(_ context.Context, installation, tenant string, subject domain.WorkloadSubject) (domain.TrinoPrincipal, error) {
+func (a *trinoTestAuthority) AuthorizeWorkload(_ context.Context, installation, tenant string, subject domain.WorkloadSubject) (TrinoWorkloadAuthorization, error) {
 	a.calls++
 	a.workload = subject
-	return a.principal, a.err
+	return TrinoWorkloadAuthorization{Principal: a.principal, ServiceAccountUID: "sa-current", PodUID: "pod-current"}, a.err
 }
 func trinoFixturePrincipal(kind string) domain.TrinoPrincipal {
 	return domain.TrinoPrincipal{InstallationUID: "installation-1", TenantID: "tenant-1", TenantEpoch: strings.Repeat("a", 64), SubjectKind: kind, SubjectUID: "user-1"}
@@ -129,6 +135,8 @@ func trinoWorkloadVerifier() *fakeWorkloadVerifier {
 	v := validWorkloadVerifier()
 	v.subject.Issuer = "https://cluster.example"
 	v.subject.ClusterRef = "cluster-1"
+	v.subject.ServiceAccountUID = "sa-current"
+	v.subject.PodUID = "pod-current"
 	return v
 }
 
@@ -246,5 +254,65 @@ func TestPlatformDataAccessWorkloadKeyUnavailable(t *testing.T) {
 	r := domain.WorkloadTokenExchangeReq{SubjectToken: "projected", SubjectTokenType: domain.WorkloadSubjectTokenType, Audience: "trino:installation-1", TenantID: "tenant-1", Scopes: []string{domain.TrinoQueryScope}}
 	if out, err := s.Exchange(context.Background(), r); !errors.Is(err, domain.ErrWorkloadIdentityUnavailable) || out != nil {
 		t.Fatal("unavailable key accepted")
+	}
+}
+
+func TestPlatformDataAccessSameNameWorkloadRecreation(t *testing.T) {
+	_, pem := workloadTestKey(t)
+	a := &trinoTestAuthority{principal: trinoFixturePrincipal("Service")}
+	v := trinoWorkloadVerifier()
+	s := NewWorkloadIdentityService(nil, v, "https://issuer", pem, "kid", time.Minute, WithWorkloadTrinoIdentityAuthority(a))
+	r := domain.WorkloadTokenExchangeReq{SubjectToken: "projected", SubjectTokenType: domain.WorkloadSubjectTokenType, Audience: "trino:installation-1", TenantID: "tenant-1", Scopes: []string{domain.TrinoQueryScope}}
+	// Same issuer/cluster/namespace/account name; only immutable lifetime differs.
+	for _, uid := range []string{"", "sa-old"} {
+		v.subject.ServiceAccountUID = uid
+		if out, err := s.Exchange(context.Background(), r); err == nil || out != nil {
+			t.Fatal("missing or old UID authenticated as new Service")
+		}
+	}
+	v.subject.ServiceAccountUID = "sa-current"
+	v.subject.PodUID = "pod-old"
+	if out, err := s.Exchange(context.Background(), r); err == nil || out != nil {
+		t.Fatal("stale bound Pod accepted")
+	}
+	v.subject.PodUID = "pod-current"
+	if out, err := s.Exchange(context.Background(), r); err != nil || out == nil {
+		t.Fatalf("current incarnation denied: %v", err)
+	}
+}
+
+func TestPlatformDataAccessSignedTokenCannotCrossWorkloadIncarnation(t *testing.T) {
+	key, pem := workloadTestKey(t)
+	jwks := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"keys": []map[string]string{{"kty": "RSA", "use": "sig", "alg": "RS256", "kid": "cluster-key", "n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes())}}})
+	}))
+	t.Cleanup(jwks.Close)
+	verifier, err := workloadidentity.NewJWKSVerifier("https://cluster.example", "tikti-workload-exchange", jwks.URL, jwks.Client(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier.WithClusterRef("cluster-1")
+	a := &trinoTestAuthority{principal: trinoFixturePrincipal("Service")}
+	s := NewWorkloadIdentityService(nil, verifier, "https://issuer", pem, "kid", time.Minute, WithWorkloadTrinoIdentityAuthority(a))
+	for _, tc := range []struct {
+		sa, pod string
+		allowed bool
+	}{{"sa-old", "pod-old", false}, {"sa-current", "pod-old", false}, {"", "pod-current", false}, {"sa-current", "pod-current", true}} {
+		sa := map[string]interface{}{"name": "code-admin-controller-queue"}
+		if tc.sa != "" {
+			sa["uid"] = tc.sa
+		}
+		claims := jwt.MapClaims{"iss": "https://cluster.example", "aud": "tikti-workload-exchange", "sub": testWorkloadSubject, "exp": time.Now().Add(time.Minute).Unix(), "kubernetes.io": map[string]interface{}{"namespace": "code-admin", "serviceaccount": sa, "pod": map[string]interface{}{"name": "same-pod", "uid": tc.pod}}}
+		token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+		token.Header["kid"] = "cluster-key"
+		signed, err := token.SignedString(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := domain.WorkloadTokenExchangeReq{SubjectToken: signed, SubjectTokenType: domain.WorkloadSubjectTokenType, Audience: "trino:installation-1", TenantID: "tenant-1", Scopes: []string{domain.TrinoQueryScope}}
+		out, err := s.Exchange(context.Background(), req)
+		if tc.allowed != (err == nil && out != nil) {
+			t.Fatalf("SA=%s Pod=%s allowed=%v error=%v", tc.sa, tc.pod, tc.allowed, err)
+		}
 	}
 }

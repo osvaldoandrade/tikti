@@ -9,8 +9,14 @@ before activation. No new public registration API or runtime feature is active.
 `TrinoIdentityAuthority` must check the exact active installation UID, current
 ACTIVE tenant lifetime, current principal identity and explicit
 `code-admin:trino:query` entitlement on each request. Its workload method receives
-the verified projected subject with issuer and cluster context and must map that
-to the current Service UID; legacy CodeQ name-only grants are insufficient. The
+the verified projected subject with issuer, cluster, signed ServiceAccount UID
+and bound Pod UID and must map those to the current Service UID; legacy CodeQ
+name-only grants are insufficient. The returned
+`TrinoWorkloadAuthorization` contains current Service-owned ServiceAccount and
+Pod UIDs, independently read from authority rather than echoed from the token.
+Issuance requires the signed ServiceAccount UID and compares both object UIDs
+exactly; a same-name recreated account or Pod cannot inherit old tokens. Legacy
+CodeQ tokens without UID claims retain their existing behavior. The
 implementation must return an error on unavailable or stale authority and must
 never accept principal/epoch claims from exchange request fields. It does not
 own catalog ACLs: the query guard intersects the signed identity with catalog
