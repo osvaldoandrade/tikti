@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/osvaldoandrade/tikti/internal/providers"
 	"github.com/osvaldoandrade/tikti/internal/repository"
@@ -23,6 +24,7 @@ type Application struct {
 	MemberSvc   services.MembershipService
 	RoleSvc     services.RoleService
 	ClientSvc   services.ClientService
+	RedisClient *redis.Client
 }
 
 // NewApplication assembles dependencies (Redis, repository, services) using the provided config.
@@ -67,6 +69,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		MemberSvc:   membershipService,
 		RoleSvc:     roleService,
 		ClientSvc:   clientService,
+		RedisClient: redisClient,
 	}, nil
 }
 

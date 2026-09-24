@@ -7,13 +7,14 @@ import (
 	"github.com/osvaldoandrade/tikti/pkg/config"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 )
 
 // SetupMappings registers every public and protected route with their respective controllers.
-func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService) {
+func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.UserService, tenantService services.TenantService, membershipService services.MembershipService, roleService services.RoleService, clientService services.ClientService, client *redis.Client) {
 	v1 := engine.Group("/v1")
 
-	v1.POST("/accounts/signUp", controllers.NewSignUpController(userService, cfg).Handle)
+	v1.POST("/accounts/signUp", controllers.NewSignUpController(userService, cfg, client).Handle)
 	signInCtrl := controllers.NewSignInController(userService, cfg)
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
 	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
@@ -28,7 +29,7 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	protected.Use(utils.ApiKey(cfg.ApiKey))
 	{
 		tenantCtrl := controllers.NewTenantController(tenantService, cfg)
-		memberCtrl := controllers.NewMembershipController(membershipService, cfg)
+		memberCtrl := controllers.NewMembershipController(membershipService, cfg, client)
 		roleCtrl := controllers.NewRoleController(roleService, cfg)
 		clientCtrl := controllers.NewClientController(clientService, cfg)
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/pkg/config"
@@ -12,22 +13,23 @@ import (
 )
 
 type membershipController struct {
-	svc services.MembershipService
-	cfg *config.Config
+	svc    services.MembershipService
+	cfg    *config.Config
+	client *redis.Client
 }
 
-func NewMembershipController(svc services.MembershipService, cfg *config.Config) *membershipController {
-	return &membershipController{svc: svc, cfg: cfg}
+func NewMembershipController(svc services.MembershipService, cfg *config.Config, client *redis.Client) *membershipController {
+	return &membershipController{svc: svc, cfg: cfg, client: client}
 }
 
 func (m *membershipController) Create(c *gin.Context) {
-	if !requireAdmin(c, m.cfg) {
-		return
-	}
 	tenantID := c.Param("tenantId")
 	var req domain.MembershipCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if !allowConvesteMembership(c, m.cfg, m.client, tenantID, req) {
 		return
 	}
 	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {

@@ -98,6 +98,9 @@ func (s *userService) SignUp(ctx context.Context, req domain.SignUpReq) (*domain
 		Status:    domain.UserStatusActive,
 		CreatedAt: time.Now(),
 	}
+	if req.CompanyID != "" {
+		u.CompanyId = &req.CompanyID
+	}
 	if er := s.repo.CreateUser(ctx, u); er != nil {
 		return nil, er
 	}
@@ -292,7 +295,19 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 
 	subject := strings.TrimSpace(req.Subject)
-	if subject == "" {
+	if u.Role != domain.RoleAdmin {
+		if req.Audience == "analytics-service" {
+			if subject != "" && !strings.EqualFold(subject, u.Email) {
+				return nil, domain.ErrUnauthorizedScope
+			}
+			subject = u.Email
+		} else {
+			if subject != "" && subject != u.Id {
+				return nil, domain.ErrUnauthorizedScope
+			}
+			subject = u.Id
+		}
+	} else if subject == "" {
 		subject = u.Id
 	}
 
@@ -457,7 +472,24 @@ func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *dom
 	if u == nil {
 		return false
 	}
-	if u.Role == domain.RoleAdmin || u.Role == domain.RoleCompanyAdmin {
+	if u.Role == domain.RoleAdmin {
+		return true
+	}
+	if u.Role == domain.RoleCompanyAdmin {
+		allowed := map[string]bool{
+			"employee:read": true, "employee:write": true,
+			"company:read": true, "company:write": true,
+			"knowledge:read": true,
+			"index:read":     true, "index:write": true, "index:admin": true,
+			"dimension:read": true, "dimension:write": true, "dimension:admin": true,
+			"question:read": true, "question:write": true, "question:admin": true,
+			"analytics:read": true,
+		}
+		for _, scope := range scopes {
+			if !allowed[scope] {
+				return false
+			}
+		}
 		return true
 	}
 	roles := []string{string(u.Role)}

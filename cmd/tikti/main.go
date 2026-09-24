@@ -43,6 +43,7 @@ func main() {
 		application.MemberSvc,
 		application.RoleSvc,
 		application.ClientSvc,
+		application.RedisClient,
 	)
 
 	application.Engine.GET("/healthz", func(c *gin.Context) {

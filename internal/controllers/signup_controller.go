@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/internal/utils"
@@ -17,13 +18,15 @@ import (
 type signUpController struct {
 	userService services.UserService
 	cfg         *config.Config
+	client      *redis.Client
 }
 
 // NewSignUpController initializes the sign-up endpoint with the service and config.
-func NewSignUpController(svc services.UserService, cfg *config.Config) *signUpController {
+func NewSignUpController(svc services.UserService, cfg *config.Config, client *redis.Client) *signUpController {
 	return &signUpController{
 		userService: svc,
 		cfg:         cfg,
+		client:      client,
 	}
 }
 
@@ -48,7 +51,20 @@ func (ctrl *signUpController) Handle(c *gin.Context) {
 		return
 	}
 	role, _ := claims["role"].(string)
-	if role != "ADMIN" {
+	if role == "COMPANY_ADMIN" {
+		actorID, _ := claims["userId"].(string)
+		allowed, err := linkedConvesteAdmin(c.Request.Context(), ctrl.client, actorID)
+		if err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authorization unavailable"})
+			return
+		}
+		if !allowed || (req.Role != "" && req.Role != string(domain.RoleCompanyEmployee)) || (req.CompanyID != "" && req.CompanyID != convesteCompanyID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "company admin can create only Conveste employees"})
+			return
+		}
+		req.Role = string(domain.RoleCompanyEmployee)
+		req.CompanyID = convesteCompanyID
+	} else if role != "ADMIN" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only admins can create users"})
 		return
 	}

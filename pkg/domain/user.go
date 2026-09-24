@@ -41,9 +41,10 @@ type User struct {
 
 // SignUpReq holds the payload expected when an admin creates a new user.
 type SignUpReq struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-	Role     string `json:"role,omitempty"`
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	Role      string `json:"role,omitempty"`
+	CompanyID string `json:"companyId,omitempty"`
 }
 
 // SignUpResp captures the subset of data echoed back after a successful creation.
