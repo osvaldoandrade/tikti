@@ -47,23 +47,24 @@ type TemporaryPasswordService interface {
 
 // userService is the concrete UserService backed by the repository and JWT utilities.
 type userService struct {
-	repo            repository.UserRepository
-	membershipRepo  repository.MembershipRepository
-	jwtSecret       string
-	issuerBaseURL   string
-	defaultAudience string
-	jwksPrivateKey  string
-	jwksKeyID       string
-	roleSvc         RoleService
-	clientSvc       ClientService
-	rsaOnce         sync.Once
-	rsaKey          interface{}
-	rsaErr          error
+	repo                repository.UserRepository
+	membershipRepo      repository.MembershipRepository
+	jwtSecret           string
+	issuerBaseURL       string
+	defaultAudience     string
+	jwksPrivateKey      string
+	jwksKeyID           string
+	roleSvc             RoleService
+	clientSvc           ClientService
+	convesteAdminLookup func(context.Context) (string, error)
+	rsaOnce             sync.Once
+	rsaKey              interface{}
+	rsaErr              error
 }
 
 // NewUserService builds a service instance that signs JWTs with the provided secret.
-func NewUserService(r repository.UserRepository, membershipRepo repository.MembershipRepository, roleSvc RoleService, clientSvc ClientService, jwtSecret string, issuerBaseURL string, defaultAudience string, jwksPrivateKey string, jwksKeyID string) UserService {
-	return &userService{
+func NewUserService(r repository.UserRepository, membershipRepo repository.MembershipRepository, roleSvc RoleService, clientSvc ClientService, jwtSecret string, issuerBaseURL string, defaultAudience string, jwksPrivateKey string, jwksKeyID string, convesteLookup ...func(context.Context) (string, error)) UserService {
+	s := &userService{
 		repo:            r,
 		membershipRepo:  membershipRepo,
 		roleSvc:         roleSvc,
@@ -74,6 +75,24 @@ func NewUserService(r repository.UserRepository, membershipRepo repository.Membe
 		jwksPrivateKey:  jwksPrivateKey,
 		jwksKeyID:       jwksKeyID,
 	}
+	if len(convesteLookup) > 0 {
+		s.convesteAdminLookup = convesteLookup[0]
+	}
+	return s
+}
+
+func (s *userService) isScopedConvesteAdmin(ctx context.Context, u *domain.User) bool {
+	if u == nil || u.Role != domain.RoleCompanyAdmin {
+		return false
+	}
+	if strings.EqualFold(u.Email, "fernando.machado@conveste.com.br") {
+		return true
+	}
+	if s.convesteAdminLookup == nil {
+		return false
+	}
+	adminID, err := s.convesteAdminLookup(ctx)
+	return err != nil || (adminID != "" && adminID == u.Id)
 }
 
 // SignUp validates uniqueness, hashes the password and persists a new user.
@@ -295,7 +314,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 
 	subject := strings.TrimSpace(req.Subject)
-	if u.Role == domain.RoleCompanyAdmin && strings.EqualFold(u.Email, "fernando.machado@conveste.com.br") {
+	if s.isScopedConvesteAdmin(ctx, u) {
 		if req.Audience == "analytics-service" {
 			if subject != "" && !strings.EqualFold(subject, u.Email) {
 				return nil, domain.ErrUnauthorizedScope
@@ -476,7 +495,7 @@ func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *dom
 		return true
 	}
 	if u.Role == domain.RoleCompanyAdmin {
-		if !strings.EqualFold(u.Email, "fernando.machado@conveste.com.br") {
+		if !s.isScopedConvesteAdmin(ctx, u) {
 			return true
 		}
 		allowed := map[string]bool{

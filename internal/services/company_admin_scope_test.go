@@ -42,4 +42,9 @@ func TestCompanyAdminScopeAllowlist(t *testing.T) {
 	if !svc.scopesAllowed(context.Background(), "default", other, []string{"user:admin"}) {
 		t.Fatal("unrelated company admin behavior changed")
 	}
+	linked := &userService{convesteAdminLookup: func(context.Context) (string, error) { return "replacement-admin", nil }}
+	replacement := &domain.User{Id: "replacement-admin", Role: domain.RoleCompanyAdmin, Email: "new-admin@conveste.test"}
+	if linked.scopesAllowed(context.Background(), "default", replacement, []string{"user:admin"}) {
+		t.Fatal("newly linked Conveste admin escaped the scope")
+	}
 }
