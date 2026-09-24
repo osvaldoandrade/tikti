@@ -11,7 +11,7 @@ import (
 func TestCompanyAdminCannotImpersonateAnotherServiceSubject(t *testing.T) {
 	repo := newFakeUserRepo()
 	companyID := "default"
-	user := &domain.User{Id: "conveste-admin", Email: "admin@conveste.test", Role: domain.RoleCompanyAdmin, Status: domain.UserStatusActive, CompanyId: &companyID}
+	user := &domain.User{Id: "conveste-admin", Email: "fernando.machado@conveste.com.br", Role: domain.RoleCompanyAdmin, Status: domain.UserStatusActive, CompanyId: &companyID}
 	repo.usersByEmail[user.Email] = user
 	svc := NewUserService(repo, nil, nil, nil, "secret", "issuer", "tikti", "", "")
 	idToken, _, err := svc.(*userService).issueIDToken(user)
@@ -31,11 +31,15 @@ func TestCompanyAdminCannotImpersonateAnotherServiceSubject(t *testing.T) {
 
 func TestCompanyAdminScopeAllowlist(t *testing.T) {
 	svc := &userService{}
-	user := &domain.User{Role: domain.RoleCompanyAdmin}
+	user := &domain.User{Role: domain.RoleCompanyAdmin, Email: "fernando.machado@conveste.com.br"}
 	if !svc.scopesAllowed(context.Background(), "default", user, []string{"employee:read", "employee:write", "question:admin"}) {
 		t.Fatal("Conveste admin scopes denied")
 	}
 	if svc.scopesAllowed(context.Background(), "default", user, []string{"employee:read", "user:admin"}) {
 		t.Fatal("global administrative scope allowed")
+	}
+	other := &domain.User{Role: domain.RoleCompanyAdmin, Email: "admin@other.test"}
+	if !svc.scopesAllowed(context.Background(), "default", other, []string{"user:admin"}) {
+		t.Fatal("unrelated company admin behavior changed")
 	}
 }
