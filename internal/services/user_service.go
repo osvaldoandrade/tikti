@@ -311,6 +311,19 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			}
 			subject = u.Id
 		}
+	} else if u.Role == domain.RoleAdmin && req.Audience == "analytics-service" && strings.Contains(subject, "@") {
+		// Platform admins select another company's employee as the analytics
+		// subject. Resolve the email to that employee's identity so analytics
+		// and employee-service can validate the same token.
+		target, err := s.repo.FindByEmail(ctx, subject)
+		if err != nil {
+			return nil, err
+		}
+		if target == nil || target.Id == "" {
+			return nil, domain.ErrNotFound
+		}
+		subject = target.Id
+		analyticsEmail = target.Email
 	} else if subject == "" {
 		subject = u.Id
 	}

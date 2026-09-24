@@ -68,6 +68,49 @@ func TestCompanyAdminAnalyticsTokenCarriesIdentityAndEmail(t *testing.T) {
 	}
 }
 
+func TestPlatformAdminAnalyticsTokenCarriesSelectedEmployeeIdentity(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	repo := newFakeUserRepo()
+	companyID := "default"
+	admin := &domain.User{Id: "platform-admin", Email: "admin@platform.example", Role: domain.RoleAdmin, Status: domain.UserStatusActive, CompanyId: &companyID}
+	target := &domain.User{Id: "company-admin", Email: "admin@certiface.example", Role: domain.RoleCompanyAdmin, Status: domain.UserStatusActive, CompanyId: &companyID}
+	repo.usersByEmail[admin.Email] = admin
+	repo.usersByEmail[target.Email] = target
+	svc := NewUserService(repo, nil, nil, nil, "secret", "issuer", "tikti", string(encodedKey), "kid")
+	idToken, _, err := svc.(*userService).issueIDToken(admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idToken, TenantID: "default", Audience: "analytics-service",
+		Scopes: []string{"employee:read", "analytics:read"}, Subject: target.Email,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := jwt.Parse(issued.AccessToken, func(*jwt.Token) (interface{}, error) {
+		return &privateKey.PublicKey, nil
+	}, jwt.WithValidMethods([]string{"RS256"}))
+	if err != nil || !parsed.Valid {
+		t.Fatalf("invalid analytics token: %v", err)
+	}
+	claims := parsed.Claims.(jwt.MapClaims)
+	if claims["sub"] != target.Id || claims["email"] != target.Email {
+		t.Fatalf("selected identity claims missing: sub=%v email=%v", claims["sub"], claims["email"])
+	}
+	_, err = svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idToken, TenantID: "default", Audience: "analytics-service",
+		Scopes: []string{"employee:read", "analytics:read"}, Subject: "absent@example.test",
+	})
+	if !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("missing selected identity was accepted: %v", err)
+	}
+}
+
 func TestCompanyAdminScopeAllowlist(t *testing.T) {
 	svc := &userService{}
 	user := &domain.User{Role: domain.RoleCompanyAdmin, Email: "admin@certiface.example"}
