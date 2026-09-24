@@ -295,12 +295,16 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 
 	subject := strings.TrimSpace(req.Subject)
+	var analyticsEmail string
 	if u.Role == domain.RoleCompanyAdmin {
 		if req.Audience == "analytics-service" {
 			if subject != "" && !strings.EqualFold(subject, u.Email) {
 				return nil, domain.ErrUnauthorizedScope
 			}
-			subject = u.Email
+			// Analytics needs the identity ID as its subject and the email for
+			// employee enrichment. An email subject fails with "user id missing".
+			subject = u.Id
+			analyticsEmail = u.Email
 		} else {
 			if subject != "" && subject != u.Id {
 				return nil, domain.ErrUnauthorizedScope
@@ -326,6 +330,9 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		"iat": time.Now().Unix(),
 		"exp": time.Now().Add(time.Duration(ttl) * time.Second).Unix(),
 		"jti": uuid.NewString(),
+	}
+	if analyticsEmail != "" {
+		claimsOut["email"] = analyticsEmail
 	}
 	if scopeString != "" {
 		claimsOut["scope"] = scopeString
