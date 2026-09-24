@@ -755,7 +755,7 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 }
 
 func (s *userService) SetTemporaryPassword(ctx context.Context, req domain.AdminTemporaryPasswordReq) error {
-	if req.Email == "" || req.UserID == "" || len(req.TemporaryPassword) < 12 || len(req.TemporaryPassword) > 128 || strings.TrimSpace(req.TemporaryPassword) == "" {
+	if req.Email == "" || req.UserID == "" || len(req.TemporaryPassword) < 12 || len(req.TemporaryPassword) > 72 || strings.TrimSpace(req.TemporaryPassword) == "" {
 		return domain.ErrInvalidArgument
 	}
 	u, err := s.repo.FindByEmail(ctx, req.Email)
@@ -773,7 +773,7 @@ func (s *userService) SetTemporaryPassword(ctx context.Context, req domain.Admin
 }
 
 func (s *userService) ChangeTemporaryPassword(ctx context.Context, req domain.TemporaryPasswordChangeReq) error {
-	if req.Email == "" || req.TemporaryPassword == "" || len(req.NewPassword) < 12 || len(req.NewPassword) > 128 || req.NewPassword == req.TemporaryPassword {
+	if req.Email == "" || req.TemporaryPassword == "" || len(req.NewPassword) < 12 || len(req.NewPassword) > 72 || req.NewPassword == req.TemporaryPassword {
 		return domain.ErrInvalidArgument
 	}
 	u, err := s.repo.FindByEmail(ctx, req.Email)
