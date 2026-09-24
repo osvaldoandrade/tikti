@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 
@@ -56,22 +55,6 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		cfg.DefaultAudience,
 		cfg.JwksPrivateKey,
 		cfg.JwksKeyID,
-		func(ctx context.Context) (string, error) {
-			raw, err := redisClient.HGet(ctx, "companies", "c11d3441-52a9-47b0-ba26-48ecc9350b01").Result()
-			if err == redis.Nil {
-				return "", nil
-			}
-			if err != nil {
-				return "", err
-			}
-			var company struct {
-				AdminUserID string `json:"adminUserId"`
-			}
-			if err := json.Unmarshal([]byte(raw), &company); err != nil {
-				return "", err
-			}
-			return company.AdminUserID, nil
-		},
 	)
 
 	engine := gin.Default()

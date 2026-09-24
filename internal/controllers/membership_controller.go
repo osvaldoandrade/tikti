@@ -29,7 +29,7 @@ func (m *membershipController) Create(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	if !allowConvesteMembership(c, m.cfg, m.client, tenantID, req) {
+	if !allowCompanyAdminMembership(c, m.cfg, m.client, tenantID, req) {
 		return
 	}
 	ch := runCommandAsync(func(ctx context.Context) (interface{}, error) {

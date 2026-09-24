@@ -53,17 +53,17 @@ func (ctrl *signUpController) Handle(c *gin.Context) {
 	role, _ := claims["role"].(string)
 	if role == "COMPANY_ADMIN" {
 		actorID, _ := claims["userId"].(string)
-		allowed, err := linkedConvesteAdmin(c.Request.Context(), ctrl.client, actorID)
+		companyID, err := linkedCompanyAdmin(c.Request.Context(), ctrl.client, actorID)
 		if err != nil {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authorization unavailable"})
 			return
 		}
-		if !allowed || (req.Role != "" && req.Role != string(domain.RoleCompanyEmployee)) || (req.CompanyID != "" && req.CompanyID != convesteCompanyID) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "company admin can create only Conveste employees"})
+		if companyID == "" || (req.Role != "" && req.Role != string(domain.RoleCompanyEmployee)) || (req.CompanyID != "" && req.CompanyID != companyID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "company admin can create only own employees"})
 			return
 		}
 		req.Role = string(domain.RoleCompanyEmployee)
-		req.CompanyID = convesteCompanyID
+		req.CompanyID = companyID
 	} else if role != "ADMIN" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "only admins can create users"})
 		return

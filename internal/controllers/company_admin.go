@@ -14,50 +14,56 @@ import (
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
-const convesteCompanyID = "c11d3441-52a9-47b0-ba26-48ecc9350b01"
-
 type identityStore interface {
 	HGet(context.Context, string, string) *redis.StringCmd
+	HGetAll(context.Context, string) *redis.StringStringMapCmd
 	Get(context.Context, string) *redis.StringCmd
 }
 
-// linkedConvesteAdmin checks current persisted authority, not just JWT claims.
-func linkedConvesteAdmin(ctx context.Context, client identityStore, actorID string) (bool, error) {
+// linkedCompanyAdmin finds the one active company whose persisted adminUserId
+// matches the active Tikti account. JWT role claims alone grant no authority.
+func linkedCompanyAdmin(ctx context.Context, client identityStore, actorID string) (string, error) {
 	if actorID == "" || client == nil {
-		return false, nil
+		return "", nil
 	}
 	raw, err := client.HGet(ctx, "users_v2", actorID).Result()
 	if errors.Is(err, redis.Nil) {
-		return false, nil
+		return "", nil
 	}
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	var actor struct {
 		Role   string `json:"role"`
 		Status string `json:"status"`
 	}
 	if json.Unmarshal([]byte(raw), &actor) != nil || actor.Role != "COMPANY_ADMIN" || actor.Status != "ACTIVE" {
-		return false, nil
+		return "", nil
 	}
-	raw, err = client.HGet(ctx, "companies", convesteCompanyID).Result()
-	if errors.Is(err, redis.Nil) {
-		return false, nil
-	}
+	companies, err := client.HGetAll(ctx, "companies").Result()
 	if err != nil {
-		return false, err
+		return "", err
 	}
-	var company struct {
-		AdminUserID string `json:"adminUserId"`
-		Status      string `json:"status"`
+	var linkedID string
+	for companyID, raw := range companies {
+		var company struct {
+			AdminUserID string `json:"adminUserId"`
+			Status      string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(raw), &company); err != nil {
+			return "", err
+		}
+		if company.AdminUserID == actorID && strings.EqualFold(company.Status, "active") {
+			if linkedID != "" {
+				return "", errors.New("company admin linked to multiple active companies")
+			}
+			linkedID = companyID
+		}
 	}
-	if json.Unmarshal([]byte(raw), &company) != nil {
-		return false, nil
-	}
-	return company.AdminUserID == actorID && strings.EqualFold(company.Status, "active"), nil
+	return linkedID, nil
 }
 
-func allowConvesteMembership(c *gin.Context, cfg *config.Config, client identityStore, tenantID string, req domain.MembershipCreateReq) bool {
+func allowCompanyAdminMembership(c *gin.Context, cfg *config.Config, client identityStore, tenantID string, req domain.MembershipCreateReq) bool {
 	token := strings.TrimSpace(strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer "))
 	claims, err := utils.ParseToken(token, cfg.JwtSecret)
 	if err != nil {
@@ -69,12 +75,12 @@ func allowConvesteMembership(c *gin.Context, cfg *config.Config, client identity
 		return true
 	}
 	actorID, _ := claims["userId"].(string)
-	allowed, err := linkedConvesteAdmin(c.Request.Context(), client, actorID)
+	companyID, err := linkedCompanyAdmin(c.Request.Context(), client, actorID)
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authorization unavailable"})
 		return false
 	}
-	if role != "COMPANY_ADMIN" || !allowed || tenantID != "default" {
+	if role != "COMPANY_ADMIN" || companyID == "" || tenantID != "default" {
 		c.JSON(http.StatusForbidden, gin.H{"error": "company admin membership forbidden"})
 		return false
 	}
@@ -94,12 +100,12 @@ func allowConvesteMembership(c *gin.Context, cfg *config.Config, client identity
 		userID, err = client.Get(c.Request.Context(), "userByEmail:"+strings.ToLower(email)).Result()
 	}
 	if err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user not linked to Conveste"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "user not linked to company"})
 		return false
 	}
 	raw, err := client.HGet(c.Request.Context(), "users_v2", userID).Result()
 	if err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user not linked to Conveste"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "user not linked to company"})
 		return false
 	}
 	var target struct {
@@ -108,8 +114,8 @@ func allowConvesteMembership(c *gin.Context, cfg *config.Config, client identity
 		Status    string `json:"status"`
 		CompanyID string `json:"companyId"`
 	}
-	if json.Unmarshal([]byte(raw), &target) != nil || !strings.EqualFold(strings.TrimSpace(target.Email), strings.TrimSpace(req.Email)) || target.CompanyID != convesteCompanyID || target.Role != "COMPANY_EMPLOYEE" || target.Status != "ACTIVE" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user not linked to Conveste"})
+	if json.Unmarshal([]byte(raw), &target) != nil || !strings.EqualFold(strings.TrimSpace(target.Email), strings.TrimSpace(req.Email)) || target.CompanyID != companyID || target.Role != "COMPANY_EMPLOYEE" || target.Status != "ACTIVE" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "user not linked to company"})
 		return false
 	}
 	return true
