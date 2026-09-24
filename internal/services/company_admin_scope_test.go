@@ -166,3 +166,55 @@ func TestCompanyAdminScopeAllowlist(t *testing.T) {
 		t.Fatal("another company admin escaped the scope")
 	}
 }
+
+// Storifly company admins log in with an email subject and storifly and
+// code-llm scopes. The analytics policy must not reach those audiences.
+func TestStoriflyCompanyAdminKeepsItsTokenContract(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	repo := newFakeUserRepo()
+	companyID := "default"
+	user := &domain.User{Id: "storifly-admin", Email: "owner@storifly.example", Role: domain.RoleCompanyAdmin, Status: domain.UserStatusActive, CompanyId: &companyID}
+	repo.usersByEmail[user.Email] = user
+	svc := NewUserService(repo, nil, nil, nil, "secret", "issuer", "tikti", string(encodedKey), "kid")
+	idToken, _, err := svc.(*userService).issueIDToken(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subjectOf := func(accessToken string) interface{} {
+		parsed, err := jwt.Parse(accessToken, func(*jwt.Token) (interface{}, error) {
+			return &privateKey.PublicKey, nil
+		}, jwt.WithValidMethods([]string{"RS256"}))
+		if err != nil || !parsed.Valid {
+			t.Fatalf("invalid token: %v", err)
+		}
+		return parsed.Claims.(jwt.MapClaims)["sub"]
+	}
+	for _, tc := range []struct {
+		audience, subject, want string
+		scopes                  []string
+	}{
+		{"storifly-api", user.Email, user.Email, []string{"storifly:read", "storifly:write"}},
+		{"code-llm-service", user.Email, user.Email, []string{"code-llm:read", "code-llm:write"}},
+		{"storifly-api", "", user.Id, []string{"storifly:read"}},
+	} {
+		issued, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+			IdToken: idToken, TenantID: "default", Audience: tc.audience, Scopes: tc.scopes, Subject: tc.subject,
+		})
+		if err != nil {
+			t.Fatalf("%s refused a Storifly company admin: %v", tc.audience, err)
+		}
+		if got := subjectOf(issued.AccessToken); got != tc.want {
+			t.Fatalf("%s subject = %v, want %s", tc.audience, got, tc.want)
+		}
+	}
+	// The analytics policy still binds the same admin elsewhere.
+	if _, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idToken, TenantID: "default", Audience: "employee-service", Scopes: []string{"storifly:read"},
+	}); !errors.Is(err, domain.ErrUnauthorizedScope) {
+		t.Fatalf("employee-service granted a storifly scope: %v", err)
+	}
+}

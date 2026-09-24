@@ -277,7 +277,8 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 			return nil, domain.ErrUnauthorizedScope
 		}
 	}
-	if len(scopes) > 0 && !s.scopesAllowed(ctx, tenantID, u, scopes) {
+	storiflyCompanyAdmin := u.Role == domain.RoleCompanyAdmin && storiflyAudiences[strings.TrimSpace(req.Audience)]
+	if len(scopes) > 0 && !storiflyCompanyAdmin && !s.scopesAllowed(ctx, tenantID, u, scopes) {
 		return nil, domain.ErrUnauthorizedScope
 	}
 
@@ -296,7 +297,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 
 	subject := strings.TrimSpace(req.Subject)
 	var analyticsEmail string
-	if u.Role == domain.RoleCompanyAdmin {
+	if u.Role == domain.RoleCompanyAdmin && !storiflyCompanyAdmin {
 		if req.Audience == "analytics-service" {
 			if subject != "" && !strings.EqualFold(subject, u.Email) {
 				return nil, domain.ErrUnauthorizedScope
@@ -492,6 +493,19 @@ func (s *userService) getRSAPrivateKey() (interface{}, error) {
 		return nil, errors.New("rsa private key missing")
 	}
 	return s.rsaKey, nil
+}
+
+// storiflyAudiences are the Storifly platform's token audiences. The company
+// admin policy (the analytics scope allowlist and identity-ID subjects)
+// governs the analytics platform. Storifly keeps the contract it had before
+// that policy: a company admin holds any scope, and the token's subject is the
+// one the caller asked for. Storifly keys its data by the email subject, so an
+// identity-ID subject would hide every piece, brand, and campaign.
+var storiflyAudiences = map[string]bool{
+	"storifly-api":     true,
+	"code-llm-service": true,
+	"codeq-producer":   true,
+	"codeq-worker":     true,
 }
 
 func (s *userService) scopesAllowed(ctx context.Context, tenantID string, u *domain.User, scopes []string) bool {
