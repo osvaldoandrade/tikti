@@ -111,6 +111,47 @@ func TestPlatformAdminAnalyticsTokenCarriesSelectedEmployeeIdentity(t *testing.T
 	}
 }
 
+func TestCompanyEmployeeAnalyticsTokenCarriesOwnIdentity(t *testing.T) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	repo := newFakeUserRepo()
+	companyID := "default"
+	user := &domain.User{Id: "employee", Email: "person@certiface.example", Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive, CompanyId: &companyID}
+	repo.usersByEmail[user.Email] = user
+	svc := NewUserService(repo, nil, nil, nil, "secret", "issuer", "tikti", string(encodedKey), "kid")
+	idToken, _, err := svc.(*userService).issueIDToken(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued, err := svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idToken, TenantID: "default", Audience: "analytics-service",
+		Subject: user.Email,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := jwt.Parse(issued.AccessToken, func(*jwt.Token) (interface{}, error) {
+		return &privateKey.PublicKey, nil
+	}, jwt.WithValidMethods([]string{"RS256"}))
+	if err != nil || !parsed.Valid {
+		t.Fatalf("invalid analytics token: %v", err)
+	}
+	claims := parsed.Claims.(jwt.MapClaims)
+	if claims["sub"] != user.Id || claims["email"] != user.Email {
+		t.Fatalf("employee identity claims missing: sub=%v email=%v", claims["sub"], claims["email"])
+	}
+	_, err = svc.TokenExchange(context.Background(), domain.TokenExchangeReq{
+		IdToken: idToken, TenantID: "default", Audience: "analytics-service",
+		Subject: "other@company.example",
+	})
+	if !errors.Is(err, domain.ErrUnauthorizedScope) {
+		t.Fatalf("employee impersonated another analytics subject: %v", err)
+	}
+}
+
 func TestCompanyAdminScopeAllowlist(t *testing.T) {
 	svc := &userService{}
 	user := &domain.User{Role: domain.RoleCompanyAdmin, Email: "admin@certiface.example"}

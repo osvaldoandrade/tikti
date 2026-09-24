@@ -324,6 +324,12 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		}
 		subject = target.Id
 		analyticsEmail = target.Email
+	} else if u.Role == domain.RoleCompanyEmployee && req.Audience == "analytics-service" {
+		if subject != "" && !strings.EqualFold(subject, u.Email) {
+			return nil, domain.ErrUnauthorizedScope
+		}
+		subject = u.Id
+		analyticsEmail = u.Email
 	} else if subject == "" {
 		subject = u.Id
 	}
