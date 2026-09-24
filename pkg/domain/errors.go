@@ -20,5 +20,6 @@ var (
 	// ErrNotFound is returned when a user cannot be located in storage.
 	ErrNotFound = errors.New("user not found")
 	// ErrInvalidOob signals that the out-of-band code is unknown or expired.
-	ErrInvalidOob = errors.New("invalid or expired code")
+	ErrInvalidOob             = errors.New("invalid or expired code")
+	ErrPasswordChangeRequired = errors.New("password change required")
 )

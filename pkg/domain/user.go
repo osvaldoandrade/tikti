@@ -28,14 +28,15 @@ const (
 
 // User represents the canonical user document stored in Redis and exposed to clients.
 type User struct {
-	Id           string     `json:"localId"`
-	Email        string     `json:"email"`
-	Password     string     `json:"password"`
-	Role         UserRole   `json:"role"`
-	Status       UserStatus `json:"status"`
-	CompanyId    *string    `json:"companyId,omitempty"`
-	TokenVersion int        `json:"tokenVersion,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
+	Id                     string     `json:"localId"`
+	Email                  string     `json:"email"`
+	Password               string     `json:"password"`
+	Role                   UserRole   `json:"role"`
+	Status                 UserStatus `json:"status"`
+	CompanyId              *string    `json:"companyId,omitempty"`
+	TokenVersion           int        `json:"tokenVersion,omitempty"`
+	PasswordChangeRequired bool       `json:"passwordChangeRequired,omitempty"`
+	CreatedAt              time.Time  `json:"createdAt"`
 }
 
 // SignUpReq holds the payload expected when an admin creates a new user.
@@ -64,6 +65,20 @@ type SignInWithOobCodeReq struct {
 	Email             string `json:"email"`
 	OobCode           string `json:"oobCode"`
 	ReturnSecureToken bool   `json:"returnSecureToken"`
+}
+
+// AdminTemporaryPasswordReq is accepted only by the private service route.
+type AdminTemporaryPasswordReq struct {
+	Email             string `json:"email"`
+	UserID            string `json:"userId"`
+	TemporaryPassword string `json:"temporaryPassword"`
+}
+
+// TemporaryPasswordChangeReq lets a user rotate a provisional credential.
+type TemporaryPasswordChangeReq struct {
+	Email             string `json:"email"`
+	TemporaryPassword string `json:"temporaryPassword"`
+	NewPassword       string `json:"newPassword"`
 }
 
 // SignInResp mirrors Firebase's response with token, identifiers and expiration.

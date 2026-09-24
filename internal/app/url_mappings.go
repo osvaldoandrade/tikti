@@ -18,6 +18,11 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	v1.POST("/accounts/signIn", signInCtrl.Handle)
 	v1.POST("/accounts/signInWithOobCode", controllers.NewOobSignInController(userService).Handle)
 	v1.GET("/.well-known/jwks.json", controllers.NewJWKSController(userService).Handle)
+	if temporaryService, ok := userService.(services.TemporaryPasswordService); ok {
+		passwords := controllers.NewTemporaryPasswordController(temporaryService, cfg.ResetServiceKey)
+		v1.POST("/accounts/changeTemporaryPassword", utils.ApiKey(cfg.ApiKey), passwords.Change)
+		v1.POST("/internal/passwords/temporary", passwords.AdminSet)
+	}
 
 	protected := v1.Group("/")
 	protected.Use(utils.ApiKey(cfg.ApiKey))

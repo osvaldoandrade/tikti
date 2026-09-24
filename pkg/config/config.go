@@ -18,6 +18,7 @@ type Config struct {
 	RedisURL        string `yaml:"redisUrl"`
 	JwtSecret       string `yaml:"jwtSecret"`
 	ApiKey          string `yaml:"apiKey"`
+	ResetServiceKey string `yaml:"resetServiceKey"`
 	IssuerBaseURL   string `yaml:"issuerBaseUrl"`
 	DefaultAudience string `yaml:"defaultAudience"`
 	JwksPrivateKey  string `yaml:"jwksPrivateKey"`
@@ -62,6 +63,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if c.ApiKey == "" {
 		log.Println("WARNING: No API key set.")
+	}
+	if v := os.Getenv("PASSWORD_RESET_SERVICE_KEY"); v != "" {
+		c.ResetServiceKey = v
 	}
 	if v := os.Getenv("ISSUER_BASE_URL"); v != "" {
 		c.IssuerBaseURL = v

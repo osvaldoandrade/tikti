@@ -38,6 +38,13 @@ type UserService interface {
 	GetAllUsers(ctx context.Context) ([]*domain.User, error)
 }
 
+// TemporaryPasswordService is implemented by the production user service and
+// kept separate from the legacy UserService contract for existing callers.
+type TemporaryPasswordService interface {
+	SetTemporaryPassword(ctx context.Context, req domain.AdminTemporaryPasswordReq) error
+	ChangeTemporaryPassword(ctx context.Context, req domain.TemporaryPasswordChangeReq) error
+}
+
 // userService is the concrete UserService backed by the repository and JWT utilities.
 type userService struct {
 	repo            repository.UserRepository
@@ -122,6 +129,9 @@ func (s *userService) SignIn(ctx context.Context, req domain.SignInReq) (*domain
 	if e := bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(req.Password)); e != nil {
 		return nil, domain.ErrInvalidCreds
 	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
+	}
 	signed, expiresIn, e2 := s.issueIDToken(u)
 	if e2 != nil {
 		return nil, e2
@@ -157,6 +167,9 @@ func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWi
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
 	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
+	}
 
 	signed, expiresIn, tokenErr := s.issueIDToken(u)
 	if tokenErr != nil {
@@ -180,6 +193,9 @@ func (s *userService) Lookup(ctx context.Context, req domain.LookupReq) (*domain
 	u, _ := s.repo.FindByEmail(ctx, email)
 	if u == nil {
 		return nil, domain.ErrNotFound
+	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
 	}
 	return &domain.LookupResp{
 		Users: []domain.UserInfo{{
@@ -215,6 +231,9 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 	if u.Status == domain.UserStatusSuspended {
 		return nil, domain.ErrInvalidCreds
+	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
 	}
 
 	tenantID := strings.TrimSpace(req.TenantID)
@@ -563,6 +582,9 @@ func (s *userService) UpdateUser(ctx context.Context, req domain.UpdateReq) (*do
 	if findErr != nil || u == nil {
 		return nil, domain.ErrNotFound
 	}
+	if u.PasswordChangeRequired {
+		return nil, domain.ErrPasswordChangeRequired
+	}
 	if req.Email != "" {
 		u.Email = req.Email
 	}
@@ -724,10 +746,51 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
 	u.Password = string(hash)
+	u.PasswordChangeRequired = false
+	u.TokenVersion++
 	if e3 := s.repo.UpdateUser(ctx, u); e3 != nil {
 		return e3
 	}
 	return nil
+}
+
+func (s *userService) SetTemporaryPassword(ctx context.Context, req domain.AdminTemporaryPasswordReq) error {
+	if req.Email == "" || req.UserID == "" || len(req.TemporaryPassword) < 12 || len(req.TemporaryPassword) > 128 || strings.TrimSpace(req.TemporaryPassword) == "" {
+		return domain.ErrInvalidArgument
+	}
+	u, err := s.repo.FindByEmail(ctx, req.Email)
+	if err != nil || u == nil || u.Id != req.UserID || u.Status != domain.UserStatusActive {
+		return domain.ErrNotFound
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.TemporaryPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	u.Password = string(hash)
+	u.PasswordChangeRequired = true
+	u.TokenVersion++
+	return s.repo.UpdateUser(ctx, u)
+}
+
+func (s *userService) ChangeTemporaryPassword(ctx context.Context, req domain.TemporaryPasswordChangeReq) error {
+	if req.Email == "" || req.TemporaryPassword == "" || len(req.NewPassword) < 12 || len(req.NewPassword) > 128 || req.NewPassword == req.TemporaryPassword {
+		return domain.ErrInvalidArgument
+	}
+	u, err := s.repo.FindByEmail(ctx, req.Email)
+	if err != nil || u == nil || u.Status != domain.UserStatusActive || !u.PasswordChangeRequired {
+		return domain.ErrInvalidCreds
+	}
+	if bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(req.TemporaryPassword)) != nil {
+		return domain.ErrInvalidCreds
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	u.Password = string(hash)
+	u.PasswordChangeRequired = false
+	u.TokenVersion++
+	return s.repo.UpdateUser(ctx, u)
 }
 
 // GetAllUsers retrieves every stored user without filtering, mainly for administrative use.

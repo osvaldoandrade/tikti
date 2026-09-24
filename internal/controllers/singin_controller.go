@@ -34,6 +34,10 @@ func (ctrl *SignInController) Handle(ctx *gin.Context) {
 	})
 	result := <-ch
 	if e, ok := result.(error); ok {
+		if e == domain.ErrPasswordChangeRequired {
+			ctx.JSON(http.StatusForbidden, gin.H{"error": e.Error(), "code": "PASSWORD_CHANGE_REQUIRED"})
+			return
+		}
 		ctx.JSON(http.StatusUnauthorized, gin.H{"error": e.Error()})
 		return
 	}
