@@ -130,11 +130,11 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 	if val == "" {
 		return nil, nil
 	}
-	var u domain.User
-	if e := json.Unmarshal([]byte(val), &u); e != nil {
+	u, e := decodeLegacyUser(val)
+	if e != nil {
 		return nil, e
 	}
-	if u.Password == "" {
+	if u.Id == "" || u.Password == "" {
 		return nil, domain.ErrNotFound
 	}
 	// Best-effort migration to v2 layout.
@@ -145,6 +145,25 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 		}
 	}
 	return &u, nil
+}
+
+// decodeLegacyUser accepts the original Go field name "Id" as well as the
+// canonical "localId". Empty subjects make otherwise valid logins unusable.
+func decodeLegacyUser(raw string) (domain.User, error) {
+	var user domain.User
+	if err := json.Unmarshal([]byte(raw), &user); err != nil {
+		return user, err
+	}
+	if user.Id == "" {
+		var legacy struct {
+			Id string `json:"Id"`
+		}
+		if err := json.Unmarshal([]byte(raw), &legacy); err != nil {
+			return user, err
+		}
+		user.Id = legacy.Id
+	}
+	return user, nil
 }
 
 // UpdateUser overwrites the stored user JSON for the provided user.
@@ -281,8 +300,8 @@ func (r *redisRepo) GetAllUsers(ctx context.Context) ([]*domain.User, error) {
 		if _, ok := byEmail[email]; ok {
 			continue
 		}
-		var u domain.User
-		if e := json.Unmarshal([]byte(v), &u); e != nil {
+		u, e := decodeLegacyUser(v)
+		if e != nil {
 			return nil, e
 		}
 		users = append(users, &u)
