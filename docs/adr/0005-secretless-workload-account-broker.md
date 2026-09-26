@@ -69,6 +69,24 @@ exposed to browser JavaScript.
   bounded compensating user deletion and reports an opaque unavailable error.
 - Tokens, passwords and projected credentials must never be logged.
 
+## Private-cluster public-key distribution
+
+Conveste's private K3s API is unreachable from the MASTER Tikti Pod. The
+installation may pin the K3s **public** ServiceAccount JWKS in its reviewed
+Helm values and mount it read-only at
+`/app/etc/workload-jwks/<clusterRef>.json`. The matching provider uses an exact
+`file://` URL and no bearer token. Tikti applies the same bounded JWKS parser,
+RS256 signature check, issuer, audience, expiry and Kubernetes subject checks
+used for HTTPS providers. Only the installation owns this file; a tenant
+workload cannot publish its own trust material.
+
+The Conveste `make deploy` preflight compares the installed public keys and
+issuer to the live K3s OIDC endpoints before changing MASTER resources. On a
+signing-key rotation, update the installation-owned key set first and retain
+both public keys during the overlap; otherwise stop deployment and keep the
+broker disabled until a token signed by the new key verifies. This adds no
+private signing key or static workload credential to Tikti or source control.
+
 ## Rollout
 
 1. Deploy the compatible image with the feature disabled and run the full
@@ -91,6 +109,9 @@ The retained records make a corrected registration replay idempotent.
 The `/identity` aliases may be removed independently only after the public edge
 rewrite has been proven with register and session requests through the real
 application origin.
+For the private-cluster extension, disable the exact broker client before
+removing the pinned JWKS provider or file. Preserve users, assignments and the
+PostgreSQL database during rollback.
 
 ## Alternatives considered
 

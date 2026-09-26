@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -44,6 +46,34 @@ func TestJWKSVerifierValidatesProjectedServiceAccountToken(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("JWKS calls = %d", calls.Load())
+	}
+}
+
+func TestJWKSVerifierReadsInstallationOwnedPublicKeyFile(t *testing.T) {
+	key := verifierTestKey(t)
+	path := filepath.Join(t.TempDir(), "workload-jwks.json")
+	data, err := json.Marshal(jwksDocument{Keys: []jwk{rsaJWK(key, testWorkloadKid)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := NewJWKSVerifier(testWorkloadIssuer, testWorkloadAudience, "file://"+path,
+		&http.Client{Timeout: time.Second}, time.Minute)
+	if err != nil {
+		t.Fatalf("NewJWKSVerifier() error = %v", err)
+	}
+	token := signProjectedToken(t, key, testWorkloadKid, projectedClaims(time.Now()))
+	if _, err := verifier.Verify(context.Background(), token); err != nil {
+		t.Fatalf("Verify() installed key error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"keys":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifier.expiresAt = time.Time{}
+	if _, err := verifier.Verify(context.Background(), token); !errors.Is(err, domain.ErrWorkloadIdentityUnavailable) {
+		t.Fatalf("Verify() after invalid file error = %v", err)
 	}
 }
 
@@ -209,7 +239,7 @@ func TestJWKSVerifierSurfacesJWKSOutageAsUnavailable(t *testing.T) {
 
 func TestNewJWKSVerifierRejectsUnsafeConfiguration(t *testing.T) {
 	client := &http.Client{Timeout: time.Second}
-	for _, rawURL := range []string{"", "jwks", "ftp://issuer/keys", "http://issuer.example.com/keys", "https://user:secret@issuer/keys", "https://issuer/keys?token=secret"} {
+	for _, rawURL := range []string{"", "jwks", "ftp://issuer/keys", "http://issuer.example.com/keys", "https://user:secret@issuer/keys", "https://issuer/keys?token=secret", "file://other-host/jwks.json", "file:///tmp/../private.json", "file:///tmp/jwks.json?source=unsafe"} {
 		if _, err := NewJWKSVerifier(testWorkloadIssuer, testWorkloadAudience, rawURL, client, time.Minute); err == nil {
 			t.Fatalf("NewJWKSVerifier(%q) succeeded", rawURL)
 		}

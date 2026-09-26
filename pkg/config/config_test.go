@@ -379,6 +379,24 @@ workloadIdentity:
 	}
 }
 
+func TestLoadConfig_InstallationOwnedLocalWorkloadJWKS(t *testing.T) {
+	path := writeTempConfig(t, `
+workloadIdentity:
+  providers:
+    - clusterRef: conveste-hostgator
+      issuer: https://kubernetes.default.svc.cluster.local
+      jwksUrl: file:///app/etc/workload-jwks/conveste-hostgator.json
+      authentication: none
+`)
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := cfg.WorkloadIdentity.Providers[0].JWKSURL; got != "file:///app/etc/workload-jwks/conveste-hostgator.json" {
+		t.Fatalf("jwksUrl = %q", got)
+	}
+}
+
 func TestLoadConfig_WorkloadIdentityProviderUsesAuthenticatedGKEDNSEndpoint(t *testing.T) {
 	path := writeTempConfig(t, `
 workloadIdentity:
@@ -414,6 +432,9 @@ func TestLoadConfig_WorkloadIdentityProvidersFailClosed(t *testing.T) {
 		{name: "gcp dns user info", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://user@cluster.gke.goog/openid/v1/jwks, authentication: gcp}]}}`},
 		{name: "gcp dns port", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://cluster.gke.goog:8443/openid/v1/jwks, authentication: gcp}]}}`},
 		{name: "gcp bearer ambiguity", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: https://container.googleapis.com/v1/projects/p/locations/l/clusters/c/jwks, jwksBearerTokenFile: /secret, authentication: gcp}]}}`},
+		{name: "local key outside installation mount", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: file:///tmp/key.json}]}}`},
+		{name: "local key with bearer token", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: file:///app/etc/workload-jwks/cluster-a.json, jwksBearerTokenFile: /secret}]}}`},
+		{name: "local key with GCP auth", yaml: `{workloadIdentity: {providers: [{clusterRef: cluster-a, issuer: https://a.example, jwksUrl: file:///app/etc/workload-jwks/cluster-a.json, authentication: gcp}]}}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

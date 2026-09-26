@@ -671,6 +671,10 @@ func LoadConfig(filePath string) (*Config, error) {
 			if !validAuthenticatedGKEJWKSURL(provider.JWKSURL) || provider.JWKSBearerTokenFile != "" {
 				return nil, fmt.Errorf("workload identity provider %d must use the authenticated GKE JWKS endpoint", index)
 			}
+		} else if strings.HasPrefix(provider.JWKSURL, "file:") {
+			if !validInstallationJWKSFileURL(provider.JWKSURL, provider.ClusterRef) || provider.JWKSBearerTokenFile != "" {
+				return nil, fmt.Errorf("workload identity provider %d must use its installation-owned public JWKS file without a bearer token", index)
+			}
 		}
 		if _, exists := seenProviderRefs[provider.ClusterRef]; exists {
 			return nil, fmt.Errorf("workload identity provider clusterRef %q is duplicated", provider.ClusterRef)
@@ -991,6 +995,10 @@ func validAuthenticatedGKEJWKSURL(rawURL string) bool {
 	}
 	dnsPrefix, found := strings.CutSuffix(host, ".gke.goog")
 	return found && dnsPrefix != "" && path == "/openid/v1/jwks"
+}
+
+func validInstallationJWKSFileURL(rawURL, clusterRef string) bool {
+	return validClusterRef(clusterRef) && rawURL == "file:///app/etc/workload-jwks/"+clusterRef+".json"
 }
 
 func loadSecretFile(environmentVariable string, target *string) error {

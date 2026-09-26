@@ -13,6 +13,8 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -69,11 +71,19 @@ func NewJWKSVerifier(issuer, audience, rawJWKSURL string, client *http.Client, c
 	issuer = strings.TrimSpace(issuer)
 	audience = strings.TrimSpace(audience)
 	parsedURL, err := url.Parse(strings.TrimSpace(rawJWKSURL))
-	if err != nil || issuer == "" || audience == "" || parsedURL.Host == "" || (parsedURL.Scheme != "https" && parsedURL.Scheme != "http") {
+	if err != nil || issuer == "" || audience == "" ||
+		(parsedURL.Scheme != "https" && parsedURL.Scheme != "http" && parsedURL.Scheme != "file") {
 		return nil, fmt.Errorf("invalid workload identity verifier configuration")
 	}
-	if parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+	if parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" || parsedURL.Opaque != "" || parsedURL.RawPath != "" {
 		return nil, fmt.Errorf("invalid workload JWKS URL")
+	}
+	if parsedURL.Scheme == "file" {
+		if parsedURL.Host != "" || !filepath.IsAbs(parsedURL.Path) || filepath.Clean(parsedURL.Path) != parsedURL.Path {
+			return nil, fmt.Errorf("invalid local workload JWKS path")
+		}
+	} else if parsedURL.Host == "" {
+		return nil, fmt.Errorf("invalid workload JWKS host")
 	}
 	if parsedURL.Scheme == "http" && !isLocalHost(parsedURL.Hostname()) {
 		return nil, fmt.Errorf("workload JWKS URL requires HTTPS outside loopback")
@@ -160,20 +170,21 @@ func (v *JWKSVerifier) keyFor(ctx context.Context, kid string) (*rsa.PublicKey, 
 }
 
 func (v *JWKSVerifier) refreshLocked(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL.String(), nil)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	req.Header.Set("Accept", "application/jwk-set+json, application/json")
-	resp, err := v.http.Do(req)
-	if err != nil {
-		return err
+	var raw []byte
+	var err error
+	if v.jwksURL.Scheme == "file" {
+		file, openErr := os.Open(v.jwksURL.Path)
+		if openErr != nil {
+			return openErr
+		}
+		defer func() { _ = file.Close() }()
+		raw, err = io.ReadAll(io.LimitReader(file, maxJWKSResponseBytes+1))
+	} else {
+		raw, err = v.fetchJWKS(ctx)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("workload JWKS returned HTTP %d", resp.StatusCode)
-	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSResponseBytes+1))
 	if err != nil {
 		return err
 	}
@@ -214,6 +225,27 @@ func (v *JWKSVerifier) refreshLocked(ctx context.Context) error {
 	}
 	v.nextUnknownKIDRefresh = now.Add(refreshInterval)
 	return nil
+}
+
+func (v *JWKSVerifier) fetchJWKS(ctx context.Context) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/jwk-set+json, application/json")
+	resp, err := v.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("workload JWKS returned HTTP %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSResponseBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
 
 func rsaKey(modulus, exponent string) (*rsa.PublicKey, error) {
