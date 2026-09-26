@@ -14,6 +14,8 @@ import (
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/utils"
+	"github.com/osvaldoandrade/tikti/internal/workloadaccount"
+	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -366,62 +368,15 @@ func reconcileManagedCodeAdminAudiences(ctx context.Context, data stores, cfg se
 }
 
 func bootstrapAccountBrokers(ctx context.Context, data stores, brokers []accountBrokerSettings) error {
-	if len(brokers) > 16 {
-		return fmt.Errorf("workload account bootstrap supports at most 16 clients")
+	desired := make([]config.WorkloadAccountBFFClientConfig, 0, len(brokers))
+	for _, broker := range brokers {
+		desired = append(desired, config.WorkloadAccountBFFClientConfig{
+			TenantID: broker.tenantID, Namespace: "workload-" + broker.tenantID,
+			ServiceAccount: broker.audience, Audience: broker.audience,
+			Role: broker.role, Scopes: append([]string(nil), broker.scopes...), TTLSeconds: 900,
+		})
 	}
-	seen := make(map[string]struct{}, len(brokers))
-	for index, broker := range brokers {
-		if strings.TrimSpace(broker.tenantID) != broker.tenantID || strings.TrimSpace(broker.audience) != broker.audience ||
-			strings.TrimSpace(broker.role) != broker.role || broker.tenantID == "" || broker.audience == "" || broker.role == "" ||
-			broker.role == "ADMIN" || !scopepolicy.ValidCanonicalPermissions(broker.scopes) ||
-			!scopepolicy.ValidCanonicalAudienceScopes(broker.scopes) {
-			return fmt.Errorf("workload account bootstrap client %d is invalid", index)
-		}
-		key := broker.tenantID + "\x00" + broker.audience
-		if _, duplicate := seen[key]; duplicate {
-			return fmt.Errorf("workload account bootstrap contains a duplicate client")
-		}
-		seen[key] = struct{}{}
-		tenant, err := data.tenants.Get(ctx, broker.tenantID)
-		if err == nil && tenant == nil {
-			// A legacy installation client is not authority to resurrect a
-			// removed tenant or to block a generic platform update. Missing
-			// and unreadable tenants still fail closed without exact proof.
-			if reader, ok := data.tenants.(interface {
-				IsRetired(context.Context, string) (bool, error)
-			}); ok {
-				retired, retirementErr := reader.IsRetired(ctx, broker.tenantID)
-				if retirementErr == nil && retired {
-					continue
-				}
-			}
-		}
-		if err != nil || tenant == nil || tenant.Id != broker.tenantID || tenant.Status != domain.TenantStatusActive {
-			return fmt.Errorf("workload account bootstrap tenant %q is unavailable", broker.tenantID)
-		}
-		desiredRole := &domain.Role{
-			Name: broker.role, Scope: domain.RoleScopeTenant, TenantId: broker.tenantID,
-			Permissions: append([]string(nil), broker.scopes...),
-		}
-		storedRole, _, err := data.roles.CreateIfAbsent(ctx, broker.tenantID, desiredRole)
-		if err != nil || storedRole == nil || storedRole.Name != desiredRole.Name ||
-			storedRole.Scope != desiredRole.Scope || storedRole.TenantId != desiredRole.TenantId ||
-			!slices.Equal(storedRole.Permissions, desiredRole.Permissions) {
-			return fmt.Errorf("workload account bootstrap role %q conflicts", broker.role)
-		}
-		desiredClient := &domain.Client{
-			Id: broker.audience, TenantId: broker.tenantID, Type: domain.ClientTypeService,
-			AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
-			DefaultScopes:     append([]string(nil), broker.scopes...), Status: domain.ClientStatusActive,
-			ManagedBy: domain.WorkloadAccountBFFClientManager,
-		}
-		storedClient, _, err := data.clients.EnsureManagedAudience(ctx, broker.tenantID, desiredClient)
-		if err != nil || storedClient == nil || !domain.IsManagedWorkloadAccountAudience(broker.tenantID, storedClient) ||
-			storedClient.Id != desiredClient.Id || !slices.Equal(storedClient.DefaultScopes, desiredClient.DefaultScopes) {
-			return fmt.Errorf("workload account bootstrap audience %q conflicts", broker.audience)
-		}
-	}
-	return nil
+	return workloadaccount.Reconcile(ctx, data.tenants, data.roles, data.clients, desired)
 }
 
 func validateSettings(cfg settings) error {

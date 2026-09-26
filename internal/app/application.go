@@ -21,6 +21,7 @@ import (
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/internal/storagests"
 	"github.com/osvaldoandrade/tikti/internal/utils"
+	"github.com/osvaldoandrade/tikti/internal/workloadaccount"
 	"github.com/osvaldoandrade/tikti/internal/workloadidentity"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
@@ -158,6 +159,13 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}
 	var workloadAccountService services.WorkloadAccountBFFService
 	if cfg.WorkloadAccountBFF.Enabled {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err := workloadaccount.Reconcile(ctx, tenantRepo, roleRepo, clientRepo, cfg.WorkloadAccountBFF.Clients)
+		cancel()
+		if err != nil {
+			_ = redisClient.Close()
+			return nil, fmt.Errorf("reconcile workload account authority: %w", err)
+		}
 		workloadAccountService = services.NewWorkloadAccountBFFService(
 			workloadService,
 			userRepo,

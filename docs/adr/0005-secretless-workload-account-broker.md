@@ -22,20 +22,21 @@ Add an opt-in workload-account broker with an allowlist of at most 16 exact
 clients. Each entry binds one tenant, `workload-<tenant>` namespace,
 ServiceAccount/audience, non-administrative role, sorted audience-prefixed
 scopes and a 60-3600 second lifetime. The server rejects configuration unless
-the same tenant is enabled for tenant-scoped claims, exact membership reads and
-membership-v2 writes.
+the same tenant is enabled for tenant-scoped claims and the exact projected
+ServiceAccount can be verified.
 
-The bootstrap job creates the exact role if absent and ensures a service client
-marked `workload-account-bff`, with only token exchange and the configured
-scopes. Existing incompatible objects cause bootstrap failure instead of
-mutation or scope broadening.
+Tikti reconciles the exact role and a service client marked
+`workload-account-bff` at startup, with only token exchange and the configured
+scopes. The optional bootstrap job calls the same reconciler. Existing
+incompatible objects fail startup or bootstrap instead of mutation or scope
+broadening. A retired tenant is never recreated by this path.
 
 Two canonical POST-only endpoints are enabled only when the broker is
 configured:
 
 - `/v1/workloads/accounts/register` creates or safely replays an active
-  password user and ensures one exact tenant membership;
-- `/v1/workloads/accounts/session` verifies password and exact membership,
+  password user and ensures one exact tenant access assignment;
+- `/v1/workloads/accounts/session` verifies password and effective tenant role,
   then issues a short-lived tenant-scoped RS256 access token to the BFF.
 
 The same controllers also accept the two exact production-edge aliases
@@ -64,8 +65,8 @@ exposed to browser JavaScript.
   configured subject and broker operations; it cannot choose another tenant,
   role, audience or scope.
 - Registration races are reconciled by rereading the winning email record. A
-  mismatched password or membership is an opaque conflict, never an adoption.
-- If membership creation fails after a new user is created, Tikti attempts the
+  mismatched password or assignment is an opaque conflict, never an adoption.
+- If assignment creation fails after a new user is created, Tikti attempts the
   bounded compensating user deletion and reports an opaque unavailable error.
 - Tokens, passwords and projected credentials must never be logged.
 
@@ -97,15 +98,19 @@ runtime. The chart therefore requires tenant-scoped claims and the client's
 exact tenant allowlist but leaves the unrelated exact-membership HTTP read and
 write flags off. Those routes require a separate pagination HMAC Secret and do
 not authorize broker registration or session. Broker tests cover directory
-assignment, session issuance, and denial after the exact role is removed.
+assignment, session issuance, and denial after the exact role is removed. Tikti
+startup now reconciles the installation-owned role and managed audience before
+serving the broker. This is idempotent, detects ownership conflicts and keeps
+the optional bootstrap job on the same reconciliation code.
 
 ## Rollout
 
 1. Deploy the compatible image with the feature disabled and run the full
    password, SAML, workload-exchange and membership regression suites.
-2. Enable one exact client and run bootstrap. Stop on any role/client conflict.
+2. Enable one exact client and allow Tikti startup to reconcile its role and
+   audience. Stop on any role/client conflict.
 3. Prove valid register, replay and session plus invalid issuer, audience,
-   namespace, ServiceAccount, subject, password, membership, scope and request
+   namespace, ServiceAccount, subject, password, assignment, scope and request
    shape.
 4. Expose only the two exact POST paths at the master edge with login rate
    limiting and identity-header sanitization.
@@ -116,7 +121,7 @@ assignment, session issuance, and denial after the exact role is removed.
 
 Disable signup/signin at the application BFF first, then remove the broker
 client and restore the previous compatible Tikti image. Do not add an API-key
-fallback and do not delete users, memberships, roles or clients during rollback.
+fallback and do not delete users, assignments, roles or clients during rollback.
 The retained records make a corrected registration replay idempotent.
 The `/identity` aliases may be removed independently only after the public edge
 rewrite has been proven with register and session requests through the real

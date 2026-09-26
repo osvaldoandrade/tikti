@@ -366,6 +366,51 @@ func TestNewApplicationAndWorkloadVerifier(t *testing.T) {
 	}
 }
 
+func TestNewApplicationProvisionsWorkloadAccountAuthority(t *testing.T) {
+	server := miniredis.RunT(t)
+	seed := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = seed.Close() })
+	ctx := context.Background()
+	if err := repository.NewTenantRepo(seed).Create(ctx, &domain.Tenant{
+		Id: "conveste", Slug: "conveste", Name: "Conveste", Status: domain.TenantStatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := workloadRuntimeConfig("admin-key", applicationTestPrivateKey(t, 2048))
+	cfg.RedisAddr = server.Addr()
+	cfg.WorkloadIdentity.JWKSURL = "https://kubernetes.example.com/openid/v1/jwks"
+	cfg.WorkloadIdentity.Audience = "platform-backlog"
+	cfg.WorkloadIdentity.HTTPTimeoutSeconds = 2
+	cfg.WorkloadIdentity.JWKSCacheTTLSeconds = 60
+	cfg.TenantScopedTokenClaimsV1 = true
+	cfg.TenantScopedTokenClaimsV1Tenants = []string{"conveste"}
+	cfg.WorkloadAccountBFF = config.WorkloadAccountBFFConfig{
+		Enabled: true,
+		Clients: []config.WorkloadAccountBFFClientConfig{{
+			TenantID: "conveste", Namespace: "workload-conveste", ServiceAccount: "platform-backlog",
+			Audience: "platform-backlog", Role: "platform-backlog-user",
+			Scopes: []string{"platform-backlog:read", "platform-backlog:write"}, TTLSeconds: 900,
+		}},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		application, err := NewApplication(cfg)
+		if err != nil {
+			t.Fatalf("startup attempt %d: %v", attempt, err)
+		}
+		if err := application.Redis.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	role, err := repository.NewRoleRepo(seed).Get(ctx, "conveste", "platform-backlog-user")
+	if err != nil || role == nil || len(role.Permissions) != 2 {
+		t.Fatalf("startup did not install the backlog role: %#v, %v", role, err)
+	}
+	client, err := repository.NewClientRepo(seed).Get(ctx, "conveste", "platform-backlog")
+	if err != nil || client == nil || client.ManagedBy != domain.WorkloadAccountBFFClientManager {
+		t.Fatalf("startup did not install the managed backlog audience: %#v, %v", client, err)
+	}
+}
+
 func TestNewApplicationRetiresOnlyLegacyDefaultTenant(t *testing.T) {
 	server := miniredis.RunT(t)
 	seed := redis.NewClient(&redis.Options{Addr: server.Addr()})
