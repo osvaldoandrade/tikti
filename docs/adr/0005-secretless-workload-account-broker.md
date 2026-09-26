@@ -87,6 +87,18 @@ both public keys during the overlap; otherwise stop deployment and keep the
 broker disabled until a token signed by the new key verifies. This adds no
 private signing key or static workload credential to Tikti or source control.
 
+## 2026-09-26 directory-authority amendment
+
+The current Tikti application supplies its identity-directory repository to the
+broker. Registration writes an exact user access assignment through
+`PutAccessAssignment`; session reads effective tenant roles through
+`GetEffectiveTenantRoles`. The legacy membership writer is not used in this
+runtime. The chart therefore requires tenant-scoped claims and the client's
+exact tenant allowlist but leaves the unrelated exact-membership HTTP read and
+write flags off. Those routes require a separate pagination HMAC Secret and do
+not authorize broker registration or session. Broker tests cover directory
+assignment, session issuance, and denial after the exact role is removed.
+
 ## Rollout
 
 1. Deploy the compatible image with the feature disabled and run the full

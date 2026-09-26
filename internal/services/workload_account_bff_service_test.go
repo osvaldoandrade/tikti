@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/pkg/config"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
@@ -59,6 +60,21 @@ type workloadAccountWriter struct {
 	created bool
 	err     error
 	calls   int
+}
+
+type workloadAccountDirectory struct {
+	repository.IdentityDirectoryRepository
+	roles []string
+	put   *domain.AccessAssignment
+}
+
+func (f *workloadAccountDirectory) PutAccessAssignment(_ context.Context, tenantID string, principalType domain.AccessPrincipalType, principalID string, roles []string, _ string) (*domain.AccessAssignment, bool, error) {
+	f.put = &domain.AccessAssignment{TenantID: tenantID, PrincipalType: principalType, PrincipalID: principalID, Roles: append([]string(nil), roles...)}
+	return f.put, true, nil
+}
+
+func (f *workloadAccountDirectory) GetEffectiveTenantRoles(context.Context, string, string) ([]string, []domain.AccessProvenance, error) {
+	return append([]string(nil), f.roles...), nil, nil
 }
 
 func (f *workloadAccountWriter) Ensure(_ context.Context, tenantID, userID string, roles []string) (*domain.Membership, bool, error) {
@@ -138,6 +154,32 @@ func TestWorkloadAccountBFFRegistersAndReplaysExactTenantMembership(t *testing.T
 	replay, replayCreated, err := service.Register(context.Background(), "projected-token", request)
 	if err != nil || replayCreated || replay.LocalId != result.LocalId || writer.calls != 2 {
 		t.Fatalf("replay=%#v created=%t calls=%d err=%v", replay, replayCreated, writer.calls, err)
+	}
+}
+
+func TestWorkloadAccountBFFUsesExactDirectoryAssignmentsWithoutMembershipRoutes(t *testing.T) {
+	users := &workloadAccountUsers{}
+	directory := &workloadAccountDirectory{roles: []string{"bereia-user"}}
+	service := NewWorkloadAccountBFFService(
+		workloadAccountVerifier{subject: testWorkloadAccountSubject()}, users,
+		nil, nil, &workloadAccountTokens{}, &workloadAccountDeletion{},
+		[]config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()}, directory,
+	)
+	credentials := domain.WorkloadAccountCredentials{Email: "reader@example.com", Password: "correct horse battery staple"}
+	registered, created, err := service.Register(context.Background(), "projected-token", credentials)
+	if err != nil || !created || registered == nil || directory.put == nil ||
+		directory.put.TenantID != "bereia" || directory.put.PrincipalID != registered.LocalId ||
+		!reflect.DeepEqual(directory.put.Roles, []string{"bereia-user"}) {
+		t.Fatalf("directory registration=%#v created=%t assignment=%#v err=%v", registered, created, directory.put, err)
+	}
+	users.user.Id = "user-1"
+	session, err := service.Session(context.Background(), "projected-token", credentials)
+	if err != nil || session == nil || session.AccessToken != "access-token" {
+		t.Fatalf("directory session=%#v err=%v", session, err)
+	}
+	directory.roles = []string{"other-role"}
+	if _, err := service.Session(context.Background(), "projected-token", credentials); !errors.Is(err, domain.ErrWorkloadBindingDenied) {
+		t.Fatalf("session with revoked exact role error=%v", err)
 	}
 }
 
