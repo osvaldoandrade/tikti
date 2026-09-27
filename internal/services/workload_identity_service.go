@@ -52,14 +52,16 @@ func (s *workloadIdentityService) VerifyProjectedToken(ctx context.Context, subj
 }
 
 type workloadIdentityService struct {
-	trinoAuthority TrinoIdentityAuthority
-	repo           repository.WorkloadBindingRepository
-	verifier       WorkloadTokenVerifier
-	issuer         string
-	privatePEM     string
-	keyID          string
-	ttl            time.Duration
-	now            func() time.Time
+	trinoAuthority  TrinoIdentityAuthority
+	topicController CodeQTopicControllerIdentity
+	topicTenants    CodeQTopicTenantReader
+	repo            repository.WorkloadBindingRepository
+	verifier        WorkloadTokenVerifier
+	issuer          string
+	privatePEM      string
+	keyID           string
+	ttl             time.Duration
+	now             func() time.Time
 
 	keyOnce sync.Once
 	key     *rsa.PrivateKey
@@ -94,6 +96,9 @@ func NewWorkloadIdentityService(
 func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error) {
 	if strings.TrimSpace(req.SubjectToken) == "" || req.SubjectTokenType != domain.WorkloadSubjectTokenType {
 		return nil, domain.ErrWorkloadTokenInvalid
+	}
+	if slices.Contains(normalizedWorkloadScopes(req.Scopes), CodeQTopicManageScope) {
+		return s.exchangeCodeQTopic(ctx, req)
 	}
 	if reservedTrinoAudience(req.Audience) {
 		return s.exchangeTrinoWorkload(ctx, req)

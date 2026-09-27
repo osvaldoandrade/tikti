@@ -11,6 +11,7 @@ test:
 	go test ./...
 
 helm-test:
+	bash hack/test-codeq-topic-chart.sh
 	bash hack/test-storage-sts-chart.sh
 	bash hack/test-tenant-runtime-chart.sh
 
@@ -54,3 +55,8 @@ saml-integration:
 .PHONY: test-platform-data-access-contract
 test-platform-data-access-contract:
 	go test -count=1 ./pkg/domain ./internal/services ./internal/scopepolicy ./internal/workloadidentity -run '^TestPlatformDataAccess'
+
+.PHONY: test-codeq-topic-authority
+test-codeq-topic-authority:
+	go test -race -count=1 ./internal/services ./internal/app ./pkg/config -run TestCodeQTopic
+	bash hack/test-codeq-topic-chart.sh

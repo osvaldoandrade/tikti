@@ -133,6 +133,12 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
+	retainedTenants, retainedOK := tenantRepo.(repository.RetainedTenantRepository)
+	if !retainedOK {
+		_ = redisClient.Close()
+		return nil, fmt.Errorf("tenant runtime authority repository is unavailable")
+	}
+	topicPolicy := cfg.WorkloadIdentity.CodeQTopicController
 	workloadService := services.NewWorkloadIdentityService(
 		workloadRepo,
 		workloadVerifier,
@@ -140,6 +146,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		cfg.JwksPrivateKey,
 		cfg.JwksKeyID,
 		time.Duration(cfg.WorkloadIdentity.AccessTokenTTLSeconds)*time.Second,
+		services.WithCodeQTopicController(services.CodeQTopicControllerIdentity{Enabled: topicPolicy.Enabled, Issuer: topicPolicy.Issuer, ClusterRef: topicPolicy.ClusterRef, Namespace: topicPolicy.Namespace, ServiceAccount: topicPolicy.ServiceAccount, ServiceAccountUID: topicPolicy.ServiceAccountUID}, retainedTenants),
 	)
 	storageSTSController, err := newStorageSTSController(cfg, workloadService)
 	if err != nil {
@@ -179,12 +186,8 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	}
 
 	engine := newSafeEngine()
-	retainedTenants, retainedOK := tenantRepo.(repository.RetainedTenantRepository)
-	if !retainedOK {
-		_ = redisClient.Close()
-		return nil, fmt.Errorf("tenant runtime authority repository is unavailable")
-	}
 	setupTenantRuntimeMappings(engine, cfg, retainedTenants)
+	setupCodeQTopicAuthority(engine, workloadService)
 	setupStorageOIDCMappings(engine, cfg, storageOIDCController)
 	setupStorageSTSMappings(engine, cfg, storageSTSController)
 	setupObjectStorageBrowserMappings(engine, cfg, storageAdminController)

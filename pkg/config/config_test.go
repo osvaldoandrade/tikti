@@ -803,3 +803,31 @@ saml:
 		t.Fatalf("validation failed: %v", err)
 	}
 }
+
+func TestCodeQTopicControllerConfigRequiresExactProvider(t *testing.T) {
+	base := `workloadIdentity:
+  issuer: https://master.example
+  clusterRef: master
+  jwksUrl: https://master.example/jwks
+  codeqTopicController:
+    enabled: true
+    issuer: https://master.example
+    clusterRef: master
+    namespace: code-admin
+    serviceAccount: controller-cluster
+    serviceAccountUID: exact-test-uid
+`
+	cfg, err := LoadConfig(writeTempConfig(t, base))
+	if err != nil || !cfg.WorkloadIdentity.CodeQTopicController.Enabled {
+		t.Fatalf("configured identity: %v", err)
+	}
+	for _, bad := range []string{strings.Replace(base, "serviceAccountUID: exact-test-uid", "serviceAccountUID: \"\"", 1), strings.Replace(base, "    clusterRef: master", "    clusterRef: foreign", 1)} {
+		if _, err = LoadConfig(writeTempConfig(t, bad)); err == nil {
+			t.Fatal("untrusted identity accepted")
+		}
+	}
+	cfg, err = LoadConfig(writeTempConfig(t, `{}`))
+	if err != nil || cfg.WorkloadIdentity.CodeQTopicController.Enabled {
+		t.Fatal("not default OFF")
+	}
+}

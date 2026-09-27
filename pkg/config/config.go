@@ -94,9 +94,19 @@ type ForwardAuthConfig struct {
 	AccessCookieName string `yaml:"accessCookieName"`
 }
 
-// WorkloadIdentityConfig validates Kubernetes projected ServiceAccount tokens
-// and controls the short-lived access tokens issued to bound controllers.
+// CodeQTopicControllerConfig pins the installation-owned MASTER controller identity.
+type CodeQTopicControllerConfig struct {
+	Enabled           bool   `yaml:"enabled"`
+	Issuer            string `yaml:"issuer"`
+	ClusterRef        string `yaml:"clusterRef"`
+	Namespace         string `yaml:"namespace"`
+	ServiceAccount    string `yaml:"serviceAccount"`
+	ServiceAccountUID string `yaml:"serviceAccountUID"`
+}
+
+// WorkloadIdentityConfig validates projected tokens and controls short-lived exchanges.
 type WorkloadIdentityConfig struct {
+	CodeQTopicController  CodeQTopicControllerConfig       `yaml:"codeqTopicController"`
 	ClusterRef            string                           `yaml:"clusterRef"`
 	Issuer                string                           `yaml:"issuer"`
 	Audience              string                           `yaml:"audience"`
@@ -684,6 +694,22 @@ func LoadConfig(filePath string) (*Config, error) {
 		}
 		seenProviderRefs[provider.ClusterRef] = struct{}{}
 		seenProviderIssuers[provider.Issuer] = struct{}{}
+	}
+
+	if p := c.WorkloadIdentity.CodeQTopicController; p.Enabled {
+		u, e := url.Parse(p.Issuer)
+		if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || p.Namespace == "" || p.ServiceAccount == "" || p.ServiceAccountUID == "" || !validClusterRef(p.ClusterRef) {
+			return nil, fmt.Errorf("invalid CodeQ topic controller identity")
+		}
+		trusted := c.WorkloadIdentity.Issuer == p.Issuer && c.WorkloadIdentity.ClusterRef == p.ClusterRef
+		for _, provider := range c.WorkloadIdentity.Providers {
+			if provider.Issuer == p.Issuer && provider.ClusterRef == p.ClusterRef {
+				trusted = true
+			}
+		}
+		if !trusted {
+			return nil, fmt.Errorf("CodeQ topic controller requires exact trusted issuer and cluster provider")
+		}
 	}
 	if c.WorkloadIdentity.Audience == "" {
 		c.WorkloadIdentity.Audience = "tikti-workload-exchange"
