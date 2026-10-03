@@ -103,6 +103,35 @@ startup now reconciles the installation-owned role and managed audience before
 serving the broker. This is idempotent, detects ownership conflicts and keeps
 the optional bootstrap job on the same reconciliation code.
 
+## 2026-10-03 registration replay and Kvrocks amendment
+
+WeCare's public registration returned 503 from the broker for two requests on
+2026-10-03. The response did not expose the internal failing stage. Source
+inspection found two paths that could produce that result:
+
+- Replaying an existing password identity whose direct tenant assignment
+  contains the broker role plus independently granted administrative roles
+  attempted to replace the assignment with the broker role alone. The directory
+  correctly rejected this missing-version write, but the broker reported 503.
+- New user creation used `EVALSHA` through go-redis `Script.Run`. Kvrocks 2.7 can
+  return a nonstandard `ERR NOSCRIPT` response that prevents the client's
+  automatic `EVAL` fallback. The directory already uses direct `EVAL` for its
+  other cache-independent scripts.
+
+Registration now accepts a replay only when the current direct assignment
+already contains the broker's exact role. It does not change the assignment or
+expand any scopes. An existing assignment without that role is an opaque 409
+conflict. New account creation executes the existing atomic directory script
+through direct `EVAL`; no data format or HTTP success contract changes.
+
+The rollout keeps the broker's current allowlist and role configuration. Run
+the repository suite and release the compatible Tikti image through the owning
+installation, then observe broker registration status and application signup
+without retaining submitted credentials. Roll back the image if registration
+errors rise; do not delete accounts or assignments. A failed registration may
+already have created a user, so account state must be checked before any manual
+replay or repair.
+
 ## Rollout
 
 1. Deploy the compatible image with the feature disabled and run the full

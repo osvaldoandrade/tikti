@@ -81,6 +81,21 @@ func TestAuthenticationAttemptLimiterDoesNotDependOnRedisScriptCache(t *testing.
 	}
 }
 
+func TestCreateDirectoryUserDoesNotDependOnRedisScriptCache(t *testing.T) {
+	client, repo := newIdentityDirectoryForTest(t)
+	hook := &rejectEvalSHAHook{}
+	client.AddHook(hook)
+	user := &domain.User{
+		Id: "user-create", Email: "new@example.com", Password: "hashed-password",
+		Role: domain.RoleCompanyEmployee, Status: domain.UserStatusActive,
+		AuthSource: domain.AuthSourcePassword, CreatedAt: time.Now().UTC(),
+	}
+	created, err := repo.CreateDirectoryUser(context.Background(), user)
+	if err != nil || created == nil || created.ID != user.Id || hook.calls != 0 {
+		t.Fatalf("create without script cache = %#v, err=%v, EVALSHA calls=%d", created, err, hook.calls)
+	}
+}
+
 func TestIdentityDirectoryUserIndexIsBoundedSafeAndNormalized(t *testing.T) {
 	client, repo := newIdentityDirectoryForTest(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
