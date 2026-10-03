@@ -175,7 +175,9 @@ func (r *identityDirectoryRepo) CreateDirectoryUser(ctx context.Context, input *
 	if err != nil {
 		return nil, domain.ErrInvalidArgument
 	}
-	status, err := createDirectoryUserScript.Run(ctx, r.client, []string{
+	// Kvrocks may reject EVALSHA cache misses with a nonstandard NOSCRIPT
+	// response. Direct EVAL keeps this atomic create independent of the cache.
+	status, err := createDirectoryUserScript.Eval(ctx, r.client, []string{
 		usersHashV2, userByEmailKeyNS + user.Email, directoryUserEmailIndex,
 	}, user.Id, user.Email, string(payload), directoryUserIndexMember(user.Email, user.Id)).Text()
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -66,6 +67,26 @@ type workloadAccountDirectory struct {
 	repository.IdentityDirectoryRepository
 	roles []string
 	put   *domain.AccessAssignment
+}
+
+type workloadAccountReplayDirectory struct {
+	repository.IdentityDirectoryRepository
+	assignment *domain.AccessAssignment
+	puts       int
+	gets       int
+}
+
+func (f *workloadAccountReplayDirectory) PutAccessAssignment(_ context.Context, tenantID string, principalType domain.AccessPrincipalType, principalID string, roles []string, _ string) (*domain.AccessAssignment, bool, error) {
+	f.puts++
+	if f.assignment != nil && !slices.Equal(f.assignment.Roles, roles) {
+		return nil, false, domain.ErrVersionConflict
+	}
+	return &domain.AccessAssignment{TenantID: tenantID, PrincipalType: principalType, PrincipalID: principalID, Roles: append([]string(nil), roles...)}, f.assignment == nil, nil
+}
+
+func (f *workloadAccountReplayDirectory) GetAccessAssignment(context.Context, string, domain.AccessPrincipalType, string) (*domain.AccessAssignment, error) {
+	f.gets++
+	return f.assignment, nil
 }
 
 func (f *workloadAccountDirectory) PutAccessAssignment(_ context.Context, tenantID string, principalType domain.AccessPrincipalType, principalID string, roles []string, _ string) (*domain.AccessAssignment, bool, error) {
@@ -184,6 +205,45 @@ func TestWorkloadAccountBFFUsesExactDirectoryAssignmentsWithoutMembershipRoutes(
 	directory.roles = []string{"other-role"}
 	if _, err := service.Session(context.Background(), "projected-token", credentials); !errors.Is(err, domain.ErrWorkloadBindingDenied) {
 		t.Fatalf("session with revoked exact role error=%v", err)
+	}
+}
+
+func TestWorkloadAccountBFFRegistrationReplayPreservesExistingRoles(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct horse battery staple"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentials := domain.WorkloadAccountCredentials{Email: "reader@example.com", Password: "correct horse battery staple"}
+	for _, test := range []struct {
+		name  string
+		roles []string
+		want  error
+	}{
+		{name: "base role alongside admin", roles: []string{"bereia-admin", "bereia-user"}},
+		{name: "admin without base role", roles: []string{"bereia-admin"}, want: domain.ErrWorkloadAccountConflict},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			originalRoles := append([]string(nil), test.roles...)
+			directory := &workloadAccountReplayDirectory{assignment: &domain.AccessAssignment{
+				TenantID: "bereia", PrincipalType: domain.AccessPrincipalUser, PrincipalID: "user-1", Roles: test.roles,
+			}}
+			users := &workloadAccountUsers{user: &domain.User{
+				Id: "user-1", Email: credentials.Email, Password: string(hash), Status: domain.UserStatusActive,
+			}}
+			service := NewWorkloadAccountBFFService(
+				workloadAccountVerifier{subject: testWorkloadAccountSubject()}, users,
+				nil, nil, &workloadAccountTokens{}, &workloadAccountDeletion{},
+				[]config.WorkloadAccountBFFClientConfig{testWorkloadAccountClient()}, directory,
+			)
+			result, created, registerErr := service.Register(context.Background(), "projected-token", credentials)
+			if !errors.Is(registerErr, test.want) || created || directory.puts != 1 || directory.gets != 1 ||
+				!slices.Equal(directory.assignment.Roles, originalRoles) || users.deleted != "" {
+				t.Fatalf("replay result=%#v created=%t puts=%d gets=%d roles=%v deleted=%q err=%v", result, created, directory.puts, directory.gets, directory.assignment.Roles, users.deleted, registerErr)
+			}
+			if test.want == nil && (result == nil || result.LocalId != "user-1") {
+				t.Fatalf("valid replay result=%#v", result)
+			}
+		})
 	}
 }
 

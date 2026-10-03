@@ -153,6 +153,22 @@ func (s *workloadAccountBFFService) Register(
 		assignment, _, assignmentErr := s.access.PutAccessAssignment(ctx, client.TenantID, domain.AccessPrincipalUser, user.Id, []string{client.Role}, "")
 		err = assignmentErr
 		validAssignment = assignment != nil && assignment.TenantID == client.TenantID && assignment.PrincipalID == user.Id && assignment.PrincipalType == domain.AccessPrincipalUser && slices.Equal(assignment.Roles, []string{client.Role})
+		if errors.Is(assignmentErr, domain.ErrVersionConflict) && !created {
+			// A registration replay must never replace roles granted outside the
+			// workload broker. Accept an existing assignment only if it already
+			// contains the broker's exact base role.
+			current, readErr := s.access.GetAccessAssignment(ctx, client.TenantID, domain.AccessPrincipalUser, user.Id)
+			switch {
+			case readErr != nil:
+				err = domain.ErrWorkloadAccountUnavailable
+			case current != nil && current.TenantID == client.TenantID && current.PrincipalType == domain.AccessPrincipalUser &&
+				current.PrincipalID == user.Id && slices.Contains(current.Roles, client.Role):
+				err = nil
+				validAssignment = true
+			default:
+				err = domain.ErrWorkloadAccountConflict
+			}
+		}
 	} else {
 		membership, _, membershipErr := s.writer.Ensure(ctx, client.TenantID, user.Id, []string{client.Role})
 		err = membershipErr
@@ -162,7 +178,8 @@ func (s *workloadAccountBFFService) Register(
 		if created {
 			_ = s.users.DeleteByEmail(ctx, user.Email)
 		}
-		if errors.Is(err, domain.ErrMembershipConflict) {
+		if errors.Is(err, domain.ErrMembershipConflict) || errors.Is(err, domain.ErrVersionConflict) ||
+			errors.Is(err, domain.ErrWorkloadAccountConflict) {
 			return nil, false, domain.ErrWorkloadAccountConflict
 		}
 		return nil, false, domain.ErrWorkloadAccountUnavailable
