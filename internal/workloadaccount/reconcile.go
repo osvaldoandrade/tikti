@@ -35,7 +35,8 @@ func Reconcile(
 			broker.Role == "ADMIN" || broker.Namespace != "workload-"+broker.TenantID ||
 			broker.ServiceAccount != broker.Audience || broker.TTLSeconds < 60 || broker.TTLSeconds > 3600 ||
 			!scopepolicy.ValidCanonicalPermissions(broker.Scopes) ||
-			!scopepolicy.ValidCanonicalAudienceScopes(broker.Scopes) {
+			!scopepolicy.ValidCanonicalAudienceScopes(broker.Scopes) ||
+			!validAdditionalRoles(broker) {
 			return fmt.Errorf("workload account client %d is invalid", index)
 		}
 		key := broker.TenantID + "\x00" + broker.Audience
@@ -69,10 +70,16 @@ func Reconcile(
 			storedRole.ResourceId != "" || !slices.Equal(storedRole.Permissions, desiredRole.Permissions) {
 			return fmt.Errorf("workload account role %q conflicts: %w", broker.Role, domain.ErrRoleConflict)
 		}
+		allScopes := append([]string(nil), broker.Scopes...)
+		for _, extra := range broker.AdditionalRoles {
+			allScopes = append(allScopes, extra.Scopes...)
+		}
+		slices.Sort(allScopes)
+		allScopes = slices.Compact(allScopes)
 		desiredClient := &domain.Client{
 			Id: broker.Audience, TenantId: broker.TenantID, Type: domain.ClientTypeService,
 			AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
-			DefaultScopes:     append([]string(nil), broker.Scopes...), Status: domain.ClientStatusActive,
+			DefaultScopes:     allScopes, Status: domain.ClientStatusActive,
 			ManagedBy: domain.WorkloadAccountBFFClientManager,
 		}
 		storedClient, _, clientErr := clients.EnsureManagedAudience(ctx, broker.TenantID, desiredClient)
@@ -83,4 +90,27 @@ func Reconcile(
 		}
 	}
 	return nil
+}
+
+func validAdditionalRoles(broker config.WorkloadAccountBFFClientConfig) bool {
+	if len(broker.AdditionalRoles) > 8 {
+		return false
+	}
+	previous := ""
+	for _, extra := range broker.AdditionalRoles {
+		if extra.Role == "" || extra.Role <= previous || extra.Role == broker.Role ||
+			strings.TrimSpace(extra.Role) != extra.Role ||
+			!strings.HasPrefix(extra.Role, broker.TenantID+"-") ||
+			!scopepolicy.ValidCanonicalPermissions(extra.Scopes) ||
+			!scopepolicy.ValidCanonicalAudienceScopes(extra.Scopes) {
+			return false
+		}
+		for _, scope := range extra.Scopes {
+			if !strings.HasPrefix(scope, broker.TenantID+":") {
+				return false
+			}
+		}
+		previous = extra.Role
+	}
+	return true
 }

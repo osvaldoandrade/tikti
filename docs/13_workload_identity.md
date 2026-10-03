@@ -83,10 +83,19 @@ cannot be a platform-admin role, scopes must be sorted unique values prefixed
 by the audience, and TTL is bounded from 60 through 3600 seconds. At startup,
 configuration validation fails closed on any mismatch.
 
-The bootstrap job idempotently ensures the exact tenant role and one
+An optional `additionalRoles` list binds exact tenant roles to sorted,
+tenant-prefixed domain scopes. Reconciliation does not create or modify those
+roles; the base registration role retains only its audience scopes. The managed
+audience permits the union, while a session requests only scopes for effective
+roles held by the account. Token exchange checks the requested scopes against
+the account's effective role permissions and denies a session if any scope is
+absent. See [ADR 0007](adr/0007-workload-account-role-scopes.md).
+
+The bootstrap job idempotently ensures the exact base tenant role and one
 service-type, token-exchange-only audience marked as Tikti-managed. A
-pre-existing role or audience with different ownership or grants is a hard
-conflict; bootstrap does not broaden it.
+pre-existing base role with different grants or an unowned audience is a hard
+conflict. Only the Tikti-managed audience's scope ceiling is reconciled to the
+installation declaration.
 
 `POST /v1/workloads/accounts/register` and
 `POST /v1/workloads/accounts/session` authenticate the projected token first
@@ -94,7 +103,9 @@ and select configuration exclusively by its verified Kubernetes subject. The
 request contains only end-user email and password. It cannot choose tenant,
 role, audience, scopes or TTL. Registration creates an active password user
 and exactly one configured membership, with safe idempotent replay. Session
-requires that exact membership before issuing a tenant-scoped RS256 token.
+requires an effective configured tenant role before issuing a tenant-scoped
+RS256 token. Without `additionalRoles`, the existing base-role contract is
+unchanged.
 The exact `/identity/v1/workloads/accounts/register` and
 `/identity/v1/workloads/accounts/session` production-edge aliases are handled
 by the same controllers; no wildcard identity prefix or additional HTTP method

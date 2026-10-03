@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -167,13 +168,21 @@ type WorkloadAccountBFFConfig struct {
 // WorkloadAccountBFFClientConfig fixes every authorization dimension on the
 // server. Tenant, audience, scopes and role are never accepted from a request.
 type WorkloadAccountBFFClientConfig struct {
-	TenantID       string   `json:"tenantId" yaml:"tenantId"`
-	Namespace      string   `json:"namespace" yaml:"namespace"`
-	ServiceAccount string   `json:"serviceAccount" yaml:"serviceAccount"`
-	Audience       string   `json:"audience" yaml:"audience"`
-	Role           string   `json:"role" yaml:"role"`
-	Scopes         []string `json:"scopes" yaml:"scopes"`
-	TTLSeconds     int      `json:"ttlSeconds" yaml:"ttlSeconds"`
+	TenantID        string                         `json:"tenantId" yaml:"tenantId"`
+	Namespace       string                         `json:"namespace" yaml:"namespace"`
+	ServiceAccount  string                         `json:"serviceAccount" yaml:"serviceAccount"`
+	Audience        string                         `json:"audience" yaml:"audience"`
+	Role            string                         `json:"role" yaml:"role"`
+	Scopes          []string                       `json:"scopes" yaml:"scopes"`
+	AdditionalRoles []WorkloadAccountBFFRoleConfig `json:"additionalRoles,omitempty" yaml:"additionalRoles"`
+	TTLSeconds      int                            `json:"ttlSeconds" yaml:"ttlSeconds"`
+}
+
+// WorkloadAccountBFFRoleConfig grants scopes only when the user has this
+// exact tenant role. The base role above remains the registration role.
+type WorkloadAccountBFFRoleConfig struct {
+	Role   string   `json:"role" yaml:"role"`
+	Scopes []string `json:"scopes" yaml:"scopes"`
 }
 
 // SAMLConfig holds top-level SAML integration settings.
@@ -974,6 +983,18 @@ func validateWorkloadAccountBFF(c *Config) error {
 		if !validWorkloadAccountScopes(client.Audience, client.Scopes) {
 			return fmt.Errorf("workloadAccountBFF client %d has invalid scopes", index)
 		}
+		if len(client.AdditionalRoles) > 8 {
+			return fmt.Errorf("workloadAccountBFF client %d has too many additional roles", index)
+		}
+		previousRole := ""
+		for _, extra := range client.AdditionalRoles {
+			if !validWorkloadAccountName(extra.Role, 128) || extra.Role <= previousRole ||
+				extra.Role == client.Role || !strings.HasPrefix(extra.Role, client.TenantID+"-") ||
+				!validWorkloadAccountTenantScopes(client.TenantID, extra.Scopes) {
+				return fmt.Errorf("workloadAccountBFF client %d has invalid additional roles", index)
+			}
+			previousRole = extra.Role
+		}
 		subject := "system:serviceaccount:" + client.Namespace + ":" + client.ServiceAccount
 		if _, duplicate := seenSubjects[subject]; duplicate {
 			return fmt.Errorf("workloadAccountBFF contains a duplicate workload subject")
@@ -1003,6 +1024,22 @@ func validWorkloadAccountScopes(audience string, scopes []string) bool {
 	for index, scope := range scopes {
 		if !strings.HasPrefix(scope, prefix) || len(scope) <= len(prefix) || len(scope) > 256 ||
 			index > 0 && scopes[index-1] >= scope || !validWorkloadAccountName(strings.TrimPrefix(scope, prefix), 63) {
+			return false
+		}
+	}
+	return true
+}
+
+func validWorkloadAccountTenantScopes(tenantID string, scopes []string) bool {
+	if len(scopes) < 1 || len(scopes) > 64 ||
+		!scopepolicy.ValidCanonicalPermissions(scopes) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(scopes) {
+		return false
+	}
+	prefix := tenantID + ":"
+	for index, scope := range scopes {
+		if !strings.HasPrefix(scope, prefix) || len(scope) <= len(prefix) || len(scope) > 256 ||
+			index > 0 && scopes[index-1] >= scope {
 			return false
 		}
 	}
