@@ -460,8 +460,9 @@ Both responses carry `Cache-Control: no-store` and
 Production-edge alias: `POST /identity/v1/workloads/accounts/session`.
 
 Authenticates a password account only after authenticating and authorizing the
-configured BFF workload. Tikti verifies the account's exact membership and
-exchanges the identity for the configured tenant-scoped audience and scopes.
+configured BFF workload. Tikti verifies the account's effective roles in the
+exact tenant and exchanges the identity for only the scopes configured for
+those roles. Without additional roles, the base-role contract is unchanged.
 
 The request shape and workload Bearer credential are identical to registration.
 The returned access token is for the BFF, not browser JavaScript; the BFF must

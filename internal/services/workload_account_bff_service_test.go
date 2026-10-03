@@ -89,8 +89,9 @@ func (f *workloadAccountWriter) Ensure(_ context.Context, tenantID, userID strin
 }
 
 type workloadAccountTokens struct {
-	signIn   domain.SignInReq
-	exchange domain.TokenExchangeReq
+	signIn      domain.SignInReq
+	exchange    domain.TokenExchangeReq
+	exchangeErr error
 }
 
 type workloadAccountDeletion struct {
@@ -111,6 +112,9 @@ func (f *workloadAccountTokens) SignIn(_ context.Context, request domain.SignInR
 }
 func (f *workloadAccountTokens) TokenExchange(_ context.Context, request domain.TokenExchangeReq) (*domain.TokenExchangeResp, error) {
 	f.exchange = request
+	if f.exchangeErr != nil {
+		return nil, f.exchangeErr
+	}
 	return &domain.TokenExchangeResp{AccessToken: "access-token", TokenType: "Bearer", ExpiresIn: request.TTLSeconds}, nil
 }
 
@@ -212,6 +216,79 @@ func TestWorkloadAccountBFFSessionPinsServerSelectedAuthority(t *testing.T) {
 	}
 	if !reflect.DeepEqual(tokens.exchange, want) {
 		t.Fatalf("exchange=%#v want=%#v", tokens.exchange, want)
+	}
+}
+
+func TestWorkloadAccountBFFSessionScopesFollowExactTenantRoles(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct horse battery staple"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	users := &workloadAccountUsers{user: &domain.User{
+		Id: "user-1", Email: "reader@example.com", Password: string(hash), Status: domain.UserStatusActive,
+	}}
+	client := testWorkloadAccountClient()
+	client.AdditionalRoles = []config.WorkloadAccountBFFRoleConfig{{
+		Role: "bereia-admin", Scopes: []string{"bereia:inventory:read", "bereia:inventory:write"},
+	}}
+	tests := []struct {
+		name  string
+		roles []string
+		want  []string
+		deny  bool
+	}{
+		{name: "member", roles: []string{"bereia-user"}, want: []string{"bereia-api:read", "bereia-api:write"}},
+		{name: "administrator", roles: []string{"bereia-admin"}, want: []string{"bereia:inventory:read", "bereia:inventory:write"}},
+		{name: "combined", roles: []string{"bereia-user", "bereia-admin"}, want: []string{"bereia-api:read", "bereia-api:write", "bereia:inventory:read", "bereia:inventory:write"}},
+		{name: "unrelated", roles: []string{"other-admin"}, deny: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			directory := &workloadAccountDirectory{roles: test.roles}
+			tokens := &workloadAccountTokens{}
+			service := NewWorkloadAccountBFFService(
+				workloadAccountVerifier{subject: testWorkloadAccountSubject()}, users,
+				nil, nil, tokens, &workloadAccountDeletion{},
+				[]config.WorkloadAccountBFFClientConfig{client}, directory,
+			)
+			_, sessionErr := service.Session(context.Background(), "projected-token", domain.WorkloadAccountCredentials{
+				Email: "reader@example.com", Password: "correct horse battery staple",
+			})
+			if test.deny {
+				if !errors.Is(sessionErr, domain.ErrWorkloadBindingDenied) || tokens.exchange.Audience != "" {
+					t.Fatalf("unauthorized role exchanged a token: error=%v request=%#v", sessionErr, tokens.exchange)
+				}
+				return
+			}
+			if sessionErr != nil || !reflect.DeepEqual(tokens.exchange.Scopes, test.want) {
+				t.Fatalf("session error=%v scopes=%v want=%v", sessionErr, tokens.exchange.Scopes, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkloadAccountBFFAdminScopesRequireTokenExchangeAuthorization(t *testing.T) {
+	hash, err := bcrypt.GenerateFromPassword([]byte("correct horse battery staple"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := testWorkloadAccountClient()
+	client.AdditionalRoles = []config.WorkloadAccountBFFRoleConfig{{
+		Role: "bereia-admin", Scopes: []string{"bereia:inventory:read"},
+	}}
+	tokens := &workloadAccountTokens{exchangeErr: domain.ErrUnauthorizedScope}
+	service := NewWorkloadAccountBFFService(
+		workloadAccountVerifier{subject: testWorkloadAccountSubject()},
+		&workloadAccountUsers{user: &domain.User{Id: "user-1", Email: "reader@example.com", Password: string(hash), Status: domain.UserStatusActive}},
+		nil, nil, tokens, &workloadAccountDeletion{},
+		[]config.WorkloadAccountBFFClientConfig{client},
+		&workloadAccountDirectory{roles: []string{"bereia-admin"}},
+	)
+	_, err = service.Session(context.Background(), "projected-token", domain.WorkloadAccountCredentials{
+		Email: "reader@example.com", Password: "correct horse battery staple",
+	})
+	if !errors.Is(err, domain.ErrWorkloadBindingDenied) || !reflect.DeepEqual(tokens.exchange.Scopes, []string{"bereia:inventory:read"}) {
+		t.Fatalf("unauthorized admin scope must fail closed: err=%v scopes=%v", err, tokens.exchange.Scopes)
 	}
 }
 

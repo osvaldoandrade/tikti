@@ -479,6 +479,46 @@ workloadAccountBFF:
 	}
 }
 
+func TestLoadConfig_WorkloadAccountBFFAdditionalRoles(t *testing.T) {
+	valid := `
+tenantScopedTokenClaimsV1: true
+tenantScopedTokenClaimsV1Tenants: [wecare]
+workloadIdentity:
+  issuer: https://kubernetes.example.test
+  jwksUrl: https://kubernetes.example.test/openid/v1/jwks
+workloadAccountBFF:
+  enabled: true
+  clients:
+    - tenantId: wecare
+      namespace: workload-wecare
+      serviceAccount: wecare-social-api
+      audience: wecare-social-api
+      role: wecare-user
+      scopes: [wecare-social-api:read, wecare-social-api:write]
+      additionalRoles:
+        - role: wecare-admin
+          scopes: [wecare:applications:review, wecare:inventory:read]
+      ttlSeconds: 900
+`
+	cfg, err := LoadConfig(writeTempConfig(t, valid))
+	if err != nil || len(cfg.WorkloadAccountBFF.Clients[0].AdditionalRoles) != 1 {
+		t.Fatalf("valid additional role rejected: config=%#v err=%v", cfg, err)
+	}
+	for _, test := range []struct{ name, old, replacement string }{
+		{"foreign tenant scope", "wecare:inventory:read", "other:inventory:read"},
+		{"base role collision", "role: wecare-admin", "role: wecare-user"},
+		{"foreign role", "role: wecare-admin", "role: other-admin"},
+		{"unsorted scopes", "[wecare:applications:review, wecare:inventory:read]", "[wecare:inventory:read, wecare:applications:review]"},
+		{"duplicate scope", "wecare:inventory:read]", "wecare:applications:review]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := LoadConfig(writeTempConfig(t, strings.Replace(valid, test.old, test.replacement, 1))); err == nil {
+				t.Fatal("invalid additional role accepted")
+			}
+		})
+	}
+}
+
 func TestLoadConfig_WorkloadAccountBFFFailsClosed(t *testing.T) {
 	base := `
 tenantScopedTokenClaimsV1: true

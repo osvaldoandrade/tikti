@@ -74,6 +74,10 @@ func NewWorkloadAccountBFFService(
 	for _, client := range clients {
 		subject := "system:serviceaccount:" + client.Namespace + ":" + client.ServiceAccount
 		client.Scopes = append([]string(nil), client.Scopes...)
+		client.AdditionalRoles = append([]config.WorkloadAccountBFFRoleConfig(nil), client.AdditionalRoles...)
+		for index := range client.AdditionalRoles {
+			client.AdditionalRoles[index].Scopes = append([]string(nil), client.AdditionalRoles[index].Scopes...)
+		}
 		bySubject[subject] = client
 	}
 	service := &workloadAccountBFFService{
@@ -193,12 +197,14 @@ func (s *workloadAccountBFFService) Session(
 		!utils.VerifyPassword(user.Password, credentials.Password) {
 		return nil, domain.ErrInvalidCreds
 	}
+	sessionScopes := append([]string(nil), client.Scopes...)
 	if s.access != nil {
 		roles, _, accessErr := s.access.GetEffectiveTenantRoles(ctx, user.Id, client.TenantID)
 		if accessErr != nil {
 			return nil, domain.ErrWorkloadAccountUnavailable
 		}
-		if !slices.Contains(roles, client.Role) {
+		sessionScopes = workloadAccountSessionScopes(client, roles)
+		if len(sessionScopes) == 0 {
 			return nil, domain.ErrWorkloadBindingDenied
 		}
 	} else {
@@ -223,7 +229,7 @@ func (s *workloadAccountBFFService) Session(
 		return nil, domain.ErrWorkloadAccountUnavailable
 	}
 	exchanged, err := s.tokens.TokenExchange(ctx, domain.TokenExchangeReq{
-		IdToken: identity.IdToken, Audience: client.Audience, Scopes: append([]string(nil), client.Scopes...),
+		IdToken: identity.IdToken, Audience: client.Audience, Scopes: sessionScopes,
 		TenantID: client.TenantID, TTLSeconds: client.TTLSeconds,
 	})
 	if err != nil {
@@ -241,6 +247,23 @@ func (s *workloadAccountBFFService) Session(
 		AccessToken: exchanged.AccessToken, TokenType: exchanged.TokenType,
 		LocalId: user.Id, Email: user.Email, ExpiresIn: exchanged.ExpiresIn,
 	}, nil
+}
+
+func workloadAccountSessionScopes(client config.WorkloadAccountBFFClientConfig, roles []string) []string {
+	var scopes []string
+	if slices.Contains(roles, client.Role) {
+		scopes = append(scopes, client.Scopes...)
+	}
+	for _, extra := range client.AdditionalRoles {
+		if slices.Contains(roles, extra.Role) {
+			scopes = append(scopes, extra.Scopes...)
+		}
+	}
+	if len(scopes) == 0 {
+		return nil
+	}
+	slices.Sort(scopes)
+	return slices.Compact(scopes)
 }
 
 func (s *workloadAccountBFFService) authorize(
