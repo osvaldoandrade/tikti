@@ -519,6 +519,46 @@ workloadAccountBFF:
 	}
 }
 
+func TestLoadConfig_WorkloadAccountBFFMemberScopeMigration(t *testing.T) {
+	base := `
+tenantScopedTokenClaimsV1: true
+tenantScopedTokenClaimsV1Tenants: [wecare]
+workloadIdentity:
+  issuer: https://kubernetes.example.test
+  jwksUrl: https://kubernetes.example.test/openid/v1/jwks
+workloadAccountBFF:
+  enabled: true
+  clients:
+    - tenantId: wecare
+      namespace: workload-wecare
+      serviceAccount: wecare-social-api
+      audience: wecare-social-api
+      role: wecare-user
+      scopes: [wecare-social-api:read, wecare-social-api:write]
+      memberScopes: [wecare:application:self, wecare:care:self]
+      previousBaseRoleScopes: [wecare-social-api:read, wecare-social-api:write]
+      ttlSeconds: 900
+`
+	cfg, err := LoadConfig(writeTempConfig(t, base))
+	if err != nil || !reflect.DeepEqual(cfg.WorkloadAccountBFF.Clients[0].MemberScopes,
+		[]string{"wecare:application:self", "wecare:care:self"}) {
+		t.Fatalf("member migration rejected: cfg=%#v err=%v", cfg.WorkloadAccountBFF, err)
+	}
+	for _, test := range []struct{ name, old, replacement string }{
+		{"admin scope", "wecare:care:self", "wecare:care:coordinate"},
+		{"foreign tenant", "wecare:care:self", "other:care:self"},
+		{"unsorted member", "[wecare:application:self, wecare:care:self]", "[wecare:care:self, wecare:application:self]"},
+		{"privileged previous", "previousBaseRoleScopes: [wecare-social-api:read, wecare-social-api:write]", "previousBaseRoleScopes: [wecare:care:coordinate]"},
+		{"unchanged migration", "previousBaseRoleScopes: [wecare-social-api:read, wecare-social-api:write]", "previousBaseRoleScopes: [wecare-social-api:read, wecare-social-api:write, wecare:application:self, wecare:care:self]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, loadErr := LoadConfig(writeTempConfig(t, strings.Replace(base, test.old, test.replacement, 1))); loadErr == nil {
+				t.Fatal("invalid member scope migration accepted")
+			}
+		})
+	}
+}
+
 func TestLoadConfig_WorkloadAccountBFFFailsClosed(t *testing.T) {
 	base := `
 tenantScopedTokenClaimsV1: true

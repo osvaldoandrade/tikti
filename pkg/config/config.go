@@ -168,14 +168,16 @@ type WorkloadAccountBFFConfig struct {
 // WorkloadAccountBFFClientConfig fixes every authorization dimension on the
 // server. Tenant, audience, scopes and role are never accepted from a request.
 type WorkloadAccountBFFClientConfig struct {
-	TenantID        string                         `json:"tenantId" yaml:"tenantId"`
-	Namespace       string                         `json:"namespace" yaml:"namespace"`
-	ServiceAccount  string                         `json:"serviceAccount" yaml:"serviceAccount"`
-	Audience        string                         `json:"audience" yaml:"audience"`
-	Role            string                         `json:"role" yaml:"role"`
-	Scopes          []string                       `json:"scopes" yaml:"scopes"`
-	AdditionalRoles []WorkloadAccountBFFRoleConfig `json:"additionalRoles,omitempty" yaml:"additionalRoles"`
-	TTLSeconds      int                            `json:"ttlSeconds" yaml:"ttlSeconds"`
+	TenantID               string                         `json:"tenantId" yaml:"tenantId"`
+	Namespace              string                         `json:"namespace" yaml:"namespace"`
+	ServiceAccount         string                         `json:"serviceAccount" yaml:"serviceAccount"`
+	Audience               string                         `json:"audience" yaml:"audience"`
+	Role                   string                         `json:"role" yaml:"role"`
+	Scopes                 []string                       `json:"scopes" yaml:"scopes"`
+	MemberScopes           []string                       `json:"memberScopes,omitempty" yaml:"memberScopes"`
+	PreviousBaseRoleScopes []string                       `json:"previousBaseRoleScopes,omitempty" yaml:"previousBaseRoleScopes"`
+	AdditionalRoles        []WorkloadAccountBFFRoleConfig `json:"additionalRoles,omitempty" yaml:"additionalRoles"`
+	TTLSeconds             int                            `json:"ttlSeconds" yaml:"ttlSeconds"`
 }
 
 // WorkloadAccountBFFRoleConfig grants scopes only when the user has this
@@ -983,6 +985,11 @@ func validateWorkloadAccountBFF(c *Config) error {
 		if !validWorkloadAccountScopes(client.Audience, client.Scopes) {
 			return fmt.Errorf("workloadAccountBFF client %d has invalid scopes", index)
 		}
+		if !validWorkloadAccountMemberScopes(client.TenantID, client.MemberScopes) ||
+			!validWorkloadAccountBaseRoleScopes(client.Audience, client.TenantID, client.PreviousBaseRoleScopes) ||
+			len(client.PreviousBaseRoleScopes) > 0 && slices.Equal(client.PreviousBaseRoleScopes, baseRoleScopes(*client)) {
+			return fmt.Errorf("workloadAccountBFF client %d has invalid base role migration", index)
+		}
 		if len(client.AdditionalRoles) > 8 {
 			return fmt.Errorf("workloadAccountBFF client %d has too many additional roles", index)
 		}
@@ -1028,6 +1035,46 @@ func validWorkloadAccountScopes(audience string, scopes []string) bool {
 		}
 	}
 	return true
+}
+
+func validWorkloadAccountMemberScopes(tenantID string, scopes []string) bool {
+	if len(scopes) == 0 {
+		return true
+	}
+	if len(scopes) > 32 || !scopepolicy.ValidCanonicalPermissions(scopes) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(scopes) {
+		return false
+	}
+	for _, scope := range scopes {
+		if !strings.HasPrefix(scope, tenantID+":") || !strings.HasSuffix(scope, ":self") {
+			return false
+		}
+	}
+	return true
+}
+
+func validWorkloadAccountBaseRoleScopes(audience, tenantID string, scopes []string) bool {
+	if len(scopes) == 0 {
+		return true
+	}
+	if len(scopes) > 64 || !scopepolicy.ValidCanonicalPermissions(scopes) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(scopes) {
+		return false
+	}
+	for _, scope := range scopes {
+		if strings.HasPrefix(scope, audience+":") ||
+			strings.HasPrefix(scope, tenantID+":") && strings.HasSuffix(scope, ":self") {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func baseRoleScopes(client WorkloadAccountBFFClientConfig) []string {
+	scopes := append(append([]string(nil), client.Scopes...), client.MemberScopes...)
+	slices.Sort(scopes)
+	return scopes
 }
 
 func validWorkloadAccountTenantScopes(tenantID string, scopes []string) bool {

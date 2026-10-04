@@ -74,6 +74,7 @@ func NewWorkloadAccountBFFService(
 	for _, client := range clients {
 		subject := "system:serviceaccount:" + client.Namespace + ":" + client.ServiceAccount
 		client.Scopes = append([]string(nil), client.Scopes...)
+		client.MemberScopes = append([]string(nil), client.MemberScopes...)
 		client.AdditionalRoles = append([]config.WorkloadAccountBFFRoleConfig(nil), client.AdditionalRoles...)
 		for index := range client.AdditionalRoles {
 			client.AdditionalRoles[index].Scopes = append([]string(nil), client.AdditionalRoles[index].Scopes...)
@@ -214,7 +215,8 @@ func (s *workloadAccountBFFService) Session(
 		!utils.VerifyPassword(user.Password, credentials.Password) {
 		return nil, domain.ErrInvalidCreds
 	}
-	sessionScopes := append([]string(nil), client.Scopes...)
+	sessionScopes := append(append([]string(nil), client.Scopes...), client.MemberScopes...)
+	slices.Sort(sessionScopes)
 	if s.access != nil {
 		roles, _, accessErr := s.access.GetEffectiveTenantRoles(ctx, user.Id, client.TenantID)
 		if accessErr != nil {
@@ -270,6 +272,7 @@ func workloadAccountSessionScopes(client config.WorkloadAccountBFFClientConfig, 
 	var scopes []string
 	if slices.Contains(roles, client.Role) {
 		scopes = append(scopes, client.Scopes...)
+		scopes = append(scopes, client.MemberScopes...)
 	}
 	for _, extra := range client.AdditionalRoles {
 		if slices.Contains(roles, extra.Role) {

@@ -92,3 +92,60 @@ func TestReconcileAdditionalRoleScopesStaySeparate(t *testing.T) {
 		t.Fatalf("managed audience mismatch: %#v, %v", audience, err)
 	}
 }
+
+func TestReconcileMemberScopesMigratesOnlyExactBaseRole(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	tenants := repository.NewTenantRepo(client)
+	roles := repository.NewRoleRepo(client)
+	clients := repository.NewClientRepo(client)
+	ctx := context.Background()
+	if err := tenants.Create(ctx, &domain.Tenant{Id: "wecare", Slug: "wecare", Name: "WeCare", Status: domain.TenantStatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	base := config.WorkloadAccountBFFClientConfig{
+		TenantID: "wecare", Namespace: "workload-wecare", ServiceAccount: "wecare-social-api",
+		Audience: "wecare-social-api", Role: "wecare-user",
+		Scopes: []string{"wecare-social-api:read", "wecare-social-api:write"}, TTLSeconds: 900,
+	}
+	if err := Reconcile(ctx, tenants, roles, clients, []config.WorkloadAccountBFFClientConfig{base}); err != nil {
+		t.Fatal(err)
+	}
+	upgraded := base
+	upgraded.MemberScopes = []string{"wecare:application:self", "wecare:care:self"}
+	upgraded.PreviousBaseRoleScopes = append([]string(nil), base.Scopes...)
+	if err := Reconcile(ctx, tenants, roles, clients, []config.WorkloadAccountBFFClientConfig{upgraded}); err != nil {
+		t.Fatalf("exact upgrade: %v", err)
+	}
+	if err := Reconcile(ctx, tenants, roles, clients, []config.WorkloadAccountBFFClientConfig{upgraded}); err != nil {
+		t.Fatalf("upgrade replay: %v", err)
+	}
+	role, err := roles.Get(ctx, "wecare", "wecare-user")
+	want := []string{"wecare-social-api:read", "wecare-social-api:write", "wecare:application:self", "wecare:care:self"}
+	if err != nil || role == nil || !reflect.DeepEqual(role.Permissions, want) {
+		t.Fatalf("role after upgrade=%#v err=%v", role, err)
+	}
+	audience, err := clients.Get(ctx, "wecare", "wecare-social-api")
+	if err != nil || audience == nil || !reflect.DeepEqual(audience.DefaultScopes, want) {
+		t.Fatalf("audience after upgrade=%#v err=%v", audience, err)
+	}
+	if err := Reconcile(ctx, tenants, roles, clients, []config.WorkloadAccountBFFClientConfig{base}); !errors.Is(err, domain.ErrRoleConflict) {
+		t.Fatalf("implicit downgrade succeeded: %v", err)
+	}
+	rollback := base
+	rollback.PreviousBaseRoleScopes = want
+	if err := Reconcile(ctx, tenants, roles, clients, []config.WorkloadAccountBFFClientConfig{rollback}); err != nil {
+		t.Fatalf("exact rollback: %v", err)
+	}
+	role, err = roles.Get(ctx, "wecare", "wecare-user")
+	if err != nil || role == nil || !reflect.DeepEqual(role.Permissions, base.Scopes) {
+		t.Fatalf("role after rollback=%#v err=%v", role, err)
+	}
+	if err := roles.Create(ctx, "wecare", &domain.Role{Name: "wecare-user", Scope: domain.RoleScopeTenant, TenantId: "wecare", Permissions: []string{"wecare:care:coordinate"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Reconcile(ctx, tenants, roles, clients, []config.WorkloadAccountBFFClientConfig{upgraded}); !errors.Is(err, domain.ErrRoleConflict) {
+		t.Fatalf("unexpected role definition was adopted: %v", err)
+	}
+}

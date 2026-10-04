@@ -14,8 +14,8 @@ import (
 
 // Reconcile installs the role and managed, credential-free audience required by
 // each installation-owned workload account broker. Tikti is the sole owner of
-// these records; replay accepts only an exact match and never adopts a
-// tenant-managed role or client with different authority.
+// these records; replay accepts only an exact match. A base-role scope change
+// requires an explicit previous definition and an atomic exact replacement.
 func Reconcile(
 	ctx context.Context,
 	tenants repository.TenantRepository,
@@ -36,6 +36,8 @@ func Reconcile(
 			broker.ServiceAccount != broker.Audience || broker.TTLSeconds < 60 || broker.TTLSeconds > 3600 ||
 			!scopepolicy.ValidCanonicalPermissions(broker.Scopes) ||
 			!scopepolicy.ValidCanonicalAudienceScopes(broker.Scopes) ||
+			!validMemberScopes(broker.TenantID, broker.MemberScopes) ||
+			!validPreviousBaseRoleScopes(broker) ||
 			!validAdditionalRoles(broker) {
 			return fmt.Errorf("workload account client %d is invalid", index)
 		}
@@ -60,17 +62,21 @@ func Reconcile(
 		if err != nil || tenant == nil || tenant.Id != broker.TenantID || tenant.Status != domain.TenantStatusActive {
 			return fmt.Errorf("workload account tenant %q is unavailable: %w", broker.TenantID, domain.ErrInvalidTenant)
 		}
+		baseScopes := append(append([]string(nil), broker.Scopes...), broker.MemberScopes...)
+		slices.Sort(baseScopes)
 		desiredRole := &domain.Role{
 			Name: broker.Role, Scope: domain.RoleScopeTenant, TenantId: broker.TenantID,
-			Permissions: append([]string(nil), broker.Scopes...),
+			Permissions: baseScopes,
 		}
 		storedRole, _, roleErr := roles.CreateIfAbsent(ctx, broker.TenantID, desiredRole)
 		if roleErr != nil || storedRole == nil || storedRole.Name != desiredRole.Name ||
 			storedRole.Scope != desiredRole.Scope || storedRole.TenantId != desiredRole.TenantId ||
-			storedRole.ResourceId != "" || !slices.Equal(storedRole.Permissions, desiredRole.Permissions) {
+			storedRole.ResourceId != "" ||
+			!slices.Equal(storedRole.Permissions, desiredRole.Permissions) &&
+				(len(broker.PreviousBaseRoleScopes) == 0 || !slices.Equal(storedRole.Permissions, broker.PreviousBaseRoleScopes)) {
 			return fmt.Errorf("workload account role %q conflicts: %w", broker.Role, domain.ErrRoleConflict)
 		}
-		allScopes := append([]string(nil), broker.Scopes...)
+		allScopes := append([]string(nil), baseScopes...)
 		for _, extra := range broker.AdditionalRoles {
 			allScopes = append(allScopes, extra.Scopes...)
 		}
@@ -88,8 +94,65 @@ func Reconcile(
 			storedClient.Id != desiredClient.Id || !slices.Equal(storedClient.DefaultScopes, desiredClient.DefaultScopes) {
 			return fmt.Errorf("workload account audience %q conflicts: %w", broker.Audience, domain.ErrManagedClientConflict)
 		}
+		if !slices.Equal(storedRole.Permissions, desiredRole.Permissions) {
+			migrator, ok := roles.(repository.ExactRoleMigrationRepository)
+			if !ok {
+				return fmt.Errorf("workload account role %q cannot migrate: %w", broker.Role, domain.ErrRoleConflict)
+			}
+			previousRole := *desiredRole
+			previousRole.Permissions = broker.PreviousBaseRoleScopes
+			if err := migrator.ReplaceExact(ctx, broker.TenantID, &previousRole, desiredRole); err != nil {
+				reader, ok := roles.(repository.ExactRoleRepository)
+				if !ok {
+					return fmt.Errorf("workload account role %q cannot migrate: %w", broker.Role, err)
+				}
+				current, readErr := reader.GetExact(ctx, broker.TenantID, broker.Role)
+				if readErr != nil || current == nil || current.Name != desiredRole.Name ||
+					current.Scope != desiredRole.Scope || current.TenantId != desiredRole.TenantId ||
+					current.ResourceId != "" || !slices.Equal(current.Permissions, desiredRole.Permissions) {
+					return fmt.Errorf("workload account role %q cannot migrate: %w", broker.Role, err)
+				}
+			}
+		}
 	}
 	return nil
+}
+
+func validMemberScopes(tenantID string, scopes []string) bool {
+	if len(scopes) == 0 {
+		return true
+	}
+	if len(scopes) > 32 || !scopepolicy.ValidCanonicalPermissions(scopes) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(scopes) {
+		return false
+	}
+	for _, scope := range scopes {
+		if !strings.HasPrefix(scope, tenantID+":") || !strings.HasSuffix(scope, ":self") {
+			return false
+		}
+	}
+	return true
+}
+
+func validPreviousBaseRoleScopes(broker config.WorkloadAccountBFFClientConfig) bool {
+	scopes := broker.PreviousBaseRoleScopes
+	if len(scopes) == 0 {
+		return true
+	}
+	if len(scopes) > 64 || !scopepolicy.ValidCanonicalPermissions(scopes) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(scopes) {
+		return false
+	}
+	for _, scope := range scopes {
+		if strings.HasPrefix(scope, broker.Audience+":") ||
+			strings.HasPrefix(scope, broker.TenantID+":") && strings.HasSuffix(scope, ":self") {
+			continue
+		}
+		return false
+	}
+	desired := append(append([]string(nil), broker.Scopes...), broker.MemberScopes...)
+	slices.Sort(desired)
+	return !slices.Equal(scopes, desired)
 }
 
 func validAdditionalRoles(broker config.WorkloadAccountBFFClientConfig) bool {
