@@ -288,6 +288,7 @@ func TestWorkloadAccountBFFSessionScopesFollowExactTenantRoles(t *testing.T) {
 		Id: "user-1", Email: "reader@example.com", Password: string(hash), Status: domain.UserStatusActive,
 	}}
 	client := testWorkloadAccountClient()
+	client.MemberScopes = []string{"bereia:application:self", "bereia:care:self"}
 	client.AdditionalRoles = []config.WorkloadAccountBFFRoleConfig{{
 		Role: "bereia-admin", Scopes: []string{"bereia:inventory:read", "bereia:inventory:write"},
 	}}
@@ -297,9 +298,9 @@ func TestWorkloadAccountBFFSessionScopesFollowExactTenantRoles(t *testing.T) {
 		want  []string
 		deny  bool
 	}{
-		{name: "member", roles: []string{"bereia-user"}, want: []string{"bereia-api:read", "bereia-api:write"}},
+		{name: "member", roles: []string{"bereia-user"}, want: []string{"bereia-api:read", "bereia-api:write", "bereia:application:self", "bereia:care:self"}},
 		{name: "administrator", roles: []string{"bereia-admin"}, want: []string{"bereia:inventory:read", "bereia:inventory:write"}},
-		{name: "combined", roles: []string{"bereia-user", "bereia-admin"}, want: []string{"bereia-api:read", "bereia-api:write", "bereia:inventory:read", "bereia:inventory:write"}},
+		{name: "combined", roles: []string{"bereia-user", "bereia-admin"}, want: []string{"bereia-api:read", "bereia-api:write", "bereia:application:self", "bereia:care:self", "bereia:inventory:read", "bereia:inventory:write"}},
 		{name: "unrelated", roles: []string{"other-admin"}, deny: true},
 	}
 	for _, test := range tests {
@@ -322,6 +323,27 @@ func TestWorkloadAccountBFFSessionScopesFollowExactTenantRoles(t *testing.T) {
 			}
 			if sessionErr != nil || !reflect.DeepEqual(tokens.exchange.Scopes, test.want) {
 				t.Fatalf("session error=%v scopes=%v want=%v", sessionErr, tokens.exchange.Scopes, test.want)
+			}
+		})
+	}
+}
+
+func TestWorkloadAccountBFFMemberScopesRequireBaseRole(t *testing.T) {
+	client := testWorkloadAccountClient()
+	client.MemberScopes = []string{"bereia:application:self", "bereia:care:self"}
+	client.AdditionalRoles = []config.WorkloadAccountBFFRoleConfig{{Role: "bereia-admin", Scopes: []string{"bereia:inventory:read"}}}
+	for _, test := range []struct {
+		name  string
+		roles []string
+		want  []string
+	}{
+		{name: "member", roles: []string{"bereia-user"}, want: []string{"bereia-api:read", "bereia-api:write", "bereia:application:self", "bereia:care:self"}},
+		{name: "administrator only", roles: []string{"bereia-admin"}, want: []string{"bereia:inventory:read"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := workloadAccountSessionScopes(client, test.roles)
+			if !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("scopes=%v want=%v", got, test.want)
 			}
 		})
 	}

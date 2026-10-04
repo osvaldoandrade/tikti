@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/go-redis/redis/v8"
@@ -20,6 +21,12 @@ type RoleRepository interface {
 	List(ctx context.Context, tenantID string) ([]*domain.Role, error)
 }
 
+// ExactRoleMigrationRepository changes an installation-owned role only from an
+// explicitly declared prior definition. Ordinary role creation remains immutable.
+type ExactRoleMigrationRepository interface {
+	ReplaceExact(ctx context.Context, tenantID string, previous, desired *domain.Role) error
+}
+
 // ExactRoleRepository validates Redis field identity for privileged read routes.
 type ExactRoleRepository interface {
 	GetExact(ctx context.Context, tenantID string, name string) (*domain.Role, error)
@@ -32,6 +39,12 @@ type ExactRoleBatchRepository interface {
 }
 
 var errStoredRoleContract = errors.New("stored role contract mismatch")
+
+var replaceExactRoleScript = redis.NewScript(`
+local current = redis.call("HGET", KEYS[1], ARGV[1])
+if not current or current ~= ARGV[2] then return "changed" end
+redis.call("HSET", KEYS[1], ARGV[1], ARGV[3])
+return "updated"`)
 
 var exactRoleFields = fields("name", "scope", "tenantId", "resourceId", "permissions")
 
@@ -77,6 +90,38 @@ func (r *roleRepo) CreateIfAbsent(ctx context.Context, tenantID string, role *do
 	}
 	stored, err := r.GetExact(ctx, tenantID, role.Name)
 	return stored, false, err
+}
+
+func (r *roleRepo) ReplaceExact(ctx context.Context, tenantID string, previous, desired *domain.Role) error {
+	if previous == nil || desired == nil || previous.Name != desired.Name ||
+		!exactRoleDefinition(tenantID, previous.Name, previous) ||
+		!exactRoleDefinition(tenantID, desired.Name, desired) ||
+		slices.Equal(previous.Permissions, desired.Permissions) {
+		return domain.ErrInvalidArgument
+	}
+	currentRaw, err := r.client.HGet(ctx, rolesKey(tenantID), previous.Name).Result()
+	if err == redis.Nil {
+		return domain.ErrRoleConflict
+	}
+	if err != nil {
+		return err
+	}
+	current, err := decodeExactRole(tenantID, previous.Name, currentRaw)
+	if err != nil || !slices.Equal(current.Permissions, previous.Permissions) {
+		return domain.ErrRoleConflict
+	}
+	desiredRaw, err := json.Marshal(desired)
+	if err != nil {
+		return err
+	}
+	result, err := replaceExactRoleScript.Eval(ctx, r.client, []string{rolesKey(tenantID)}, previous.Name, currentRaw, desiredRaw).Text()
+	if err != nil {
+		return err
+	}
+	if result != "updated" {
+		return domain.ErrRoleConflict
+	}
+	return nil
 }
 
 func (r *roleRepo) Get(ctx context.Context, tenantID string, name string) (*domain.Role, error) {

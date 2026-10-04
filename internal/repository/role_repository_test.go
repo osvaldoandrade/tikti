@@ -322,3 +322,35 @@ func TestRoleRepo_CreateIfAbsentRejectsInvalidAndStorageFailure(t *testing.T) {
 		t.Fatal("closed Redis create succeeded")
 	}
 }
+
+func TestRoleRepo_ReplaceExactRequiresExpectedDefinition(t *testing.T) {
+	_, legacy := newRoleRepoForTest(t)
+	repo := legacy.(*roleRepo)
+	ctx := context.Background()
+	previous := &domain.Role{Name: "wecare-user", Scope: domain.RoleScopeTenant, TenantId: "wecare", Permissions: []string{"wecare-social-api:read"}}
+	desired := &domain.Role{Name: "wecare-user", Scope: domain.RoleScopeTenant, TenantId: "wecare", Permissions: []string{"wecare-social-api:read", "wecare:care:self"}}
+	if err := repo.ReplaceExact(ctx, "wecare", previous, desired); !errors.Is(err, domain.ErrRoleConflict) {
+		t.Fatalf("missing role changed: %v", err)
+	}
+	if _, _, err := repo.CreateIfAbsent(ctx, "wecare", previous); err != nil {
+		t.Fatal(err)
+	}
+	wrong := *previous
+	wrong.Permissions = []string{"wecare-social-api:write"}
+	if err := repo.ReplaceExact(ctx, "wecare", &wrong, desired); !errors.Is(err, domain.ErrRoleConflict) {
+		t.Fatalf("unexpected source changed: %v", err)
+	}
+	if err := repo.ReplaceExact(ctx, "wecare", previous, desired); err != nil {
+		t.Fatalf("exact replacement: %v", err)
+	}
+	if err := repo.ReplaceExact(ctx, "wecare", previous, desired); !errors.Is(err, domain.ErrRoleConflict) {
+		t.Fatalf("stale replacement changed: %v", err)
+	}
+	stored, err := repo.GetExact(ctx, "wecare", "wecare-user")
+	if err != nil || stored == nil || !reflect.DeepEqual(stored.Permissions, desired.Permissions) {
+		t.Fatalf("replacement state=%#v err=%v", stored, err)
+	}
+	if err := repo.ReplaceExact(ctx, "other", previous, desired); !errors.Is(err, domain.ErrInvalidArgument) {
+		t.Fatalf("foreign tenant accepted: %v", err)
+	}
+}
