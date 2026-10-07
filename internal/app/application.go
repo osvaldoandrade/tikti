@@ -48,6 +48,11 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if err := validateWorkloadIdentityRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
+	// Unconditional: storage STS, forward-auth and every workload exchange share
+	// one issuer -> clusterRef map, so a duplicate must never start (ADR-0022 C3).
+	if err := cfg.WorkloadIdentity.ValidateTrustedProviderUniqueness(); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateTenantRuntimeAuthority(); err != nil {
 		return nil, err
 	}
@@ -316,6 +321,9 @@ func newWorkloadTokenVerifier(cfg config.WorkloadIdentityConfig) (services.Workl
 	type provider struct {
 		clusterRef, issuer, jwksURL, bearerTokenFile, authentication string
 	}
+	if err := cfg.ValidateTrustedProviderUniqueness(); err != nil {
+		return nil, err
+	}
 	providers := make([]provider, 0, len(cfg.Providers)+1)
 	if strings.TrimSpace(cfg.Issuer) != "" {
 		providers = append(providers, provider{cfg.ClusterRef, cfg.Issuer, cfg.JWKSURL, cfg.JWKSBearerTokenFile, "none"})
@@ -351,7 +359,12 @@ func newWorkloadTokenVerifier(cfg config.WorkloadIdentityConfig) (services.Workl
 			return nil, fmt.Errorf("init workload identity verifier for issuer %q: %w", item.issuer, verifierErr)
 		}
 		verifier.WithClusterRef(item.clusterRef)
-		trusted[strings.TrimSpace(item.issuer)] = verifier
+		issuer := strings.TrimSpace(item.issuer)
+		if _, duplicate := trusted[issuer]; duplicate {
+			// Never let a later provider silently replace an earlier issuer.
+			return nil, fmt.Errorf("workload identity provider issuer %q is duplicated", issuer)
+		}
+		trusted[issuer] = verifier
 	}
 	if len(trusted) == 1 {
 		for _, verifier := range trusted {

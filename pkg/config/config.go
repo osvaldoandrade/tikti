@@ -706,6 +706,9 @@ func LoadConfig(filePath string) (*Config, error) {
 		seenProviderRefs[provider.ClusterRef] = struct{}{}
 		seenProviderIssuers[provider.Issuer] = struct{}{}
 	}
+	if err := c.WorkloadIdentity.ValidateTrustedProviderUniqueness(); err != nil {
+		return nil, err
+	}
 
 	if p := c.WorkloadIdentity.CodeQTopicController; p.Enabled {
 		u, e := url.Parse(p.Issuer)
