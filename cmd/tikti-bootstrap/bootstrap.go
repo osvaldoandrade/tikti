@@ -29,6 +29,13 @@ type settings struct {
 	audience         string
 	scopes           []string
 	workloadSubject  string
+	// workloadClusterRef and workloadServiceAccountUID scope the bootstrap
+	// WorkloadBinding. trustedClusterRefs is the installation's trusted
+	// provider clusterRef list; with more than one entry the record MUST be
+	// scoped (ADR-0022 C3, E9).
+	workloadClusterRef        string
+	workloadServiceAccountUID string
+	trustedClusterRefs        []string
 }
 
 type stores struct {
@@ -148,6 +155,7 @@ func bootstrap(ctx context.Context, data stores, cfg settings) error {
 		}
 		if err := data.workloads.Upsert(ctx, &domain.WorkloadBinding{
 			Subject: subject.Subject, Namespace: subject.Namespace, ServiceAccount: subject.ServiceAccount,
+			ClusterRef: cfg.workloadClusterRef, ServiceAccountUID: cfg.workloadServiceAccountUID,
 			Grants: []domain.WorkloadGrant{{
 				TenantID: cfg.tenantID, Audience: domain.WorkloadTargetAudience,
 				Scopes: []string{domain.WorkloadAdminScope},
@@ -396,7 +404,7 @@ func validateSettings(cfg settings) error {
 		if cfg.password != "" || cfg.passwordHash != "" {
 			return fmt.Errorf("existing-user-only bootstrap cannot accept credential input")
 		}
-		if cfg.workloadSubject != "" {
+		if cfg.workloadSubject != "" || cfg.workloadClusterRef != "" || cfg.workloadServiceAccountUID != "" {
 			return fmt.Errorf("existing-user-only bootstrap cannot bind a workload subject")
 		}
 	} else if cfg.password != "" && cfg.passwordHash != "" {
@@ -418,6 +426,40 @@ func validateSettings(cfg settings) error {
 		if _, valid := domain.ParseWorkloadSubject(cfg.workloadSubject); !valid {
 			return fmt.Errorf("bootstrap workload subject is invalid")
 		}
+	}
+	return validateWorkloadScope(cfg)
+}
+
+// validateWorkloadScope enforces ADR-0022 C3: whenever more than one workload
+// provider is trusted, the bootstrap WorkloadBinding is scoped to exactly one
+// trusted clusterRef, so the same namespace/ServiceAccount name on another
+// cluster can never use it.
+func validateWorkloadScope(cfg settings) error {
+	seen := make(map[string]struct{}, len(cfg.trustedClusterRefs))
+	for _, clusterRef := range cfg.trustedClusterRefs {
+		if !domain.ValidWorkloadClusterRef(clusterRef) {
+			return fmt.Errorf("bootstrap trusted clusterRef is invalid")
+		}
+		if _, duplicate := seen[clusterRef]; duplicate {
+			return fmt.Errorf("bootstrap trusted clusterRef is duplicated")
+		}
+		seen[clusterRef] = struct{}{}
+	}
+	if cfg.workloadSubject == "" {
+		if cfg.workloadClusterRef != "" || cfg.workloadServiceAccountUID != "" {
+			return fmt.Errorf("bootstrap workload scope requires a workload subject")
+		}
+		return nil
+	}
+	if cfg.workloadClusterRef == "" {
+		if len(cfg.trustedClusterRefs) > 1 {
+			return fmt.Errorf("bootstrap workload binding requires a clusterRef when more than one provider is trusted")
+		}
+	} else if _, trusted := seen[cfg.workloadClusterRef]; !trusted {
+		return fmt.Errorf("bootstrap workload clusterRef is not a trusted provider")
+	}
+	if cfg.workloadServiceAccountUID != "" && !domain.ValidWorkloadObjectUID(cfg.workloadServiceAccountUID) {
+		return fmt.Errorf("bootstrap workload ServiceAccount UID is invalid")
 	}
 	return nil
 }

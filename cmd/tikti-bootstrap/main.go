@@ -43,7 +43,10 @@ func main() {
 		email: required("TIKTI_BOOTSTRAP_EMAIL"), password: password, passwordHash: passwordHash,
 		existingUserOnly: booleanEnvironment("TIKTI_BOOTSTRAP_EXISTING_USER_ONLY"),
 		audience:         required("TIKTI_BOOTSTRAP_AUDIENCE"), scopes: splitScopes(required("TIKTI_BOOTSTRAP_SCOPES")),
-		workloadSubject: strings.TrimSpace(os.Getenv("TIKTI_BOOTSTRAP_WORKLOAD_SUBJECT")),
+		workloadSubject:           strings.TrimSpace(os.Getenv("TIKTI_BOOTSTRAP_WORKLOAD_SUBJECT")),
+		workloadClusterRef:        strings.TrimSpace(os.Getenv("TIKTI_BOOTSTRAP_WORKLOAD_CLUSTER_REF")),
+		workloadServiceAccountUID: strings.TrimSpace(os.Getenv("TIKTI_BOOTSTRAP_WORKLOAD_SERVICE_ACCOUNT_UID")),
+		trustedClusterRefs:        splitScopes(os.Getenv("TIKTI_BOOTSTRAP_TRUSTED_CLUSTER_REFS")),
 	}
 	accountBrokers, err := parseAccountBrokerSettings(os.Getenv("TIKTI_BOOTSTRAP_ACCOUNT_BFF_CLIENTS"))
 	if err != nil {

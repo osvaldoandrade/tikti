@@ -144,6 +144,13 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		return nil, fmt.Errorf("tenant runtime authority repository is unavailable")
 	}
 	topicPolicy := cfg.WorkloadIdentity.CodeQTopicController
+	workloadOptions := []services.WorkloadIdentityServiceOption{
+		services.WithCodeQTopicController(services.CodeQTopicControllerIdentity{Enabled: topicPolicy.Enabled, Issuer: topicPolicy.Issuer, ClusterRef: topicPolicy.ClusterRef, Namespace: topicPolicy.Namespace, ServiceAccount: topicPolicy.ServiceAccount, ServiceAccountUID: topicPolicy.ServiceAccountUID}, retainedTenants),
+		services.WithTrustedClusterRefs(cfg.WorkloadIdentity.TrustedClusterRefs()),
+		services.WithScopedWorkloadBindings(cfg.WorkloadIdentity.ScopedWorkloadBindings),
+		services.WithLegacyCodeQAdminGrant(cfg.WorkloadIdentity.LegacyCodeQAdminGrantEnabled()),
+		services.WithWorkloadIdentityMetrics(services.NewWorkloadIdentityMetrics(prometheus.DefaultRegisterer)),
+	}
 	workloadService := services.NewWorkloadIdentityService(
 		workloadRepo,
 		workloadVerifier,
@@ -151,7 +158,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		cfg.JwksPrivateKey,
 		cfg.JwksKeyID,
 		time.Duration(cfg.WorkloadIdentity.AccessTokenTTLSeconds)*time.Second,
-		services.WithCodeQTopicController(services.CodeQTopicControllerIdentity{Enabled: topicPolicy.Enabled, Issuer: topicPolicy.Issuer, ClusterRef: topicPolicy.ClusterRef, Namespace: topicPolicy.Namespace, ServiceAccount: topicPolicy.ServiceAccount, ServiceAccountUID: topicPolicy.ServiceAccountUID}, retainedTenants),
+		workloadOptions...,
 	)
 	storageSTSController, err := newStorageSTSController(cfg, workloadService)
 	if err != nil {

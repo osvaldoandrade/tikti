@@ -35,6 +35,9 @@ type WorkloadSubject struct {
 	ClusterRef        string
 	Namespace         string
 	ServiceAccount    string
+	// ExpiresAt is the verified exp of the projected token; zero when the
+	// verifier did not report it (callers that bound a lifetime fail closed).
+	ExpiresAt time.Time
 }
 
 // ParseWorkloadSubject validates the canonical Kubernetes ServiceAccount
@@ -78,24 +81,63 @@ type WorkloadGrant struct {
 }
 
 // WorkloadBinding is the durable subject-to-tenant authorization record.
+// ClusterRef and ServiceAccountUID are optional scoping fields: when set, the
+// legacy exchange matches them against the verified subject. A record with a
+// ClusterRef is stored under WorkloadBindingKey(clusterRef, subject) so that
+// the same namespace/ServiceAccount name on two trusted clusters never shares
+// one record (ADR-0022 E9).
 type WorkloadBinding struct {
-	Subject        string          `json:"subject"`
-	Namespace      string          `json:"namespace"`
-	ServiceAccount string          `json:"serviceAccount"`
-	Grants         []WorkloadGrant `json:"grants"`
-	Revoked        bool            `json:"revoked"`
-	UpdatedAt      time.Time       `json:"updatedAt"`
+	Subject           string          `json:"subject"`
+	Namespace         string          `json:"namespace"`
+	ServiceAccount    string          `json:"serviceAccount"`
+	ClusterRef        string          `json:"clusterRef,omitempty"`
+	ServiceAccountUID string          `json:"serviceAccountUid,omitempty"`
+	Grants            []WorkloadGrant `json:"grants"`
+	Revoked           bool            `json:"revoked"`
+	UpdatedAt         time.Time       `json:"updatedAt"`
 }
 
 type WorkloadBindingUpsertReq struct {
-	Subject        string          `json:"subject"`
-	Namespace      string          `json:"namespace"`
-	ServiceAccount string          `json:"serviceAccount"`
-	Grants         []WorkloadGrant `json:"grants"`
+	Subject           string          `json:"subject"`
+	Namespace         string          `json:"namespace"`
+	ServiceAccount    string          `json:"serviceAccount"`
+	ClusterRef        string          `json:"clusterRef,omitempty"`
+	ServiceAccountUID string          `json:"serviceAccountUid,omitempty"`
+	Grants            []WorkloadGrant `json:"grants"`
 }
 
 type WorkloadBindingRevokeReq struct {
-	Subject string `json:"subject"`
+	Subject    string `json:"subject"`
+	ClusterRef string `json:"clusterRef,omitempty"`
+}
+
+// WorkloadBindingKey is the storage key of a WorkloadBinding. Unscoped legacy
+// records keep the bare subject; scoped records are clusterRef + NUL + subject.
+func WorkloadBindingKey(clusterRef, subject string) string {
+	if clusterRef == "" {
+		return subject
+	}
+	return clusterRef + "\x00" + subject
+}
+
+// ValidWorkloadClusterRef reports whether value is an operator clusterRef
+// (a Kubernetes DNS label).
+func ValidWorkloadClusterRef(value string) bool {
+	return validDNSLabel(value)
+}
+
+// ValidWorkloadObjectUID accepts the signed Kubernetes object UID shape that
+// the projected-token verifier preserves (1..128 of [A-Za-z0-9-]).
+func ValidWorkloadObjectUID(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 type WorkloadTokenExchangeReq struct {

@@ -34,7 +34,8 @@ func TestJWKSVerifierValidatesProjectedServiceAccountToken(t *testing.T) {
 	key := verifierTestKey(t)
 	server, calls := jwksTestServer(t, key, testWorkloadKid, 0)
 	verifier := newTestVerifier(t, server, time.Minute).WithClusterRef("code-cloud")
-	token := signProjectedToken(t, key, testWorkloadKid, projectedClaims(time.Now()))
+	claims := projectedClaims(time.Now())
+	token := signProjectedToken(t, key, testWorkloadKid, claims)
 
 	subject, err := verifier.Verify(context.Background(), token)
 	if err != nil {
@@ -43,6 +44,10 @@ func TestJWKSVerifierValidatesProjectedServiceAccountToken(t *testing.T) {
 	if subject.Subject != testWorkloadSubject || subject.Namespace != "code-admin" || subject.ServiceAccount != "code-admin-controller-queue" ||
 		subject.Issuer != testWorkloadIssuer || subject.ClusterRef != "code-cloud" {
 		t.Fatalf("Verify() subject = %#v", subject)
+	}
+	// The verified exp bounds binding-scoped CodeQ tokens (ADR-0022 C3 step 9).
+	if want := time.Unix(claims["exp"].(int64), 0).UTC(); !subject.ExpiresAt.Equal(want) {
+		t.Fatalf("Verify() ExpiresAt = %v, want %v", subject.ExpiresAt, want)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("JWKS calls = %d", calls.Load())

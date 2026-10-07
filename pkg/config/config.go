@@ -117,6 +117,18 @@ type WorkloadIdentityConfig struct {
 	HTTPTimeoutSeconds    int                              `yaml:"httpTimeoutSeconds"`
 	JWKSCacheTTLSeconds   int                              `yaml:"jwksCacheTtlSeconds"`
 	AccessTokenTTLSeconds int                              `yaml:"accessTokenTtlSeconds"`
+	// ScopedWorkloadBindings (ADR-0022 R4, default false): with more than one
+	// trusted provider, WorkloadBinding upserts must carry clusterRef and
+	// unscoped records stop being authority.
+	ScopedWorkloadBindings bool `yaml:"scopedWorkloadBindings"`
+	// LegacyCodeQAdminGrant (ADR-0022 R4, default true when absent): false
+	// refuses legacy codeq:admin workload exchanges.
+	LegacyCodeQAdminGrant *bool `yaml:"legacyCodeQAdminGrant"`
+}
+
+// LegacyCodeQAdminGrantEnabled resolves the default-true legacy grant flag.
+func (c WorkloadIdentityConfig) LegacyCodeQAdminGrantEnabled() bool {
+	return c.LegacyCodeQAdminGrant == nil || *c.LegacyCodeQAdminGrant
 }
 
 // StorageSTSConfig defines the independent, default-off S3 web-identity

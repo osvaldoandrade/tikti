@@ -126,3 +126,25 @@ func TestTrustedProvidersOrderAndNormalization(t *testing.T) {
 		t.Fatalf("TrustedProviders() = %#v", got)
 	}
 }
+
+func TestLoadConfigWorkloadBindingRetirementFlags(t *testing.T) {
+	cfg, err := LoadConfig(writeTempConfig(t, convesteProvidersYAML))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.WorkloadIdentity.ScopedWorkloadBindings || !cfg.WorkloadIdentity.LegacyCodeQAdminGrantEnabled() {
+		t.Fatalf("defaults: scoped=%v legacyAdmin=%v", cfg.WorkloadIdentity.ScopedWorkloadBindings, cfg.WorkloadIdentity.LegacyCodeQAdminGrantEnabled())
+	}
+	retired := convesteProvidersYAML + "  scopedWorkloadBindings: true\n  legacyCodeQAdminGrant: false\n"
+	cfg, err = LoadConfig(writeTempConfig(t, retired))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.WorkloadIdentity.ScopedWorkloadBindings || cfg.WorkloadIdentity.LegacyCodeQAdminGrantEnabled() {
+		t.Fatalf("R4 flags not applied: %#v", cfg.WorkloadIdentity)
+	}
+	explicit := convesteProvidersYAML + "  legacyCodeQAdminGrant: true\n"
+	if cfg, err = LoadConfig(writeTempConfig(t, explicit)); err != nil || !cfg.WorkloadIdentity.LegacyCodeQAdminGrantEnabled() {
+		t.Fatalf("explicit legacy grant: %v", err)
+	}
+}

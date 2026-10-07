@@ -13,10 +13,14 @@ import (
 
 const workloadBindingsKey = "workloadBindings"
 
+// WorkloadBindingRepository stores WorkloadBinding records under
+// domain.WorkloadBindingKey(binding.ClusterRef, binding.Subject). Get and
+// Revoke take that storage key: the bare subject for unscoped legacy records,
+// or clusterRef + NUL + subject for scoped records.
 type WorkloadBindingRepository interface {
 	Upsert(ctx context.Context, binding *domain.WorkloadBinding) error
-	Get(ctx context.Context, subject string) (*domain.WorkloadBinding, error)
-	Revoke(ctx context.Context, subject string, revokedAt time.Time) (*domain.WorkloadBinding, error)
+	Get(ctx context.Context, key string) (*domain.WorkloadBinding, error)
+	Revoke(ctx context.Context, key string, revokedAt time.Time) (*domain.WorkloadBinding, error)
 }
 
 type workloadBindingRepo struct {
@@ -35,15 +39,15 @@ func (r *workloadBindingRepo) Upsert(ctx context.Context, binding *domain.Worklo
 	if err != nil {
 		return err
 	}
-	return r.client.HSet(ctx, workloadBindingsKey, binding.Subject, raw).Err()
+	return r.client.HSet(ctx, workloadBindingsKey, domain.WorkloadBindingKey(binding.ClusterRef, binding.Subject), raw).Err()
 }
 
-func (r *workloadBindingRepo) Get(ctx context.Context, subject string) (*domain.WorkloadBinding, error) {
-	subject = strings.TrimSpace(subject)
-	if subject == "" {
+func (r *workloadBindingRepo) Get(ctx context.Context, key string) (*domain.WorkloadBinding, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
 		return nil, domain.ErrInvalidArgument
 	}
-	raw, err := r.client.HGet(ctx, workloadBindingsKey, subject).Result()
+	raw, err := r.client.HGet(ctx, workloadBindingsKey, key).Result()
 	if err == redis.Nil || raw == "" {
 		return nil, nil
 	}
@@ -54,11 +58,15 @@ func (r *workloadBindingRepo) Get(ctx context.Context, subject string) (*domain.
 	if err := json.Unmarshal([]byte(raw), &binding); err != nil {
 		return nil, err
 	}
+	if domain.WorkloadBindingKey(binding.ClusterRef, binding.Subject) != key {
+		// A record whose content disagrees with its key is never authority.
+		return nil, domain.ErrInvalidArgument
+	}
 	return &binding, nil
 }
 
-func (r *workloadBindingRepo) Revoke(ctx context.Context, subject string, revokedAt time.Time) (*domain.WorkloadBinding, error) {
-	binding, err := r.Get(ctx, subject)
+func (r *workloadBindingRepo) Revoke(ctx context.Context, key string, revokedAt time.Time) (*domain.WorkloadBinding, error) {
+	binding, err := r.Get(ctx, key)
 	if err != nil || binding == nil {
 		return binding, err
 	}

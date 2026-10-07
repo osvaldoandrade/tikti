@@ -63,6 +63,18 @@ type workloadIdentityService struct {
 	ttl             time.Duration
 	now             func() time.Time
 
+	// trustedClusterRefs is the operator-configured clusterRef set; it bounds
+	// which clusterRef a scoped WorkloadBinding may carry.
+	trustedClusterRefs []string
+	// scopedWorkloadBindings (ADR-0022 R4 flag, default false): when more than
+	// one provider is trusted, upserts must carry clusterRef and unscoped
+	// records are no longer authority.
+	scopedWorkloadBindings bool
+	// refuseLegacyCodeQAdmin is the inverse of workloadIdentity.legacyCodeQAdminGrant
+	// (default true), so the zero value preserves today's behaviour.
+	refuseLegacyCodeQAdmin bool
+	metrics                *WorkloadIdentityMetrics
+
 	keyOnce sync.Once
 	key     *rsa.PrivateKey
 	keyErr  error
@@ -121,7 +133,14 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 		log.Printf("workload identity verifier unavailable: %v", err)
 		return nil, domain.ErrWorkloadIdentityUnavailable
 	}
-	binding, err := s.repo.Get(ctx, subject.Subject)
+	if req.Audience == domain.WorkloadProducerAudience {
+		// The only producer scope set on this path is exactly {codeq:admin}.
+		s.metrics.legacyCodeQAdminExchange(subject.ClusterRef, subject.Namespace)
+		if s.refuseLegacyCodeQAdmin {
+			return nil, domain.ErrWorkloadBindingDenied
+		}
+	}
+	binding, err := s.legacyBinding(ctx, subject)
 	if err != nil {
 		log.Printf("workload identity binding lookup unavailable: %v", err)
 		return nil, domain.ErrWorkloadIdentityUnavailable
@@ -180,6 +199,16 @@ func (s *workloadIdentityService) UpsertBinding(ctx context.Context, req domain.
 	if !valid || subject.Namespace != strings.TrimSpace(req.Namespace) || subject.ServiceAccount != strings.TrimSpace(req.ServiceAccount) || len(req.Grants) == 0 || len(req.Grants) > domain.MaxWorkloadGrants {
 		return nil, domain.ErrInvalidArgument
 	}
+	clusterRef, serviceAccountUID := req.ClusterRef, req.ServiceAccountUID
+	if clusterRef != "" && !slices.Contains(s.trustedClusterRefs, clusterRef) {
+		return nil, domain.ErrInvalidArgument
+	}
+	if serviceAccountUID != "" && !domain.ValidWorkloadObjectUID(serviceAccountUID) {
+		return nil, domain.ErrInvalidArgument
+	}
+	if clusterRef == "" && s.scopedBindingsRequired() {
+		return nil, domain.ErrInvalidArgument
+	}
 	grants := make([]domain.WorkloadGrant, 0, len(req.Grants))
 	seen := make(map[string]struct{}, len(req.Grants))
 	for _, grant := range req.Grants {
@@ -202,7 +231,8 @@ func (s *workloadIdentityService) UpsertBinding(ctx context.Context, req domain.
 	}
 	binding := &domain.WorkloadBinding{
 		Subject: subject.Subject, Namespace: subject.Namespace,
-		ServiceAccount: subject.ServiceAccount, Grants: grants, UpdatedAt: s.now().UTC(),
+		ServiceAccount: subject.ServiceAccount, ClusterRef: clusterRef, ServiceAccountUID: serviceAccountUID,
+		Grants: grants, UpdatedAt: s.now().UTC(),
 	}
 	if err := s.repo.Upsert(ctx, binding); err != nil {
 		return nil, domain.ErrWorkloadIdentityUnavailable
@@ -212,10 +242,10 @@ func (s *workloadIdentityService) UpsertBinding(ctx context.Context, req domain.
 
 func (s *workloadIdentityService) RevokeBinding(ctx context.Context, req domain.WorkloadBindingRevokeReq) (*domain.WorkloadBinding, error) {
 	subject, valid := domain.ParseWorkloadSubject(req.Subject)
-	if s.repo == nil || !valid {
+	if s.repo == nil || !valid || (req.ClusterRef != "" && !domain.ValidWorkloadClusterRef(req.ClusterRef)) {
 		return nil, domain.ErrInvalidArgument
 	}
-	binding, err := s.repo.Revoke(ctx, subject.Subject, s.now().UTC())
+	binding, err := s.repo.Revoke(ctx, domain.WorkloadBindingKey(req.ClusterRef, subject.Subject), s.now().UTC())
 	if err != nil {
 		return nil, domain.ErrWorkloadIdentityUnavailable
 	}
@@ -289,8 +319,39 @@ func workloadEventTypesAllowed(audience string, eventTypes []string) bool {
 	return true
 }
 
+// scopedBindingsRequired reports whether unscoped WorkloadBinding records are
+// refused: the R4 flag is on and more than one provider is trusted.
+func (s *workloadIdentityService) scopedBindingsRequired() bool {
+	return s.scopedWorkloadBindings && len(s.trustedClusterRefs) > 1
+}
+
+// legacyBinding resolves the WorkloadBinding for a verified subject. A record
+// scoped to the verified clusterRef wins. An unscoped legacy record is read
+// only when no scoped record exists and scoped records are not required.
+func (s *workloadIdentityService) legacyBinding(ctx context.Context, subject domain.WorkloadSubject) (*domain.WorkloadBinding, error) {
+	if subject.ClusterRef != "" {
+		scoped, err := s.repo.Get(ctx, domain.WorkloadBindingKey(subject.ClusterRef, subject.Subject))
+		if err != nil || scoped != nil {
+			return scoped, err
+		}
+	}
+	if s.scopedBindingsRequired() {
+		return nil, nil
+	}
+	binding, err := s.repo.Get(ctx, subject.Subject)
+	if err == nil && binding != nil && binding.ClusterRef == "" {
+		s.metrics.legacyUnscopedBinding()
+	}
+	return binding, err
+}
+
 func workloadBindingGrant(binding *domain.WorkloadBinding, subject domain.WorkloadSubject, tenantID, audience string, scopes []string) (domain.WorkloadGrant, bool) {
 	if binding == nil || binding.Revoked || binding.Subject != subject.Subject || binding.Namespace != subject.Namespace || binding.ServiceAccount != subject.ServiceAccount {
+		return domain.WorkloadGrant{}, false
+	}
+	// Optional scoping fields are always matched against the verified subject.
+	if (binding.ClusterRef != "" && binding.ClusterRef != subject.ClusterRef) ||
+		(binding.ServiceAccountUID != "" && binding.ServiceAccountUID != subject.ServiceAccountUID) {
 		return domain.WorkloadGrant{}, false
 	}
 	for _, grant := range binding.Grants {

@@ -75,3 +75,47 @@ func TestWorkloadBindingRepositoryRejectsInvalidInput(t *testing.T) {
 		t.Fatal("invalid binding was revoked")
 	}
 }
+
+func TestWorkloadBindingRepositoryStoresScopedRecordsUnderClusterKey(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	repo := NewWorkloadBindingRepo(client)
+	ctx := context.Background()
+	subject := "system:serviceaccount:workload-conveste:cflow-codeq-worker-cf"
+	grants := []domain.WorkloadGrant{{TenantID: "conveste", Audience: domain.WorkloadTargetAudience, Scopes: []string{domain.WorkloadAdminScope}}}
+	unscoped := &domain.WorkloadBinding{Subject: subject, Namespace: "workload-conveste", ServiceAccount: "cflow-codeq-worker-cf", Grants: grants}
+	master := &domain.WorkloadBinding{Subject: subject, Namespace: "workload-conveste", ServiceAccount: "cflow-codeq-worker-cf", ClusterRef: "code-cloud", Grants: grants}
+	k3s := &domain.WorkloadBinding{Subject: subject, Namespace: "workload-conveste", ServiceAccount: "cflow-codeq-worker-cf", ClusterRef: "conveste-hostgator", ServiceAccountUID: "6b0f8a52-4c55-4f3c-9d1e-1a2b3c4d5e6f", Grants: grants}
+	for _, binding := range []*domain.WorkloadBinding{unscoped, master, k3s} {
+		if err := repo.Upsert(ctx, binding); err != nil {
+			t.Fatalf("Upsert(%q) = %v", binding.ClusterRef, err)
+		}
+	}
+	fields, err := client.HKeys(ctx, workloadBindingsKey).Result()
+	if err != nil || len(fields) != 3 {
+		t.Fatalf("stored keys = %q, %v", fields, err)
+	}
+	got, err := repo.Get(ctx, domain.WorkloadBindingKey("conveste-hostgator", subject))
+	if err != nil || got == nil || got.ClusterRef != "conveste-hostgator" || got.ServiceAccountUID != k3s.ServiceAccountUID {
+		t.Fatalf("scoped Get() = %#v, %v", got, err)
+	}
+	if got, err := repo.Get(ctx, subject); err != nil || got == nil || got.ClusterRef != "" {
+		t.Fatalf("unscoped Get() = %#v, %v", got, err)
+	}
+	revoked, err := repo.Revoke(ctx, domain.WorkloadBindingKey("code-cloud", subject), time.Now())
+	if err != nil || revoked == nil || !revoked.Revoked || revoked.ClusterRef != "code-cloud" {
+		t.Fatalf("scoped Revoke() = %#v, %v", revoked, err)
+	}
+	if other, _ := repo.Get(ctx, domain.WorkloadBindingKey("conveste-hostgator", subject)); other == nil || other.Revoked {
+		t.Fatalf("revoking one cluster's record changed another: %#v", other)
+	}
+	// A record whose content disagrees with its storage key is never returned.
+	raw := `{"subject":"` + subject + `","namespace":"workload-conveste","serviceAccount":"cflow-codeq-worker-cf","clusterRef":"code-cloud","grants":[]}`
+	if err := client.HSet(ctx, workloadBindingsKey, domain.WorkloadBindingKey("conveste-hostgator", subject), raw).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.Get(ctx, domain.WorkloadBindingKey("conveste-hostgator", subject)); err == nil || got != nil {
+		t.Fatalf("mismatched record accepted: %#v, %v", got, err)
+	}
+}

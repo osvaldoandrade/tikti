@@ -144,6 +144,7 @@ func (v *JWKSVerifier) Verify(ctx context.Context, subjectToken string) (domain.
 	}
 	subject.Issuer = v.issuer
 	subject.ClusterRef = v.clusterRef
+	subject.ExpiresAt = expiresAt.UTC()
 	return subject, nil
 }
 
