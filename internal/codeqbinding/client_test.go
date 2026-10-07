@@ -376,3 +376,58 @@ func TestReasonVocabulariesEqualTheAPI(t *testing.T) {
 		}
 	}
 }
+
+func TestClientClassifiesAuthorityFailures(t *testing.T) {
+	const bodyMarker = "authority-error-body-marker"
+	request := validTestRequest()
+	for status, wantClass := range map[int]string{
+		http.StatusTooManyRequests:     FailureThrottled,
+		http.StatusServiceUnavailable:  FailureThrottled,
+		http.StatusUnauthorized:        FailureRejected,
+		http.StatusForbidden:           FailureRejected,
+		http.StatusInternalServerError: FailureStatus,
+		http.StatusNotFound:            FailureStatus,
+		http.StatusBadRequest:          FailureStatus,
+	} {
+		client, _ := authorityServer(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"error":"`+bodyMarker+`"}`)
+		})
+		_, err := client.Authorize(context.Background(), request, testAssertion)
+		class, gotStatus := ClassifyFailure(err)
+		if !errors.Is(err, ErrAuthorityUnavailable) || class != wantClass || gotStatus != status {
+			t.Fatalf("status %d: err=%v class=%s status=%d, want %s", status, err, class, gotStatus, wantClass)
+		}
+		if strings.Contains(err.Error(), bodyMarker) {
+			t.Fatalf("status %d: error carries the response body: %v", status, err)
+		}
+	}
+
+	client, _ := authorityServer(t, func(w http.ResponseWriter, _ *http.Request) { writeDecision(w, "{}") })
+	_, err := client.Authorize(context.Background(), request, testAssertion)
+	if class, status := ClassifyFailure(err); !errors.Is(err, ErrAuthorityInvalidResponse) || class != FailureInvalid || status != http.StatusOK {
+		t.Fatalf("invalid 200: err=%v class=%s status=%d", err, class, status)
+	}
+
+	bad := validTestRequest()
+	bad.PodUID = "not-a-uuid"
+	_, err = client.Authorize(context.Background(), bad, testAssertion)
+	if class, status := ClassifyFailure(err); class != FailureLocal || status != 0 {
+		t.Fatalf("local: class=%s status=%d", class, status)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = client.Authorize(ctx, request, testAssertion)
+	if class, status := ClassifyFailure(err); !errors.Is(err, ErrAuthorityUnavailable) || class != FailureTransport || status != 0 {
+		t.Fatalf("transport: err=%v class=%s status=%d", err, class, status)
+	}
+
+	// Errors from other Authority implementations fold into closed classes.
+	if class, _ := ClassifyFailure(context.DeadlineExceeded); class != FailureTransport {
+		t.Fatalf("foreign error class = %s", class)
+	}
+	if class, _ := ClassifyFailure(ErrAuthorityInvalidResponse); class != FailureInvalid {
+		t.Fatalf("bare invalid class = %s", class)
+	}
+}

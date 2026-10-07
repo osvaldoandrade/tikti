@@ -757,3 +757,81 @@ func TestCodeQBindingExchangeQueueBindingConflictThroughRealClient(t *testing.T)
 		t.Fatalf("BindingNotFound metric = %v", got)
 	}
 }
+
+// TestCodeQBindingExchangeClassifiesAuthorityStatus: every authority failure
+// is 503 AuthorityUnavailable to the workload; 429/503 add Retry-After: 1;
+// 401/403 are recorded as a misconfiguration (rejected), not an outage. The
+// authority body never reaches the audit line.
+func TestCodeQBindingExchangeClassifiesAuthorityStatus(t *testing.T) {
+	const bodyMarker = "authority-error-body-marker"
+	tests := []struct {
+		status     int
+		result     string
+		retryAfter int
+	}{
+		{http.StatusTooManyRequests, "throttled", 1},
+		{http.StatusServiceUnavailable, "throttled", 1},
+		{http.StatusUnauthorized, "rejected", 0},
+		{http.StatusForbidden, "rejected", 0},
+		{http.StatusInternalServerError, "unavailable", 0},
+		{http.StatusNotFound, "unavailable", 0},
+	}
+	for _, test := range tests {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(test.status)
+			_, _ = fmt.Fprintf(w, `{"error":%q}`, bodyMarker)
+		}))
+		client, err := codeqbinding.NewClient(server.URL+codeqbinding.AuthorityPath, server.Client(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixture := newCBFixture(t, nil)
+		fixture.service.codeqBindings.authority = client
+		_, err = fixture.service.Exchange(context.Background(), subscribeRequest())
+		server.Close()
+		name := fmt.Sprintf("authority %d", test.status)
+		refusal := expectRefusal(t, name, err, http.StatusServiceUnavailable, CodeQBindingCodeAuthorityUnavailable)
+		if refusal.RetryAfterSeconds != test.retryAfter {
+			t.Fatalf("%s: Retry-After = %d, want %d", name, refusal.RetryAfterSeconds, test.retryAfter)
+		}
+		line := (*fixture.audit)[0]
+		if !strings.Contains(line, fmt.Sprintf("authorityResult=%q authorityStatus=%d", test.result, test.status)) ||
+			strings.Contains(line, bodyMarker) {
+			t.Fatalf("%s: audit = %s", name, line)
+		}
+		if got := metricValue(t, fixture.metrics.bindingAuthority.WithLabelValues(test.result).(prometheus.Metric)); got != 1 {
+			t.Fatalf("%s: authority %s samples = %v", name, test.result, got)
+		}
+		if got := metricValue(t, fixture.metrics.bindingExchange.WithLabelValues("error", CodeQBindingCodeAuthorityUnavailable, "Subscribe", cbCluster)); got != 1 {
+			t.Fatalf("%s: exchange error metric = %v", name, got)
+		}
+	}
+
+	// Stub authorities returning bare sentinels fold into closed results.
+	for want, failure := range map[string]error{
+		"unavailable": codeqbinding.ErrAuthorityUnavailable,
+		"invalid":     codeqbinding.ErrAuthorityInvalidResponse,
+	} {
+		fixture := newCBFixture(t, nil)
+		fixture.authority.respond = func(codeqbinding.AuthorityRequest) (codeqbinding.AuthorityDecision, error) {
+			return codeqbinding.AuthorityDecision{}, failure
+		}
+		_, err := fixture.service.Exchange(context.Background(), subscribeRequest())
+		if refusal := expectRefusal(t, want, err, http.StatusServiceUnavailable, CodeQBindingCodeAuthorityUnavailable); refusal.RetryAfterSeconds != 0 {
+			t.Fatalf("%s: unexpected Retry-After %d", want, refusal.RetryAfterSeconds)
+		}
+		if line := (*fixture.audit)[0]; !strings.Contains(line, fmt.Sprintf("authorityResult=%q authorityStatus=0", want)) {
+			t.Fatalf("%s: audit = %s", want, line)
+		}
+	}
+
+	// A conforming decision records allowed/200.
+	fixture := newCBFixture(t, nil)
+	if _, err := fixture.service.Exchange(context.Background(), subscribeRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if line := (*fixture.audit)[0]; !strings.Contains(line, `authorityResult="allowed" authorityStatus=200`) {
+		t.Fatalf("allow audit = %s", line)
+	}
+}

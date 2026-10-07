@@ -27,6 +27,8 @@ func TestWorkloadExchangeRefusalCarriesCodeAndCorrelation(t *testing.T) {
 		{refusal: domain.WorkloadExchangeError{Status: 429, Code: "RateLimited", CorrelationID: "c-4", RetryAfterSeconds: 17}, wantStatus: 429, wantError: "workload exchange rate limited", retryAfter: "17"},
 		{refusal: domain.WorkloadExchangeError{Status: 503, Code: "AuthorityBusy", CorrelationID: "c-5", RetryAfterSeconds: 1}, wantStatus: 503, wantError: "workload identity unavailable", retryAfter: "1"},
 		{refusal: domain.WorkloadExchangeError{Status: 500, Code: "Unexpected", CorrelationID: "c-6"}, wantStatus: 503, wantError: "workload identity unavailable"},
+		{refusal: domain.WorkloadExchangeError{Status: 503, Code: "AuthorityUnavailable", CorrelationID: "c-7", RetryAfterSeconds: 1}, wantStatus: 503, wantError: "workload identity unavailable", retryAfter: "1"},
+		{refusal: domain.WorkloadExchangeError{Status: 503, Code: "AuthorityUnavailable", CorrelationID: "c-8"}, wantStatus: 503, wantError: "workload identity unavailable"},
 	}
 	for _, test := range tests {
 		refusal := test.refusal
