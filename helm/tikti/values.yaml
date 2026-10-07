@@ -104,6 +104,19 @@ config:
     httpTimeoutSeconds: 5
     jwksCacheTtlSeconds: 300
     accessTokenTtlSeconds: 300
+    # ADR-0022 R4 retirement flags. Defaults keep today's legacy behaviour.
+    scopedWorkloadBindings: false
+    legacyCodeQAdminGrant: true
+    # ADR-0022 C3 binding-scoped CodeQ grant. Default off; every provider
+    # needs a clusterRef when enabled. Tikti never calls authorityUrl at startup.
+    codeqBindings:
+      enabled: false
+      authorityUrl: ""
+      serviceSubject: "tikti:codeq-binding-exchange"
+      accessTokenTtlSeconds: 300
+      dependencyTimeoutSeconds: 2
+      maximumConcurrent: 8
+      perIdentityPerMinute: 6
   workloadAccountBFF:
     enabled: false
     clients: []

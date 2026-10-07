@@ -5,6 +5,17 @@
 {{- range .Values.config.workloadIdentity.providers }}{{- if and (eq .issuer $p.issuer) (eq .clusterRef $p.clusterRef) }}{{- $trusted = true }}{{- end }}{{- end }}
 {{- if not $trusted }}{{ fail "CodeQ topic controller requires a matching trusted workload provider" }}{{- end }}
 {{- end }}
+{{- $cb := .Values.config.workloadIdentity.codeqBindings }}
+{{- if $cb.enabled }}
+{{- if not (or (regexMatch `^http://[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc\.cluster\.local:[0-9]{1,5}/internal/v1/codeq-bindings:authorize$` $cb.authorityUrl) (regexMatch `^https://[^/?#@]+/internal/v1/codeq-bindings:authorize$` $cb.authorityUrl)) }}{{ fail "config.workloadIdentity.codeqBindings.authorityUrl must be the exact in-cluster HTTP or HTTPS authority endpoint" }}{{- end }}
+{{- if ne $cb.serviceSubject "tikti:codeq-binding-exchange" }}{{ fail "config.workloadIdentity.codeqBindings.serviceSubject must be tikti:codeq-binding-exchange" }}{{- end }}
+{{- if or (lt (int $cb.accessTokenTtlSeconds) 30) (gt (int $cb.accessTokenTtlSeconds) 300) }}{{ fail "config.workloadIdentity.codeqBindings.accessTokenTtlSeconds must be 30..300" }}{{- end }}
+{{- if or (lt (int $cb.dependencyTimeoutSeconds) 1) (gt (int $cb.dependencyTimeoutSeconds) 10) }}{{ fail "config.workloadIdentity.codeqBindings.dependencyTimeoutSeconds must be 1..10" }}{{- end }}
+{{- if or (lt (int $cb.maximumConcurrent) 1) (gt (int $cb.maximumConcurrent) 32) }}{{ fail "config.workloadIdentity.codeqBindings.maximumConcurrent must be 1..32" }}{{- end }}
+{{- if or (lt (int $cb.perIdentityPerMinute) 1) (gt (int $cb.perIdentityPerMinute) 60) }}{{ fail "config.workloadIdentity.codeqBindings.perIdentityPerMinute must be 1..60" }}{{- end }}
+{{- if and (ne .Values.config.workloadIdentity.issuer "") (eq .Values.config.workloadIdentity.clusterRef "") }}{{ fail "config.workloadIdentity.codeqBindings requires a clusterRef for the legacy issuer" }}{{- end }}
+{{- range .Values.config.workloadIdentity.providers }}{{- if eq (default "" .clusterRef) "" }}{{ fail "config.workloadIdentity.codeqBindings requires a clusterRef for every provider" }}{{- end }}{{- end }}
+{{- end }}
 {{- if and .Values.config.tenantTargetDiscoveryV2 (not .Values.config.tenantScopedTokenClaimsV1) }}{{ fail "config.tenantTargetDiscoveryV2 requires config.tenantScopedTokenClaimsV1 while the v1 fallback remains active" }}{{- end }}
 {{- if .Values.config.storageSTS.enabled }}
 {{- if not (regexMatch `^[0-9]{12}$` .Values.config.storageSTS.syntheticAccountId) }}{{ fail "config.storageSTS.syntheticAccountId must contain exactly 12 digits" }}{{- end }}
@@ -97,6 +108,16 @@ data:
       httpTimeoutSeconds: {{ .Values.config.workloadIdentity.httpTimeoutSeconds }}
       jwksCacheTtlSeconds: {{ .Values.config.workloadIdentity.jwksCacheTtlSeconds }}
       accessTokenTtlSeconds: {{ .Values.config.workloadIdentity.accessTokenTtlSeconds }}
+      scopedWorkloadBindings: {{ .Values.config.workloadIdentity.scopedWorkloadBindings }}
+      legacyCodeQAdminGrant: {{ .Values.config.workloadIdentity.legacyCodeQAdminGrant }}
+      codeqBindings:
+        enabled: {{ .Values.config.workloadIdentity.codeqBindings.enabled }}
+        authorityUrl: {{ .Values.config.workloadIdentity.codeqBindings.authorityUrl | quote }}
+        serviceSubject: {{ .Values.config.workloadIdentity.codeqBindings.serviceSubject | quote }}
+        accessTokenTtlSeconds: {{ .Values.config.workloadIdentity.codeqBindings.accessTokenTtlSeconds }}
+        dependencyTimeoutSeconds: {{ .Values.config.workloadIdentity.codeqBindings.dependencyTimeoutSeconds }}
+        maximumConcurrent: {{ .Values.config.workloadIdentity.codeqBindings.maximumConcurrent }}
+        perIdentityPerMinute: {{ .Values.config.workloadIdentity.codeqBindings.perIdentityPerMinute }}
     workloadAccountBFF:
       enabled: {{ .Values.config.workloadAccountBFF.enabled }}
       clients:

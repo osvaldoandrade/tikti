@@ -12,6 +12,7 @@ test:
 
 helm-test:
 	bash hack/test-codeq-topic-chart.sh
+	bash hack/test-codeq-binding-chart.sh
 	bash hack/test-storage-sts-chart.sh
 	bash hack/test-tenant-runtime-chart.sh
 
