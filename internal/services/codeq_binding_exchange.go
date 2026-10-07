@@ -104,6 +104,8 @@ type codeqBindingDecision struct {
 	bindingUID        string
 	bindingGeneration int64
 	authorityLatency  time.Duration
+	authorityResult   string
+	authorityStatus   int
 	exclusionReason   string
 	jti               string
 	exp               int64
@@ -265,18 +267,58 @@ func (s *workloadIdentityService) callCodeQBindingAuthority(ctx context.Context,
 	decision.authorityLatency = time.Since(started)
 	switch {
 	case err != nil:
-		s.metrics.codeqBindingAuthority("unavailable", started)
-		return codeqbinding.AuthorityDecision{}, refuse(decision, http.StatusServiceUnavailable, CodeQBindingCodeAuthorityUnavailable, 0)
+		class, status := codeqbinding.ClassifyFailure(err)
+		decision.authorityResult, decision.authorityStatus = codeqBindingAuthorityFailureResult(class), status
+		s.metrics.codeqBindingAuthority(decision.authorityResult, started)
+		// Every failure is 503 to the workload. Only an authority that said
+		// it is busy (429/503) earns Retry-After; a rejected assertion
+		// (401/403) is a Tikti/API misconfiguration that a retry cannot fix
+		// and is distinguished by authorityResult=rejected in audit/metrics.
+		retryAfter := 0
+		if class == codeqbinding.FailureThrottled {
+			retryAfter = 1
+		}
+		return codeqbinding.AuthorityDecision{}, refuse(decision, http.StatusServiceUnavailable, CodeQBindingCodeAuthorityUnavailable, retryAfter)
 	case !codeqbinding.ValidDecision(request, result):
 		// Defence in depth for Authority implementations other than Client.
-		s.metrics.codeqBindingAuthority("invalid", started)
+		decision.authorityResult = codeqBindingAuthorityInvalid
+		s.metrics.codeqBindingAuthority(decision.authorityResult, started)
 		return codeqbinding.AuthorityDecision{}, refuse(decision, http.StatusServiceUnavailable, CodeQBindingCodeAuthorityUnavailable, 0)
 	case result.IsAllowed():
-		s.metrics.codeqBindingAuthority("allowed", started)
+		decision.authorityResult, decision.authorityStatus = codeqBindingAuthorityAllowed, http.StatusOK
 	default:
-		s.metrics.codeqBindingAuthority("denied", started)
+		decision.authorityResult, decision.authorityStatus = codeqBindingAuthorityDenied, http.StatusOK
 	}
+	s.metrics.codeqBindingAuthority(decision.authorityResult, started)
 	return result, nil
+}
+
+// Closed authority call results: the tikti_codeq_binding_authority_seconds
+// result label and the audit authorityResult field.
+const (
+	codeqBindingAuthorityAllowed     = "allowed"
+	codeqBindingAuthorityDenied      = "denied"
+	codeqBindingAuthorityInvalid     = "invalid"
+	codeqBindingAuthorityUnavailable = "unavailable"
+	codeqBindingAuthorityThrottled   = "throttled"
+	codeqBindingAuthorityRejected    = "rejected"
+)
+
+// codeqBindingAuthorityFailureResult folds the client failure class into the
+// closed result set: throttled (429/503, an outage the caller may retry),
+// rejected (401/403, misconfiguration), invalid (non-conforming 200) and
+// unavailable (transport, timeout, local refusal or any other status).
+func codeqBindingAuthorityFailureResult(class string) string {
+	switch class {
+	case codeqbinding.FailureThrottled:
+		return codeqBindingAuthorityThrottled
+	case codeqbinding.FailureRejected:
+		return codeqBindingAuthorityRejected
+	case codeqbinding.FailureInvalid:
+		return codeqBindingAuthorityInvalid
+	default:
+		return codeqBindingAuthorityUnavailable
+	}
 }
 
 // requestedTopicExclusion returns the closed C2 exclusion reason of the first
@@ -398,12 +440,12 @@ func (s *workloadIdentityService) recordCodeQBindingDecision(decision *codeqBind
 	if refusal == nil {
 		decisionLabel = "allow"
 	}
-	line := "audit event=codeq_binding_exchange decision=%s code=%.64q correlationId=%.64q tenantId=%.64q clusterRef=%.64q namespace=%.64q serviceAccount=%.253q serviceAccountUid=%.64q podUid=%.64q topicId=%.130q policy=%.16q bindingUid=%.128q bindingGeneration=%d authorityLatencyMs=%d exclusionReason=%.32q"
+	line := "audit event=codeq_binding_exchange decision=%s code=%.64q correlationId=%.64q tenantId=%.64q clusterRef=%.64q namespace=%.64q serviceAccount=%.253q serviceAccountUid=%.64q podUid=%.64q topicId=%.130q policy=%.16q bindingUid=%.128q bindingGeneration=%d authorityLatencyMs=%d authorityResult=%.16q authorityStatus=%d exclusionReason=%.32q"
 	args := []any{
 		decisionLabel, decision.code, decision.correlationID, decision.tenantID, decision.clusterRef,
 		decision.namespace, decision.serviceAccount, decision.serviceAccountUID, decision.podUID,
 		decision.topicID, decision.policy, decision.bindingUID, decision.bindingGeneration,
-		decision.authorityLatency.Milliseconds(), decision.exclusionReason,
+		decision.authorityLatency.Milliseconds(), decision.authorityResult, decision.authorityStatus, decision.exclusionReason,
 	}
 	if refusal == nil {
 		line += " jti=%.64q exp=%d"

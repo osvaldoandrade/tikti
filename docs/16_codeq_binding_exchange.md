@@ -84,7 +84,8 @@ The correlation ID is also the `requestId` sent to the authority.
 | 4 | tenant missing, not Active, retired or not yet created | 403 | `TenantInactive` |
 | 5 | more than `perIdentityPerMinute` attempts per (clusterRef, namespace, ServiceAccount, Pod UID) | 429 + `Retry-After` | `RateLimited` |
 | 5 | `maximumConcurrent` authority calls already in flight | 503 + `Retry-After: 1` | `AuthorityBusy` |
-| 6 | authority transport error, timeout, non-200, or non-conforming response | 503 | `AuthorityUnavailable` |
+| 6 | authority answered 429 or 503 | 503 + `Retry-After: 1` | `AuthorityUnavailable` |
+| 6 | authority transport error, timeout, other non-200 (including 401/403), or non-conforming response | 503 | `AuthorityUnavailable` |
 | 7 | authority `allowed:false` | 403 | `Authority<Reason>`, for example `AuthorityPlacementMismatch` |
 | 8 | no eligible binding for the topic and policy | 403 | `BindingNotFound` |
 | 8 | more than one eligible binding | 403 | `BindingAmbiguous` |
@@ -170,8 +171,21 @@ One line is written per decision:
 audit event=codeq_binding_exchange decision=allow|deny code=... correlationId=...
   tenantId=... clusterRef=... namespace=... serviceAccount=... serviceAccountUid=...
   podUid=... topicId=... policy=... bindingUid=... bindingGeneration=...
-  authorityLatencyMs=... exclusionReason=... [jti=... exp=... on allow only]
+  authorityLatencyMs=... authorityResult=... authorityStatus=... exclusionReason=...
+  [jti=... exp=... on allow only]
 ```
+
+`authorityResult` is the closed authority call result (below) and
+`authorityStatus` the HTTP status (0 when no response arrived). The authority
+response body is never logged.
+
+| `authorityResult` | Meaning | Operator action |
+|---|---|---|
+| `allowed` / `denied` | conforming 200 decision | none |
+| `throttled` | authority answered 429 or 503 (busy, store unavailable, deadline) | outage or load; the workload retries after 1 s |
+| `rejected` | authority answered 401 or 403 to the Tikti service assertion | misconfiguration: Tikti issuer/kid, `code-admin-codeq-binding-authority` audience or `IDENTITY_AUDIENCES`; retrying does not help |
+| `invalid` | 200 response that does not match C2 (including an unknown reason) | contract drift between Tikti and code-admin-api |
+| `unavailable` | transport error, timeout, local refusal or any other status | network or API outage |
 
 The line never contains the subject token, the access token, the service
 assertion, any hash of them, or the `Authorization` header.
@@ -179,7 +193,7 @@ assertion, any hash of them, or the `Authorization` header.
 | Metric | Labels |
 |---|---|
 | `tikti_codeq_binding_exchange_total` | `result` (issued/denied/error), `code`, `policy`, `cluster_ref` |
-| `tikti_codeq_binding_authority_seconds` | `result` (allowed/denied/unavailable/invalid) |
+| `tikti_codeq_binding_authority_seconds` | `result` (allowed/denied/throttled/rejected/invalid/unavailable) |
 | `tikti_codeq_binding_authority_in_flight` | none |
 | `tikti_workload_legacy_unscoped_binding_total` | none |
 | `tikti_workload_legacy_codeq_admin_exchange_total` | `cluster_ref`, `namespace` |

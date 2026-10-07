@@ -20,12 +20,76 @@ const (
 
 var (
 	// ErrAuthorityUnavailable covers transport failure, timeout and any
-	// non-200 status. No retry is attempted within one exchange.
+	// non-200 status. No retry is attempted within one exchange. The
+	// returned error is an *AuthorityError carrying the failure class.
 	ErrAuthorityUnavailable = errors.New("codeq binding authority unavailable")
 	// ErrAuthorityInvalidResponse covers any response that does not match the
 	// C2 schema exactly.
 	ErrAuthorityInvalidResponse = errors.New("codeq binding authority response invalid")
 )
+
+// Closed failure classes of one authority call. They are metric label values
+// and audit fields; none carries a response body.
+const (
+	// FailureLocal: the request was refused before it was sent.
+	FailureLocal = "local"
+	// FailureTransport: connection error, timeout or cancellation.
+	FailureTransport = "transport"
+	// FailureThrottled: the authority answered 429 or 503 (busy, store
+	// unavailable or deadline). The caller may retry shortly.
+	FailureThrottled = "throttled"
+	// FailureRejected: the authority answered 401 or 403 to Tikti's service
+	// assertion. This is a misconfiguration (issuer, audience, subject or
+	// IDENTITY_AUDIENCES), not an outage.
+	FailureRejected = "rejected"
+	// FailureStatus: any other non-200 status.
+	FailureStatus = "status"
+	// FailureInvalid: a 200 response that does not match the C2 schema.
+	FailureInvalid = "invalid"
+)
+
+// AuthorityError classifies a failed authority call. It wraps
+// ErrAuthorityUnavailable or ErrAuthorityInvalidResponse, so errors.Is keeps
+// working. Status is the HTTP status, 0 when no response was received.
+type AuthorityError struct {
+	Class  string
+	Status int
+	err    error
+}
+
+func (e *AuthorityError) Error() string { return e.err.Error() + " (" + e.Class + ")" }
+
+func (e *AuthorityError) Unwrap() error { return e.err }
+
+func failure(class string, status int, err error) error {
+	return &AuthorityError{Class: class, Status: status, err: err}
+}
+
+// ClassifyFailure returns the closed failure class and HTTP status of err.
+// An error that is not an *AuthorityError (another Authority implementation)
+// is FailureInvalid when it wraps ErrAuthorityInvalidResponse and
+// FailureTransport otherwise.
+func ClassifyFailure(err error) (string, int) {
+	var classified *AuthorityError
+	if errors.As(err, &classified) {
+		return classified.Class, classified.Status
+	}
+	if errors.Is(err, ErrAuthorityInvalidResponse) {
+		return FailureInvalid, 0
+	}
+	return FailureTransport, 0
+}
+
+func statusFailure(status int) error {
+	switch status {
+	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
+		return failure(FailureThrottled, status, ErrAuthorityUnavailable)
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return failure(FailureRejected, status, ErrAuthorityUnavailable)
+	default:
+		return failure(FailureStatus, status, ErrAuthorityUnavailable)
+	}
+}
 
 // Authority is the decision source used by the exchange. Implementations MUST
 // read current state on every call; nothing here caches a decision.
@@ -59,17 +123,17 @@ func NewClient(endpoint string, client *http.Client, timeout time.Duration) (*Cl
 // Authorize sends one decision request and strictly validates the response.
 func (c *Client) Authorize(ctx context.Context, request AuthorityRequest, serviceAssertion string) (AuthorityDecision, error) {
 	if c == nil || c.http == nil || serviceAssertion == "" || len(serviceAssertion) > maxAssertion || !ValidRequest(request) {
-		return AuthorityDecision{}, ErrAuthorityUnavailable
+		return AuthorityDecision{}, failure(FailureLocal, 0, ErrAuthorityUnavailable)
 	}
 	body, err := json.Marshal(request)
 	if err != nil || len(body) > maxRequestBytes {
-		return AuthorityDecision{}, ErrAuthorityUnavailable
+		return AuthorityDecision{}, failure(FailureLocal, 0, ErrAuthorityUnavailable)
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	httpRequest, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
-		return AuthorityDecision{}, ErrAuthorityUnavailable
+		return AuthorityDecision{}, failure(FailureLocal, 0, ErrAuthorityUnavailable)
 	}
 	httpRequest.Header.Set("Authorization", "Bearer "+serviceAssertion)
 	httpRequest.Header.Set("Content-Type", "application/json")
@@ -77,29 +141,29 @@ func (c *Client) Authorize(ctx context.Context, request AuthorityRequest, servic
 	httpRequest.Header.Set("Cache-Control", "no-store")
 	response, err := c.http.Do(httpRequest)
 	if err != nil {
-		return AuthorityDecision{}, ErrAuthorityUnavailable
+		return AuthorityDecision{}, failure(FailureTransport, 0, ErrAuthorityUnavailable)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
-		return AuthorityDecision{}, ErrAuthorityUnavailable
+		return AuthorityDecision{}, statusFailure(response.StatusCode)
 	}
 	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if mediaErr != nil || mediaType != "application/json" ||
 		!hasDirective(response.Header.Values("Cache-Control"), "no-store") ||
 		!hasDirective(response.Header.Values("Pragma"), "no-cache") {
-		return AuthorityDecision{}, ErrAuthorityInvalidResponse
+		return AuthorityDecision{}, failure(FailureInvalid, response.StatusCode, ErrAuthorityInvalidResponse)
 	}
 	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
-		return AuthorityDecision{}, ErrAuthorityUnavailable
+		return AuthorityDecision{}, failure(FailureTransport, response.StatusCode, ErrAuthorityUnavailable)
 	}
 	if len(raw) == 0 || len(raw) > maxResponseBytes {
-		return AuthorityDecision{}, ErrAuthorityInvalidResponse
+		return AuthorityDecision{}, failure(FailureInvalid, response.StatusCode, ErrAuthorityInvalidResponse)
 	}
 	decision, err := DecodeDecision(raw)
 	if err != nil || !ValidDecision(request, decision) {
-		return AuthorityDecision{}, ErrAuthorityInvalidResponse
+		return AuthorityDecision{}, failure(FailureInvalid, response.StatusCode, ErrAuthorityInvalidResponse)
 	}
 	return decision, nil
 }
