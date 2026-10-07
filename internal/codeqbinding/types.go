@@ -27,17 +27,45 @@ const (
 	MaxBindings = 32
 )
 
-// deniedReasons is the closed set of C2 allowed:false reasons. An unknown
-// reason is an invalid authority response (fail closed).
+// ExclusionQueueBindingConflict is the exclusion of every QueueTopic binding
+// of a Service except the one whose name sorts first (ADR-0022 C4: one
+// QueueTopic binding per Service). It never grants anything.
+const ExclusionQueueBindingConflict = "QueueBindingConflict"
+
+// deniedReasons is the closed set of C2 allowed:false reasons. Together with
+// ReasonResolved it is exactly the API decision vocabulary
+// (code-admin-api CodeQBindingAuthorityDecisionReasons). An unknown reason is
+// an invalid authority response (fail closed).
 var deniedReasons = map[string]struct{}{
 	"NamespaceNotBound": {}, "ServiceNotFound": {}, "ServiceAmbiguous": {}, "ServiceNotReady": {},
 	"PlacementMismatch": {}, "PlacementAmbiguous": {}, "TooManyBindings": {},
 }
 
-// excludedReasons is the closed set of C2 per-candidate exclusion reasons.
+// excludedReasons is the closed set of C2 per-candidate exclusion reasons. It
+// is exactly the API exclusion vocabulary
+// (code-admin-api CodeQBindingAuthorityExclusionReasons).
 var excludedReasons = map[string]struct{}{
-	"TargetKindUnsupported": {}, "PolicyInvalid": {}, "OwnerMismatch": {}, "BindingNotReady": {},
-	"TopicNotFound": {}, "TopicTenantMismatch": {}, "TopicNotReady": {}, "TopicIdentityMismatch": {},
+	"TargetKindUnsupported": {}, ExclusionQueueBindingConflict: {}, "PolicyInvalid": {}, "OwnerMismatch": {},
+	"BindingNotReady": {}, "TopicNotFound": {}, "TopicTenantMismatch": {}, "TopicNotReady": {},
+	"TopicIdentityMismatch": {},
+}
+
+// DecisionReasons returns the closed C2 decision vocabulary, Resolved first.
+func DecisionReasons() []string {
+	reasons := []string{ReasonResolved}
+	for reason := range deniedReasons {
+		reasons = append(reasons, reason)
+	}
+	return reasons
+}
+
+// ExclusionReasons returns the closed C2 exclusion vocabulary.
+func ExclusionReasons() []string {
+	reasons := make([]string, 0, len(excludedReasons))
+	for reason := range excludedReasons {
+		reasons = append(reasons, reason)
+	}
+	return reasons
 }
 
 var (

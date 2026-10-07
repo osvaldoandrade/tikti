@@ -128,7 +128,16 @@ depend on the topic controller being configured.
   `ServiceAmbiguous`, `ServiceNotReady`, `PlacementMismatch`,
   `PlacementAmbiguous` and `TooManyBindings`.
 - `excluded` items are validated for shape and reason but never grant
-  anything.
+  anything. The closed exclusion reasons are `TargetKindUnsupported`,
+  `QueueBindingConflict`, `PolicyInvalid`, `OwnerMismatch`,
+  `BindingNotReady`, `TopicNotFound`, `TopicTenantMismatch`,
+  `TopicNotReady` and `TopicIdentityMismatch`. Both closed sets are exactly
+  the code-admin-api vocabularies; an unknown reason fails the whole decision
+  closed.
+- `QueueBindingConflict` excludes every QueueTopic binding of a Service except
+  the one whose name sorts first. The primary binding is still issued; a
+  request for an excluded topic is `403 BindingNotFound`, and the audit line
+  records `exclusionReason`.
 
 Tikti does not cache the decision, memoize it or cache negative results.
 
@@ -161,7 +170,7 @@ One line is written per decision:
 audit event=codeq_binding_exchange decision=allow|deny code=... correlationId=...
   tenantId=... clusterRef=... namespace=... serviceAccount=... serviceAccountUid=...
   podUid=... topicId=... policy=... bindingUid=... bindingGeneration=...
-  authorityLatencyMs=... [jti=... exp=... on allow only]
+  authorityLatencyMs=... exclusionReason=... [jti=... exp=... on allow only]
 ```
 
 The line never contains the subject token, the access token, the service

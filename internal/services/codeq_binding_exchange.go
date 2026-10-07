@@ -104,6 +104,7 @@ type codeqBindingDecision struct {
 	bindingUID        string
 	bindingGeneration int64
 	authorityLatency  time.Duration
+	exclusionReason   string
 	jti               string
 	exp               int64
 }
@@ -221,6 +222,10 @@ func (s *workloadIdentityService) codeqBindingProcedure(ctx context.Context, req
 	}
 	switch len(selected) {
 	case 0:
+		// An excluded candidate for this topic (QueueBindingConflict for a
+		// non-primary QueueTopic binding, TopicNotReady, ...) never grants
+		// anything; its reason is recorded for operators only.
+		decision.exclusionReason = requestedTopicExclusion(authorityDecision.Excluded, req.CodeQTopicID, policy)
 		return nil, refuse(decision, http.StatusForbidden, CodeQBindingCodeBindingNotFound, 0)
 	case 1:
 	default:
@@ -272,6 +277,18 @@ func (s *workloadIdentityService) callCodeQBindingAuthority(ctx context.Context,
 		s.metrics.codeqBindingAuthority("denied", started)
 	}
 	return result, nil
+}
+
+// requestedTopicExclusion returns the closed C2 exclusion reason of the first
+// excluded candidate for topicID whose policy is the requested one (or unknown,
+// as echoed for PolicyInvalid), or "" when none is excluded.
+func requestedTopicExclusion(excluded []codeqbinding.Excluded, topicID, policy string) string {
+	for _, candidate := range excluded {
+		if candidate.TopicID == topicID && (candidate.Policy == policy || candidate.Policy == "") {
+			return candidate.Reason
+		}
+	}
+	return ""
 }
 
 // signCodeQBindingAssertion signs the C2 caller assertion: exact audience and
@@ -381,12 +398,12 @@ func (s *workloadIdentityService) recordCodeQBindingDecision(decision *codeqBind
 	if refusal == nil {
 		decisionLabel = "allow"
 	}
-	line := "audit event=codeq_binding_exchange decision=%s code=%.64q correlationId=%.64q tenantId=%.64q clusterRef=%.64q namespace=%.64q serviceAccount=%.253q serviceAccountUid=%.64q podUid=%.64q topicId=%.130q policy=%.16q bindingUid=%.128q bindingGeneration=%d authorityLatencyMs=%d"
+	line := "audit event=codeq_binding_exchange decision=%s code=%.64q correlationId=%.64q tenantId=%.64q clusterRef=%.64q namespace=%.64q serviceAccount=%.253q serviceAccountUid=%.64q podUid=%.64q topicId=%.130q policy=%.16q bindingUid=%.128q bindingGeneration=%d authorityLatencyMs=%d exclusionReason=%.32q"
 	args := []any{
 		decisionLabel, decision.code, decision.correlationID, decision.tenantID, decision.clusterRef,
 		decision.namespace, decision.serviceAccount, decision.serviceAccountUID, decision.podUID,
 		decision.topicID, decision.policy, decision.bindingUID, decision.bindingGeneration,
-		decision.authorityLatency.Milliseconds(),
+		decision.authorityLatency.Milliseconds(), decision.exclusionReason,
 	}
 	if refusal == nil {
 		line += " jti=%.64q exp=%d"
