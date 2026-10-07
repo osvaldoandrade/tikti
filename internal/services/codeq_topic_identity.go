@@ -56,12 +56,19 @@ func (s *workloadIdentityService) topicAuthority(ctx context.Context, tenantID s
 	if err != nil {
 		return empty, domain.ErrWorkloadIdentityUnavailable
 	}
-	if tenant == nil || tenant.Id != tenantID || tenant.Status != domain.TenantStatusActive || tenant.RetiredAt != nil || tenant.CreatedAt.IsZero() || tenant.CreatedAt.After(now) {
+	if !activeTenant(tenant, tenantID, now) {
 		return empty, domain.ErrWorkloadBindingDenied
 	}
 	sum := sha256.Sum256([]byte("codefoundry/tenant-lifetime/v1\x00" + tenantID + "\x00" + tenant.CreatedAt.UTC().Format(time.RFC3339Nano)))
 	return CodeQTopicAuthority{SchemaVersion: "codeq-topic-authority/v1", TenantID: tenantID, TenantEpoch: hex.EncodeToString(sum[:]), Active: true}, nil
 }
+
+// activeTenant is the single tenant-lifetime predicate shared by the topic
+// controller authority and the ADR-0022 binding exchange.
+func activeTenant(tenant *domain.Tenant, tenantID string, now time.Time) bool {
+	return tenant != nil && tenant.Id == tenantID && tenant.Status == domain.TenantStatusActive && tenant.RetiredAt == nil && !tenant.CreatedAt.IsZero() && !tenant.CreatedAt.After(now)
+}
+
 func (s *workloadIdentityService) exchangeCodeQTopic(ctx context.Context, req domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error) {
 	if len(req.Scopes) != 1 || req.Scopes[0] != CodeQTopicManageScope || req.Audience != domain.WorkloadProducerAudience || !s.topicController.valid() {
 		return nil, domain.ErrWorkloadBindingDenied

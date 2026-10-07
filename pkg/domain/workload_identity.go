@@ -146,6 +146,28 @@ type WorkloadTokenExchangeReq struct {
 	Audience         string   `json:"audience"`
 	Scopes           []string `json:"scopes"`
 	TenantID         string   `json:"tenantId"`
+	// CodeQTopicID selects the ADR-0022 binding-scoped CodeQ grant. It is
+	// "<tenantId>.<topicName>". The request never carries cluster, namespace,
+	// ServiceAccount or UIDs: those come only from the verified subject token.
+	CodeQTopicID string `json:"codeqTopicId,omitempty"`
+}
+
+// WorkloadExchangeError is a client-safe refusal with a stable code and the
+// exchange correlation ID. It never carries token material or dependency
+// detail. Status is the HTTP status; RetryAfterSeconds, when positive, is sent
+// as Retry-After.
+type WorkloadExchangeError struct {
+	Status            int
+	Code              string
+	CorrelationID     string
+	RetryAfterSeconds int
+}
+
+func (e *WorkloadExchangeError) Error() string {
+	if e == nil {
+		return "workload exchange refused"
+	}
+	return "workload exchange refused: " + e.Code
 }
 
 type WorkloadTokenExchangeResp struct {

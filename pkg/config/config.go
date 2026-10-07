@@ -124,6 +124,8 @@ type WorkloadIdentityConfig struct {
 	// LegacyCodeQAdminGrant (ADR-0022 R4, default true when absent): false
 	// refuses legacy codeq:admin workload exchanges.
 	LegacyCodeQAdminGrant *bool `yaml:"legacyCodeQAdminGrant"`
+	// CodeQBindings is the default-off ADR-0022 C3 binding-scoped CodeQ grant.
+	CodeQBindings CodeQBindingsConfig `yaml:"codeqBindings"`
 }
 
 // LegacyCodeQAdminGrantEnabled resolves the default-true legacy grant flag.
@@ -756,6 +758,10 @@ func LoadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 	if c.WorkloadIdentity.AccessTokenTTLSeconds, err = positiveEnvInt("WORKLOAD_IDENTITY_ACCESS_TOKEN_TTL_SECONDS", c.WorkloadIdentity.AccessTokenTTLSeconds, 3600); err != nil {
+		return nil, err
+	}
+	c.WorkloadIdentity.CodeQBindings.applyDefaults()
+	if err := c.ValidateCodeQBindings(); err != nil {
 		return nil, err
 	}
 	if (strings.TrimSpace(c.WorkloadIdentity.Issuer) == "") != (strings.TrimSpace(c.WorkloadIdentity.JWKSURL) == "") {

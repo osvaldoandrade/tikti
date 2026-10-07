@@ -15,6 +15,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/osvaldoandrade/tikti/internal/codeqbinding"
 	"github.com/osvaldoandrade/tikti/internal/providers"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
@@ -51,6 +52,10 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	// Unconditional: storage STS, forward-auth and every workload exchange share
 	// one issuer -> clusterRef map, so a duplicate must never start (ADR-0022 C3).
 	if err := cfg.WorkloadIdentity.ValidateTrustedProviderUniqueness(); err != nil {
+		return nil, err
+	}
+	// Enabled-only C3 refusals; startup never calls the authority URL.
+	if err := cfg.ValidateCodeQBindings(); err != nil {
 		return nil, err
 	}
 	if err := cfg.ValidateTenantRuntimeAuthority(); err != nil {
@@ -151,6 +156,12 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		services.WithLegacyCodeQAdminGrant(cfg.WorkloadIdentity.LegacyCodeQAdminGrantEnabled()),
 		services.WithWorkloadIdentityMetrics(services.NewWorkloadIdentityMetrics(prometheus.DefaultRegisterer)),
 	}
+	codeqBindingOption, err := newCodeQBindingExchangeOption(cfg, retainedTenants)
+	if err != nil {
+		_ = redisClient.Close()
+		return nil, err
+	}
+	workloadOptions = append(workloadOptions, codeqBindingOption)
 	workloadService := services.NewWorkloadIdentityService(
 		workloadRepo,
 		workloadVerifier,
@@ -218,6 +229,27 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		DirectorySvc:          directoryService,
 		AuthenticationLimiter: directoryRepo,
 	}, nil
+}
+
+// newCodeQBindingExchangeOption wires the default-off ADR-0022 C3 grant. When
+// disabled no authority client exists and every codeqTopicId request is
+// refused with FeatureDisabled.
+func newCodeQBindingExchangeOption(cfg *config.Config, tenants services.CodeQTopicTenantReader) (services.WorkloadIdentityServiceOption, error) {
+	bindings := cfg.WorkloadIdentity.CodeQBindings
+	if !bindings.Enabled {
+		return services.WithCodeQBindingExchange(services.CodeQBindingExchangeConfig{}, nil, nil), nil
+	}
+	timeout := time.Duration(bindings.DependencyTimeoutSeconds) * time.Second
+	authority, err := codeqbinding.NewClient(bindings.AuthorityURL, &http.Client{}, timeout)
+	if err != nil {
+		return nil, fmt.Errorf("initialize CodeQ binding authority client: %w", err)
+	}
+	return services.WithCodeQBindingExchange(services.CodeQBindingExchangeConfig{
+		Enabled:              true,
+		AccessTokenTTL:       time.Duration(bindings.AccessTokenTTLSeconds) * time.Second,
+		MaximumConcurrent:    bindings.MaximumConcurrent,
+		PerIdentityPerMinute: bindings.PerIdentityPerMinute,
+	}, authority, tenants), nil
 }
 
 type storageProjectedTokenVerifier struct {

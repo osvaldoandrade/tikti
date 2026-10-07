@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -92,6 +93,11 @@ func writeInvalidWorkloadIdentityRequest(ctx *gin.Context, err error) {
 }
 
 func writeWorkloadIdentityError(ctx *gin.Context, err error) {
+	var refusal *domain.WorkloadExchangeError
+	if errors.As(err, &refusal) && refusal != nil {
+		writeWorkloadExchangeRefusal(ctx, refusal)
+		return
+	}
 	switch {
 	case errors.Is(err, domain.ErrInvalidArgument):
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid workload identity request"})
@@ -104,4 +110,29 @@ func writeWorkloadIdentityError(ctx *gin.Context, err error) {
 	default:
 		ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": "workload identity unavailable"})
 	}
+}
+
+// writeWorkloadExchangeRefusal keeps the legacy {"error": ...} text and adds
+// the stable code and correlation ID (ADR-0022 C3). Older clients ignore the
+// new fields. No dependency detail or token material is ever included.
+func writeWorkloadExchangeRefusal(ctx *gin.Context, refusal *domain.WorkloadExchangeError) {
+	status := refusal.Status
+	message := "workload identity unavailable"
+	switch status {
+	case http.StatusBadRequest:
+		message = "invalid workload identity request"
+	case http.StatusUnauthorized:
+		message = "invalid workload token"
+	case http.StatusForbidden:
+		message = "workload binding denied"
+	case http.StatusTooManyRequests:
+		message = "workload exchange rate limited"
+	case http.StatusServiceUnavailable:
+	default:
+		status = http.StatusServiceUnavailable
+	}
+	if refusal.RetryAfterSeconds > 0 {
+		ctx.Header("Retry-After", strconv.Itoa(refusal.RetryAfterSeconds))
+	}
+	ctx.JSON(status, gin.H{"error": message, "code": refusal.Code, "correlationId": refusal.CorrelationID})
 }
