@@ -3,9 +3,11 @@ package services
 import (
 	"context"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"sort"
 	"strings"
@@ -704,5 +706,54 @@ func TestCodeQBindingSubjectIsUniquePerClusterAndPod(t *testing.T) {
 	b := CodeQBindingSubject(cbCluster, cbNamespace, cbSA, cbPodUID)
 	if a == b || a == "codecloud-worker" || strings.HasPrefix(a, "system:serviceaccount:") {
 		t.Fatalf("subjects collide: %q %q", a, b)
+	}
+}
+
+// TestCodeQBindingExchangeQueueBindingConflictThroughRealClient reproduces the
+// integration defect: one Service with QueueTopic bindings aa-first (primary,
+// eligible) and zz-second (QueueBindingConflict). The primary is issued; the
+// conflicting topic is 403 BindingNotFound; neither is 503.
+func TestCodeQBindingExchangeQueueBindingConflictThroughRealClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request codeqbinding.AuthorityRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Pragma", "no-cache")
+		_, _ = fmt.Fprintf(w, `{"schemaVersion":"codeq-binding-authority/v1","requestId":%q,"allowed":true,"reason":"Resolved",`+
+			`"bindings":[{"bindingUid":"uid-aa-first","generation":2,"topicId":"conveste.cflow-executar","topicName":"cflow-executar","policy":"Subscribe"}],`+
+			`"excluded":[{"bindingUid":"uid-zz-second","reason":"QueueBindingConflict","topicId":"conveste.cflow-relatorios","policy":"Subscribe"}]}`,
+			request.RequestID)
+	}))
+	t.Cleanup(server.Close)
+	client, err := codeqbinding.NewClient(server.URL+codeqbinding.AuthorityPath, server.Client(), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := newCBFixture(t, nil)
+	fixture.service.codeqBindings.authority = client
+
+	response, err := fixture.service.Exchange(context.Background(), subscribeRequest())
+	if err != nil {
+		t.Fatalf("primary binding refused: %v", err)
+	}
+	if len(response.EventTypes) != 1 || response.EventTypes[0] != cbTopic {
+		t.Fatalf("primary eventTypes = %v", response.EventTypes)
+	}
+
+	conflicting := subscribeRequest()
+	conflicting.CodeQTopicID = cbTenant + ".cflow-relatorios"
+	_, err = fixture.service.Exchange(context.Background(), conflicting)
+	expectRefusal(t, "conflicting binding", err, http.StatusForbidden, CodeQBindingCodeBindingNotFound)
+	if deny := (*fixture.audit)[1]; !strings.Contains(deny, `exclusionReason="QueueBindingConflict"`) || !strings.Contains(deny, `code="BindingNotFound"`) {
+		t.Fatalf("deny audit = %s", deny)
+	}
+	if allow := (*fixture.audit)[0]; !strings.Contains(allow, `exclusionReason=""`) {
+		t.Fatalf("allow audit = %s", allow)
+	}
+	if got := metricValue(t, fixture.metrics.bindingExchange.WithLabelValues("denied", CodeQBindingCodeBindingNotFound, "Subscribe", cbCluster)); got != 1 {
+		t.Fatalf("BindingNotFound metric = %v", got)
 	}
 }

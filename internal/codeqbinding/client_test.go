@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -307,6 +308,71 @@ func TestValidRequestShapes(t *testing.T) {
 		mutate(&request)
 		if ValidRequest(request) {
 			t.Fatalf("%s accepted", name)
+		}
+	}
+}
+
+// apiConflictBody is shaped exactly like code-admin-api's
+// CodeQBindingAuthorityDecisionV1 for one Service with two QueueTopic
+// bindings: aa-first (sorts first, eligible) and zz-second (QueueBindingConflict).
+func apiConflictBody(requestID string) string {
+	return `{"schemaVersion":"codeq-binding-authority/v1","requestId":"` + requestID + `","allowed":true,"reason":"Resolved",` +
+		`"bindings":[{"bindingUid":"8d0c2a3e-0b7e-4c1f-9f3a-aa0000000001","generation":2,"topicId":"conveste.cflow-executar","topicName":"cflow-executar","policy":"Subscribe"}],` +
+		`"excluded":[{"bindingUid":"8d0c2a3e-0b7e-4c1f-9f3a-zz0000000002","reason":"QueueBindingConflict","topicId":"conveste.cflow-relatorios","policy":"Publish"},` +
+		`{"bindingUid":"","reason":"PolicyInvalid","topicId":"conveste.cflow-legado","policy":""}]}`
+}
+
+func TestClientAcceptsAPIShapedQueueBindingConflictExclusion(t *testing.T) {
+	request := validTestRequest()
+	client, _ := authorityServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeDecision(w, apiConflictBody(request.RequestID))
+	})
+	decision, err := client.Authorize(context.Background(), request, testAssertion)
+	if err != nil {
+		t.Fatalf("API-shaped conflict response refused: %v", err)
+	}
+	if !decision.IsAllowed() || len(decision.Bindings) != 1 || decision.Bindings[0].TopicName != "cflow-executar" {
+		t.Fatalf("primary binding lost: %#v", decision)
+	}
+	if len(decision.Excluded) != 2 || decision.Excluded[0].Reason != ExclusionQueueBindingConflict ||
+		decision.Excluded[0].TopicID != "conveste.cflow-relatorios" {
+		t.Fatalf("conflict exclusion not decoded: %#v", decision.Excluded)
+	}
+}
+
+// The closed vocabularies must equal code-admin-api's
+// CodeQBindingAuthorityDecisionReasons / CodeQBindingAuthorityExclusionReasons
+// (internal/domain/codeq_binding_authority.go) and the OpenAPI enums. A reason
+// the API can emit but Tikti does not know turns every decision into 503.
+func TestReasonVocabulariesEqualTheAPI(t *testing.T) {
+	apiDecision := []string{"Resolved", "NamespaceNotBound", "ServiceNotFound", "ServiceAmbiguous", "ServiceNotReady",
+		"PlacementMismatch", "PlacementAmbiguous", "TooManyBindings"}
+	apiExclusion := []string{"TargetKindUnsupported", "QueueBindingConflict", "PolicyInvalid", "OwnerMismatch", "BindingNotReady",
+		"TopicNotFound", "TopicTenantMismatch", "TopicNotReady", "TopicIdentityMismatch"}
+	for name, pair := range map[string][2][]string{
+		"decision":  {DecisionReasons(), apiDecision},
+		"exclusion": {ExclusionReasons(), apiExclusion},
+	} {
+		got, want := slices.Clone(pair[0]), slices.Clone(pair[1])
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Fatalf("%s vocabulary = %v, API = %v", name, got, want)
+		}
+	}
+	request := validTestRequest()
+	allowed, denied := true, false
+	for _, reason := range apiExclusion {
+		decision := AuthorityDecision{SchemaVersion: SchemaVersion, RequestID: request.RequestID, Allowed: &allowed, Reason: ReasonResolved,
+			Excluded: []Excluded{{BindingUID: "b-1", Reason: reason, TopicID: "conveste.x", Policy: PolicyPublish}}}
+		if !ValidDecision(request, decision) {
+			t.Fatalf("exclusion reason %s refused", reason)
+		}
+	}
+	for _, reason := range apiDecision[1:] {
+		decision := AuthorityDecision{SchemaVersion: SchemaVersion, RequestID: request.RequestID, Allowed: &denied, Reason: reason}
+		if !ValidDecision(request, decision) {
+			t.Fatalf("decision reason %s refused", reason)
 		}
 	}
 }
