@@ -21,3 +21,4 @@ Document order:
 13. `13_workload_identity.md` — Kubernetes workload exchange, explicit bindings, the bounded workload-account broker, revocation, and rollout.
 14. `14_edge_forward_auth.md` — Traefik ForwardAuth contract for bearer access tokens and SAML browser sessions.
 15. `15_tenant_runtime_authority.md` — private tenant-runtime/v1 reads, retained lifetime guarantees, SQL compatibility floor and actual HTTP/Redis contract tests.
+16. `16_codeq_binding_exchange.md` — ADR-0022 binding-scoped CodeQ tokens: live API authority per exchange, exact claims, refusal codes, startup validation and cluster-scoped WorkloadBinding records.

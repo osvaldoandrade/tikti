@@ -147,6 +147,14 @@ The subject, namespace, and ServiceAccount must agree exactly. Duplicate tenant
 grants, unknown audiences, additional scopes, and malformed tenant identifiers
 are rejected.
 
+A binding may also carry `clusterRef` (one of the trusted provider clusterRefs)
+and `serviceAccountUid`. A scoped record matches only a projected token from
+that cluster (and that ServiceAccount incarnation) and takes precedence over an
+unscoped record for the same subject. Revoke a scoped record by sending its
+`clusterRef` with the subject. See `16_codeq_binding_exchange.md` for the
+`scopedWorkloadBindings` and `legacyCodeQAdminGrant` retirement flags and for
+the binding-scoped CodeQ grant selected by `codeqTopicId`.
+
 ## Exchange contract
 
 ```http
