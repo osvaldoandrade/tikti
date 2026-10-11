@@ -72,6 +72,11 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Verify dependency integrity and reachable vulnerabilities
+        run: |
+          go mod verify
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+
       - name: Build binaries
         shell: bash
         run: |
