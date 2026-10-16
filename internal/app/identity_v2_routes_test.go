@@ -31,6 +31,7 @@ func TestIdentityV2RemovesSupersededTenantAdministrationRoutes(t *testing.T) {
 		"PUT /v1/admin/tenants/:tenantId/roles/:roleName",
 		"GET /v1/admin/identity/directory/users",
 		"POST /v1/admin/identity/directory/users",
+		"DELETE /v1/admin/identity/directory/users/:userId",
 		"GET /v1/admin/identity/directory/groups",
 		"GET /v1/admin/identity/tenants/:tenantId/access-assignments",
 		"PUT /v1/admin/identity/tenants/:tenantId/access-assignments/users/:userId",

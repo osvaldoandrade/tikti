@@ -2,30 +2,17 @@ package saml
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"strings"
+	rkeys "github.com/osvaldoandrade/tikti/internal/redis"
 )
-
-const sessionIndexVersion = "v2"
 
 // SessionSubjectIndexKey and SessionNameIDIndexKey deliberately hash external
 // and local identifiers so Redis keys do not become a secondary PII index.
 func SessionSubjectIndexKey(tenantID, subject string) string {
-	return sessionIndexLookupKey(tenantID, "subject", subject)
+	return rkeys.SAMLSessionIndexKey(tenantID, "subject", subject)
 }
 
 func SessionNameIDIndexKey(tenantID, nameID string) string {
-	return sessionIndexLookupKey(tenantID, "nameid", nameID)
-}
-
-func sessionIndexLookupKey(tenantID, kind, value string) string {
-	if tenantID == "" || strings.TrimSpace(tenantID) != tenantID || len(tenantID) > 128 ||
-		value == "" || strings.TrimSpace(value) != value || len(value) > 1024 {
-		return ""
-	}
-	digest := sha256.Sum256([]byte(sessionIndexVersion + "\x00" + tenantID + "\x00" + kind + "\x00" + value))
-	return sessionIndexVersion + ":" + kind + ":" + hex.EncodeToString(digest[:])
+	return rkeys.SAMLSessionIndexKey(tenantID, "nameid", nameID)
 }
 
 func putSessionIndex(ctx context.Context, store Store, record IndexRecord) error {

@@ -23,6 +23,8 @@ var (
 	ErrGroupExists = errors.New("group already exists")
 	// ErrDirectoryInvariant signals corrupt or ambiguous indexed identity data.
 	ErrDirectoryInvariant = errors.New("identity directory invariant violated")
+	// ErrDirectoryDeletionDenied rejects unauthorized or self account deletion.
+	ErrDirectoryDeletionDenied = errors.New("account deletion is not permitted")
 	// ErrDirectoryBackfillInProgress keeps all but the distributed migration
 	// owner from serving Identity while legacy data is being projected.
 	ErrDirectoryBackfillInProgress = errors.New("identity directory backfill in progress")

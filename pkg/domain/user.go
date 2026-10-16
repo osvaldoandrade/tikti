@@ -74,7 +74,7 @@ type User struct {
 	CompanyId    *string    `json:"companyId,omitempty"`
 	TokenVersion int        `json:"tokenVersion,omitempty"`
 	// Revision is an internal optimistic-concurrency token. It is persisted but
-	// never included in directory/API projections.
+	// projected as the positive DirectoryUser.Version (Revision + 1).
 	Revision        int64      `json:"revision,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	AuthSource      AuthSource `json:"authSource"`

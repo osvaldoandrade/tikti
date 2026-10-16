@@ -11,6 +11,15 @@ type DirectoryUser struct {
 	HomeTenantID           string     `json:"homeTenantId,omitempty"`
 	PasswordChangeRequired bool       `json:"passwordChangeRequired"`
 	CreatedAt              time.Time  `json:"createdAt"`
+	Version                int64      `json:"version"`
+}
+
+// DirectoryDeletionActor is a server-validated authority snapshot, never a request body.
+type DirectoryDeletionActor struct {
+	UserID          string
+	TokenVersion    int
+	Revision        int64
+	RecoveredMaster bool
 }
 
 type DirectoryUserPage struct {

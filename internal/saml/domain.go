@@ -1,6 +1,9 @@
 package saml
 
-import "time"
+import (
+	rkeys "github.com/osvaldoandrade/tikti/internal/redis"
+	"time"
+)
 
 // IdPRecord is the trust material for 1 tenant.
 type IdPRecord struct {
@@ -27,14 +30,7 @@ type RequestRecord struct {
 }
 
 // IndexRecord maps a session index to a subject for SLO.
-type IndexRecord struct {
-	TenantID     string    `msgpack:"tid"`
-	Subject      string    `msgpack:"sub"`
-	NameID       string    `msgpack:"name_id"`
-	Email        string    `msgpack:"email"`
-	SessionIndex string    `msgpack:"session_index"`
-	NotOnOrAfter time.Time `msgpack:"not_on_or_after"`
-}
+type IndexRecord = rkeys.SAMLSessionIndexRecord
 
 // VerifiedAssertion holds the validated claims from a SAML Response.
 type VerifiedAssertion struct {

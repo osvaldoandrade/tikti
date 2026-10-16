@@ -77,6 +77,7 @@ type IdentityDirectoryRepository interface {
 	UpdateDirectoryUser(context.Context, *domain.User) (*domain.DirectoryUser, error)
 	ConsumeTemporaryPassword(context.Context, string, string, int, string) error
 	GetDirectoryUser(context.Context, string) (*domain.DirectoryUser, error)
+	DeleteDirectoryUser(context.Context, string, int64, domain.DirectoryDeletionActor) (bool, error)
 	FindDirectoryUserByEmail(context.Context, string) (*domain.DirectoryUser, error)
 	ListDirectoryUsers(context.Context, string, string, int) (*domain.DirectoryUserPage, error)
 	ListTenantDirectoryUsers(context.Context, string, string, string, int) (*domain.DirectoryUserPage, error)
@@ -525,22 +526,8 @@ func (r *identityDirectoryRepo) readStorageUser(ctx context.Context, userID stri
 	if r == nil || r.client == nil || !canonicalUserIdentity(userID) {
 		return nil, domain.ErrInvalidArgument
 	}
-	raw, err := r.client.HGet(ctx, usersHashV2, userID).Result()
-	if err == redis.Nil {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	var user domain.User
-	if json.Unmarshal([]byte(raw), &user) != nil || user.Id != userID {
-		return nil, domain.ErrDirectoryInvariant
-	}
-	canonical, err := canonicalDirectoryStorageUser(&user)
-	if err != nil || canonical.Id != userID {
-		return nil, domain.ErrDirectoryInvariant
-	}
-	return canonical, nil
+	user, _, err := deletionStorageUser(ctx, r.client, userID)
+	return user, err
 }
 
 func canonicalDirectoryStorageUser(input *domain.User) (*domain.User, error) {
@@ -592,6 +579,7 @@ func directoryUserProjection(user *domain.User) *domain.DirectoryUser {
 	projection := &domain.DirectoryUser{
 		ID: user.Id, Email: user.Email, Status: user.Status, AuthSource: user.AuthSource,
 		PasswordChangeRequired: user.PasswordChangeRequired, CreatedAt: user.CreatedAt,
+		Version: user.Revision + 1,
 	}
 	if user.CompanyId != nil {
 		projection.HomeTenantID = strings.TrimSpace(*user.CompanyId)

@@ -105,7 +105,7 @@ func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, serv
 	if engine == nil || cfg == nil || service == nil {
 		return
 	}
-	controller := controllers.NewIdentityDirectoryController(service, cfg)
+	controller := controllers.NewIdentityDirectoryController(service, cfg, tokenService)
 	// Temporary-password rotation is credential-authenticated and issues no
 	// session. All administrative directory routes additionally require the
 	// private service API key and a validated RS256 administrative bearer.
@@ -119,6 +119,7 @@ func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, serv
 	routes.GET("/directory/users", controller.ListUsers)
 	routes.POST("/directory/users", controller.CreateUser)
 	routes.GET("/directory/users/:userId", controller.GetUser)
+	routes.DELETE("/directory/users/:userId", controller.DeleteUser)
 	routes.GET("/directory/users/:userId/access", controller.GetUserAccess)
 	routes.GET("/directory/groups", controller.ListGroups)
 	routes.POST("/directory/groups", controller.CreateGroup)

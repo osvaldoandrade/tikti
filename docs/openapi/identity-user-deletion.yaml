@@ -1,0 +1,104 @@
+openapi: 3.1.0
+info:
+  title: Tikti administrative account deletion
+  version: 1.0.0
+paths:
+  /v1/admin/identity/directory/users/{userId}:
+    delete:
+      operationId: deleteDirectoryUser
+      summary: Delete an exact Tikti account and its owned identity access
+      description: >-
+        Platform administrator only; self-deletion is forbidden. No request body
+        or query parameters are accepted. The immutable UID may refer to a
+        global or tenant-local federated account. The external IdP account,
+        tenants, groups, workloads and audit history are preserved. SAML login
+        may provision a new UID after deletion. Read the current DirectoryUser
+        projection and review its version before deleting. There is no wildcard
+        or forced overwrite. The service key and current administrative bearer
+        are both required, including provenance and persisted active authority.
+      security:
+        - serviceKey: []
+          currentBearer: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+            pattern: '^[A-Za-z0-9_.:-]+$'
+            not:
+              enum: ['.', '..']
+        - name: If-Match
+          in: header
+          required: true
+          description: Exact positive DirectoryUser.version, quoted; no weak/list/wildcard values.
+          schema:
+            type: string
+            pattern: '^"[1-9][0-9]*"$'
+            example: '"1"'
+      responses:
+        '204':
+          description: Account deleted, or exact UID already absent after authority and condition validation.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                const: no-store
+        '400':
+          description: Invalid UID, query/body or missing/invalid condition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Missing or invalid private service key/current bearer.
+        '403':
+          description: Platform authority denied, changed current authority or self-deletion.
+        '412':
+          description: Present account version changed; refresh and review, never overwrite automatically.
+        '500':
+          description: Storage/invariant failure or bounded transaction retries exhausted.
+components:
+  securitySchemes:
+    serviceKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    currentBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: RS256
+  schemas:
+    DirectoryUser:
+      type: object
+      required: [id, email, status, authSource, passwordChangeRequired, createdAt, version]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+          format: email
+        status:
+          enum: [ACTIVE, INACTIVE, SUSPENDED]
+        authSource:
+          enum: [password, saml]
+        homeTenantId:
+          type: string
+        passwordChangeRequired:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Stored user Revision + 1; initial version is 1.
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string

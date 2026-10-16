@@ -30,6 +30,7 @@ type IdentityDirectoryService interface {
 	CreateUser(context.Context, domain.DirectoryUserCreateReq) (*domain.DirectoryUser, error)
 	ChangeTemporaryPassword(context.Context, domain.TemporaryPasswordChangeReq) error
 	GetUser(context.Context, string) (*domain.DirectoryUser, error)
+	DeleteDirectoryUser(context.Context, string, int64, domain.DirectoryDeletionActor) (bool, error)
 	FindUserByEmail(context.Context, string) (*domain.DirectoryUser, error)
 	ListUsers(context.Context, string, string, int) (*domain.DirectoryUserPage, error)
 	ListTenantUsers(context.Context, string, string, string, int) (*domain.DirectoryUserPage, error)
@@ -165,6 +166,13 @@ func (s *identityDirectoryService) GetUser(ctx context.Context, userID string) (
 		err = domain.ErrNotFound
 	}
 	return user, err
+}
+
+func (s *identityDirectoryService) DeleteDirectoryUser(ctx context.Context, userID string, version int64, actor domain.DirectoryDeletionActor) (bool, error) {
+	if s == nil || s.directory == nil {
+		return false, domain.ErrDirectoryInvariant
+	}
+	return s.directory.DeleteDirectoryUser(ctx, userID, version, actor)
 }
 
 func (s *identityDirectoryService) FindUserByEmail(ctx context.Context, email string) (*domain.DirectoryUser, error) {

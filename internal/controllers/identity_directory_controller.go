@@ -23,12 +23,58 @@ import (
 const identityDirectoryBodyLimit = 16 << 10
 
 type IdentityDirectoryController struct {
-	service services.IdentityDirectoryService
-	config  *config.Config
+	service           services.IdentityDirectoryService
+	config            *config.Config
+	deletionAuthority services.DirectoryDeletionAuthority
 }
 
-func NewIdentityDirectoryController(service services.IdentityDirectoryService, cfg *config.Config) *IdentityDirectoryController {
-	return &IdentityDirectoryController{service: service, config: cfg}
+func NewIdentityDirectoryController(service services.IdentityDirectoryService, cfg *config.Config, tokenServices ...services.UserService) *IdentityDirectoryController {
+	controller := &IdentityDirectoryController{service: service, config: cfg}
+	if len(tokenServices) == 1 {
+		controller.deletionAuthority, _ = tokenServices[0].(services.DirectoryDeletionAuthority)
+	}
+	return controller
+}
+
+// DeleteUser removes a Tikti account by subject, separately from tenant access.
+func (r *IdentityDirectoryController) DeleteUser(c *gin.Context) {
+	claims, ok := requirePlatformTenantAdmin(c, r.config)
+	if !ok || !identityDirectoryNoQuery(c) || !identityDirectoryNoBody(c) {
+		return
+	}
+	userID := c.Param("userId")
+	condition, ok := identityDirectoryIfMatch(c)
+	if !ok {
+		return
+	}
+	if !canonicalDirectoryIDPath(userID) || condition == "" || condition == "*" {
+		writeIdentityDirectoryError(c, domain.ErrInvalidArgument)
+		return
+	}
+	version, _ := strconv.ParseInt(condition[1:len(condition)-1], 10, 64)
+	if claimString(claims, "sub") == userID {
+		writeIdentityDirectoryError(c, domain.ErrDirectoryDeletionDenied)
+		return
+	}
+	if r.deletionAuthority == nil {
+		writeIdentityDirectoryError(c, domain.ErrDirectoryInvariant)
+		return
+	}
+	parts := strings.Fields(c.GetHeader("Authorization"))
+	if len(parts) != 2 {
+		writeIdentityDirectoryError(c, domain.ErrDirectoryDeletionDenied)
+		return
+	}
+	actor, err := r.deletionAuthority.CurrentDirectoryDeletionActor(c.Request.Context(), parts[1], r.config.IssuerBaseURL, r.config.DefaultAudience)
+	if err == nil {
+		_, err = r.service.DeleteDirectoryUser(c.Request.Context(), userID, version, actor)
+	}
+	if err != nil {
+		writeIdentityDirectoryError(c, err)
+		return
+	}
+	identityDirectoryResponseHeaders(c)
+	c.Status(http.StatusNoContent)
 }
 
 func (r *IdentityDirectoryController) CreatorAccess(c *gin.Context) {
@@ -553,6 +599,8 @@ func writeIdentityDirectoryError(c *gin.Context, err error) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error()})
 	case errors.Is(err, domain.ErrInvalidTenant):
 		c.JSON(http.StatusForbidden, gin.H{"error": "tenant identity authority does not permit this assignment"})
+	case errors.Is(err, domain.ErrDirectoryDeletionDenied):
+		c.JSON(http.StatusForbidden, gin.H{"error": domain.ErrDirectoryDeletionDenied.Error()})
 	case errors.Is(err, domain.ErrInvalidCreds):
 		c.JSON(http.StatusUnauthorized, gin.H{"error": domain.ErrInvalidCreds.Error()})
 	case errors.Is(err, domain.ErrPasswordChangeRequired):

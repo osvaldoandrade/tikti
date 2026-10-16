@@ -843,3 +843,27 @@ aliases are intentionally not retained. Consumers must use the canonical
 explicit-target endpoints above. This cutover changes only the HTTP surface;
 stored identities, memberships, roles, clients, and SAML configuration are not
 deleted.
+
+## Administrative account deletion
+
+`DELETE /v1/admin/identity/directory/users/{userId}` is distinct from tenant
+assignment deletion and legacy credential-authenticated self-deletion. It
+requires a current provenance-bound platform administrator and the private
+service API key. Self-deletion is denied. No body/query is allowed, and an exact
+quoted positive `If-Match` is mandatory (`*`, weak/list/zero/missing values are
+400). `DirectoryUser.version` is the additive public `Revision + 1` projection
+in user/list/access responses. Exact UID reads include federated users without
+linking email ownership; the existing global collection remains index-bound.
+
+The operation returns 204 for deleted/already absent, 412 when the present user's
+version changed, 403 for insufficient/self/current-changed authority, 401 for
+invalid key/bearer, and 500 for invariant/storage/retry failure. Deletion cleans
+owned identity access atomically, preserving other subjects, tenant/group
+resources, workload data and audit. The external SAML account remains. The exact
+OpenAPI operation and schema are in `docs/openapi/identity-user-deletion.yaml`.
+
+Sign-in/password-reset OOB credentials now bind immutable UID and tokenVersion.
+Their public wire format and 900-second lifetime are unchanged. Unbound codes
+issued before this release are rejected; request a new code. Email reuse cannot
+redirect an old credential to a replacement account. See ADR 0009 (credential guards), ADR 0010 and the
+administrative-user-deletion runbook for rollout and binary rollback limits.
