@@ -101,53 +101,43 @@ func (r *redisRepo) FindByEmail(ctx context.Context, email string) (*domain.User
 	if email == "" {
 		return nil, nil
 	}
-	if userID, err := r.client.Get(ctx, userByEmailKeyNS+email).Result(); err == nil && userID != "" {
-		val, err := r.client.HGet(ctx, usersHashV2, userID).Result()
-		if err == redis.Nil {
-			return nil, nil
+	for attempt := 0; attempt < directoryMaximumRetries; attempt++ {
+		userID, err := r.client.Get(ctx, userByEmailKeyNS+email).Result()
+		if err == nil {
+			if !canonicalUserIdentity(userID) {
+				return nil, domain.ErrDirectoryInvariant
+			}
+			raw, err := r.client.HGet(ctx, usersHashV2, userID).Result()
+			if err == redis.Nil {
+				return nil, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			if raw == "" {
+				return nil, nil
+			}
+			var user domain.User
+			if err = json.Unmarshal([]byte(raw), &user); err != nil {
+				return nil, err
+			}
+			if user.Id != userID || normalizeDirectoryEmail(user.Email) != email {
+				return nil, domain.ErrDirectoryInvariant
+			}
+			if user.Password == "" && user.AuthSource != domain.AuthSourceSAML {
+				return nil, domain.ErrNotFound
+			}
+			return &user, nil
 		}
-		if err != nil {
+		if err != redis.Nil {
 			return nil, err
 		}
-		if val == "" {
-			return nil, nil
-		}
-		var u domain.User
-		if e := json.Unmarshal([]byte(val), &u); e != nil {
-			return nil, e
-		}
-		if u.Password == "" && u.AuthSource != domain.AuthSourceSAML {
-			return nil, domain.ErrNotFound
-		}
-		return &u, nil
-	}
-
-	val, err := r.client.HGet(ctx, legacyUsersHash, email).Result()
-	if err == redis.Nil {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if val == "" {
-		return nil, nil
-	}
-	var u domain.User
-	if e := json.Unmarshal([]byte(val), &u); e != nil {
-		return nil, e
-	}
-	if u.Password == "" && u.AuthSource != domain.AuthSourceSAML {
-		return nil, domain.ErrNotFound
-	}
-	// Best-effort migration to v2 layout.
-	if u.Id != "" {
-		// #nosec G117 -- persisted User.Password contains only a one-way password hash.
-		if data, err := json.Marshal(&u); err == nil {
-			_ = r.client.HSet(ctx, usersHashV2, u.Id, data).Err()
-			_ = r.client.Set(ctx, userByEmailKeyNS+email, u.Id, 0).Err()
+		user, err := r.importLegacyEmailUser(ctx, email)
+		if err != redis.TxFailedErr {
+			return user, err
 		}
 	}
-	return &u, nil
+	return nil, errDirectoryRetry
 }
 
 func (r *redisRepo) FindByID(ctx context.Context, userID string) (*domain.User, error) {

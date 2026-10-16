@@ -212,21 +212,17 @@ func (s *userService) SignInWithOobCode(ctx context.Context, req domain.SignInWi
 		return nil, domain.ErrRateLimited
 	}
 
-	oobEmail, err := s.repo.ConsumeOobCode(ctx, code, "EMAIL_SIGNIN")
+	u, err := s.consumeAccountOOB(ctx, code, "EMAIL_SIGNIN")
 	if err != nil {
-		if errors.Is(err, domain.ErrInvalidOob) {
-			return nil, domain.ErrInvalidOob
+		if errors.Is(err, domain.ErrInvalidOob) || errors.Is(err, domain.ErrInvalidCreds) {
+			return nil, err
 		}
 		return nil, domain.ErrAuthenticationUnavailable
 	}
-	if !strings.EqualFold(oobEmail, email) {
+	if u == nil || !strings.EqualFold(u.Email, email) {
 		return nil, domain.ErrInvalidOob
 	}
 
-	u, findErr := s.repo.FindByEmail(ctx, oobEmail)
-	if findErr != nil || u == nil {
-		return nil, domain.ErrInvalidCreds
-	}
 	if u.Status != domain.UserStatusActive {
 		return nil, domain.ErrInvalidCreds
 	}
@@ -1340,7 +1336,7 @@ func (s *userService) SendOob(ctx context.Context, req domain.SendOobReq) (*doma
 		return nil, domain.ErrNotFound
 	}
 	code := uuid.NewString()
-	if err := s.repo.SaveOobCode(ctx, code, email, reqType); err != nil {
+	if err := s.saveAccountOOB(ctx, code, u, reqType); err != nil {
 		return nil, err
 	}
 	return &domain.SendOobResp{
@@ -1446,7 +1442,7 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 	}
 
 	code := uuid.NewString()
-	if err := s.repo.SaveOobCode(ctx, code, email, reqType); err != nil {
+	if err := s.saveAccountOOB(ctx, code, u, reqType); err != nil {
 		return nil, err
 	}
 
@@ -1459,7 +1455,7 @@ func (s *userService) SendOobForTenant(ctx context.Context, tenantID string, req
 	}, nil
 }
 
-// ResetPassword exchanges an OOB code for the stored email and updates the password hash.
+// ResetPassword updates only the immutable account generation bound to the OOB credential.
 func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq) error {
 	code := strings.TrimSpace(req.OobCode)
 	newPassword := req.NewPassword
@@ -1467,12 +1463,14 @@ func (s *userService) ResetPassword(ctx context.Context, req domain.ResetPwdReq)
 		return domain.ErrInvalidArgument
 	}
 
-	email, e := s.repo.ConsumeOobCode(ctx, code, "PASSWORD_RESET")
+	u, e := s.consumeAccountOOB(ctx, code, "PASSWORD_RESET")
 	if e != nil {
+		if errors.Is(e, domain.ErrNotFound) {
+			return domain.ErrNotFound
+		}
 		return domain.ErrInvalidOob
 	}
-	u, e2 := s.repo.FindByEmail(ctx, email)
-	if e2 != nil || u == nil {
+	if u == nil {
 		return domain.ErrNotFound
 	}
 	if !passwordCredentialEligible(u) {
