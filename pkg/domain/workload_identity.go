@@ -150,6 +150,10 @@ type WorkloadTokenExchangeReq struct {
 	// "<tenantId>.<topicName>". The request never carries cluster, namespace,
 	// ServiceAccount or UIDs: those come only from the verified subject token.
 	CodeQTopicID string `json:"codeqTopicId,omitempty"`
+	// LogsGrant selects real installation/ObservabilityConfig authority (ADR-0023).
+	LogsGrant            string `json:"logsGrant,omitempty"`
+	LogsConfigUID        string `json:"configUID,omitempty"`
+	LogsConfigGeneration int64  `json:"configGeneration,omitempty"`
 }
 
 // WorkloadExchangeError is a client-safe refusal with a stable code and the

@@ -107,6 +107,13 @@ config:
     # ADR-0022 R4 retirement flags. Defaults keep today's legacy behaviour.
     scopedWorkloadBindings: false
     legacyCodeQAdminGrant: true
+    managedLogs:
+      enabled: false
+      authorityUrl: ""
+      accessTokenTtlSeconds: 300
+      dependencyTimeoutSeconds: 2
+      maximumConcurrent: 8
+      perIdentityPerMinute: 12
     # ADR-0022 C3 binding-scoped CodeQ grant. Default off; every provider
     # needs a clusterRef when enabled. Tikti never calls authorityUrl at startup.
     codeqBindings:

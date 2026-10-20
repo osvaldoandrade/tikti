@@ -13,7 +13,7 @@ func TestCompiledPolicyVersionDigestAndNamespaceBoundary(t *testing.T) {
 		t.Fatalf("compiled policy: %v", err)
 	}
 	digest := sha256.Sum256(manifestJSON)
-	if PolicyVersion != "2026-09-23.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
+	if PolicyVersion != "2026-10-19.1" || hex.EncodeToString(digest[:]) != ManifestSHA256 {
 		t.Fatalf("unexpected policy identity: %s %x", PolicyVersion, digest)
 	}
 	tests := []struct {

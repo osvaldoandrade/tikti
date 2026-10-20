@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026-09-23.1",
+  "policyVersion": "2026-10-19.1",
   "scopes": [
     {
       "scope": "code-admin:audit:read",
@@ -88,6 +88,12 @@
       "scope": "code-admin:identity:write",
       "boundary": "tenant",
       "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:logs:platform:read",
+      "boundary": "global",
+      "tenantAssignable": false,
+      "reason": "Platform log access is restricted to explicit home platform authority."
     },
     {
       "scope": "code-admin:logs:read",

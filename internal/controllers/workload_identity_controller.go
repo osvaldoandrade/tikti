@@ -1,13 +1,13 @@
 package controllers
 
 import (
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/osvaldoandrade/tikti/internal/managedlogs"
 
 	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
@@ -69,18 +69,11 @@ func (c *workloadIdentityController) RevokeBinding(ctx *gin.Context) {
 
 func decodeWorkloadIdentityJSON(ctx *gin.Context, destination interface{}) error {
 	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, maxWorkloadIdentityRequestBytes)
-	decoder := json.NewDecoder(ctx.Request.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil {
+	raw, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
 		return err
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			return errors.New("multiple JSON values")
-		}
-		return err
-	}
-	return nil
+	return managedlogs.Decode(raw, destination)
 }
 
 func writeInvalidWorkloadIdentityRequest(ctx *gin.Context, err error) {

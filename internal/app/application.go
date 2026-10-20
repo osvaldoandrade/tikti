@@ -58,6 +58,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	if err := cfg.ValidateCodeQBindings(); err != nil {
 		return nil, err
 	}
+	if err := cfg.ValidateManagedLogs(); err != nil {
+		return nil, err
+	}
 	if err := cfg.ValidateTenantRuntimeAuthority(); err != nil {
 		return nil, err
 	}
@@ -162,6 +165,12 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		return nil, err
 	}
 	workloadOptions = append(workloadOptions, codeqBindingOption)
+	logsOption, err := newManagedLogsOption(cfg, retainedTenants)
+	if err != nil {
+		_ = redisClient.Close()
+		return nil, err
+	}
+	workloadOptions = append(workloadOptions, logsOption)
 	workloadService := services.NewWorkloadIdentityService(
 		workloadRepo,
 		workloadVerifier,

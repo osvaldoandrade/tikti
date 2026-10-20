@@ -15,6 +15,7 @@ helm-test:
 	bash hack/test-codeq-binding-chart.sh
 	bash hack/test-storage-sts-chart.sh
 	bash hack/test-tenant-runtime-chart.sh
+	go test ./pkg/config -run '^TestManagedLogsHelmContract$$' -count=1
 
 test-sql-contract:
 	go test -count=1 ./internal/repository ./internal/app ./internal/services ./internal/testredis ./pkg/config -run '^TestSQLTenantRuntime'

@@ -98,6 +98,8 @@ data:
     workloadIdentity:
       codeqTopicController:
         {{- toYaml .Values.config.workloadIdentity.codeqTopicController | nindent 8 }}
+      managedLogs:
+        {{- toYaml .Values.config.workloadIdentity.managedLogs | nindent 8 }}
       clusterRef: {{ .Values.config.workloadIdentity.clusterRef | quote }}
       issuer: {{ .Values.config.workloadIdentity.issuer | quote }}
       audience: {{ .Values.config.workloadIdentity.audience | quote }}

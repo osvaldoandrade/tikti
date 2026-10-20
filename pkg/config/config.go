@@ -126,6 +126,7 @@ type WorkloadIdentityConfig struct {
 	LegacyCodeQAdminGrant *bool `yaml:"legacyCodeQAdminGrant"`
 	// CodeQBindings is the default-off ADR-0022 C3 binding-scoped CodeQ grant.
 	CodeQBindings CodeQBindingsConfig `yaml:"codeqBindings"`
+	ManagedLogs   ManagedLogsConfig   `yaml:"managedLogs"`
 }
 
 // LegacyCodeQAdminGrantEnabled resolves the default-true legacy grant flag.
@@ -761,6 +762,10 @@ func LoadConfig(filePath string) (*Config, error) {
 		return nil, err
 	}
 	c.WorkloadIdentity.CodeQBindings.applyDefaults()
+	c.WorkloadIdentity.ManagedLogs.applyDefaults()
+	if err := c.ValidateManagedLogs(); err != nil {
+		return nil, err
+	}
 	if err := c.ValidateCodeQBindings(); err != nil {
 		return nil, err
 	}

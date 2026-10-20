@@ -437,6 +437,9 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		}
 		scopes = canonicalScopes
 	}
+	if slices.Contains(scopes, managedLogsPlatformReadScope) && !s.managedLogsPlatformIssuance(ctx, u, claims, req, tenantID) {
+		return nil, domain.ErrUnauthorizedScope
+	}
 
 	eventTypes := normalizeList(req.EventTypes)
 	if req.Audience == "codeq-worker" && len(eventTypes) == 0 {
@@ -694,6 +697,9 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 		return nil, domain.ErrPasswordChangeRequired
 	}
 	if !s.currentPlatformAuthorityValid(u, claims) {
+		return nil, domain.ErrInvalidToken
+	}
+	if slices.Contains(strings.Fields(claimStringValue(claims, "scope")), managedLogsPlatformReadScope) && (audience != domain.CodeAdminAudienceClientID || !s.managedLogsPlatformAuthority(ctx, u, claims)) {
 		return nil, domain.ErrInvalidToken
 	}
 	if u.TokenVersion != version {

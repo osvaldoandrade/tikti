@@ -75,6 +75,7 @@ type workloadIdentityService struct {
 	refuseLegacyCodeQAdmin bool
 	metrics                *WorkloadIdentityMetrics
 	codeqBindings          *codeqBindingExchange
+	managedLogs            *managedLogsExchange
 
 	keyOnce sync.Once
 	key     *rsa.PrivateKey
@@ -107,6 +108,12 @@ func NewWorkloadIdentityService(
 }
 
 func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error) {
+	if req.LogsGrant != "" {
+		return s.exchangeManagedLogs(ctx, req)
+	}
+	if req.LogsConfigUID != "" || req.LogsConfigGeneration != 0 {
+		return nil, domain.ErrInvalidArgument
+	}
 	// A non-empty codeqTopicId always selects the ADR-0022 grant, before every
 	// other branch, so it can never fall through to a legacy grant.
 	if req.CodeQTopicID != "" {
