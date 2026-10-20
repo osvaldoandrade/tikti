@@ -75,10 +75,23 @@ func TestLogsAuthorityHTTPIsStrictBoundedAndNonCacheable(t *testing.T) {
 func safelyUnreachableURL() string { return "https://127.0.0.1:1/not-allowed" }
 
 func TestLogsAuthorityRejectsAmbiguousRequestJSON(t *testing.T) {
-	for _, raw := range []string{`{"logsGrant":"Ingest","logsGrant":"Resolve"}`, `{"Identity":{}}`, `{"identity":{"namespace":"a","Namespace":"b"}}`, `{"unknown":"secret-sentinel"}`, `{} {}`} {
+	for _, raw := range []string{`{"logsGrant":"Ingest","logsGrant":"Resolve"}`, `{"Identity":{}}`, `{"identity":{"namespace":"a","Namespace":"b"}}`, `{"grantKind":"LogRetentionPolicy","grantKind":"ObservabilityConfig"}`, `{"GrantKind":"LogRetentionPolicy"}`, `{"unknown":"secret-sentinel"}`, `{} {}`} {
 		var r Request
 		if Decode([]byte(raw), &r) == nil {
 			t.Fatal("ambiguous JSON accepted")
+		}
+	}
+}
+
+func TestLogsAuthorityDecisionRejectsPolicyKindOutsideSubscribe(t *testing.T) {
+	for _, operation := range []string{"Ingest", "Resolve", "Publish", "Subscribe"} {
+		r := Request{SchemaVersion: Version, RequestID: "request-1", Operation: operation, GrantKind: "LogRetentionPolicy", TenantID: "conveste", ConfigUID: "native-policy", ConfigGeneration: 4}
+		d := Decision{SchemaVersion: Version, RequestID: r.RequestID, Allowed: true, Reason: "Resolved", InstallationID: "installation", ClusterUID: "cluster", GrantUID: r.ConfigUID, GrantGeneration: r.ConfigGeneration, TenantID: r.TenantID, TopicID: "conveste.cf-logs", RetentionSeconds: 3600}
+		if operation == "Ingest" || operation == "Resolve" {
+			d.TenantID, d.TopicID, d.RetentionSeconds = "", "", 0
+		}
+		if ValidDecision(r, d) != (operation == "Subscribe") {
+			t.Fatal("retained policy decision accepted incompatible operation")
 		}
 	}
 }

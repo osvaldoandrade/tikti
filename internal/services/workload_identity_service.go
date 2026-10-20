@@ -111,7 +111,7 @@ func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.Workl
 	if req.LogsGrant != "" {
 		return s.exchangeManagedLogs(ctx, req)
 	}
-	if req.LogsConfigUID != "" || req.LogsConfigGeneration != 0 {
+	if req.LogsGrantKind != "" || req.LogsConfigUID != "" || req.LogsConfigGeneration != 0 {
 		return nil, domain.ErrInvalidArgument
 	}
 	// A non-empty codeqTopicId always selects the ADR-0022 grant, before every

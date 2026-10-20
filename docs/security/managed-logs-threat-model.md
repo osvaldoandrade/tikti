@@ -22,8 +22,11 @@ UIDs, and ask Code Admin to match tenant placement and source configuration.
 - A forged or unbound projected JWT cannot obtain a Logs grant: canonical
   subject, trusted provider, exact audience, signed UIDs and expiry are required.
 - Tenant and topic injection cannot broaden a grant: Ingest/Resolve have no
-  tenant selectors; Publish/Subscribe match one real config lifetime, one ACTIVE
-  tenant and the exact `cf-logs` topic and policy.
+  tenant selectors; Publish matches an enabled config lifetime. Subscribe may
+  select that config or the real retained policy lifetime, so accepted work can
+  drain after collection stops. Both require one ACTIVE tenant and the exact
+  `cf-logs` topic and policy. A retained policy grant cannot publish, ingest or
+  resolve sources; unknown/mixed kinds and changed native lifetimes are refused.
 - A caller cannot combine the Logs selector with legacy CodeQ selectors, admin
   scopes or an arbitrary audience. Every Logs attempt is handled explicitly.
 - A compromised or redirected authority cannot silently change tenant/topic:

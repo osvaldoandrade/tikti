@@ -39,6 +39,7 @@ type Request struct {
 	SchemaVersion    string   `json:"schemaVersion"`
 	RequestID        string   `json:"requestId"`
 	Operation        string   `json:"operation"`
+	GrantKind        string   `json:"grantKind,omitempty"`
 	Identity         Identity `json:"identity"`
 	TenantID         string   `json:"tenantId,omitempty"`
 	ConfigUID        string   `json:"configUID,omitempty"`
@@ -62,9 +63,24 @@ type Authority interface {
 	Authorize(context.Context, Request, string) (Decision, error)
 }
 
+// ValidGrantKind keeps retained-policy authority subscribe-only. Omitted kind
+// preserves the original ObservabilityConfig contract for queue grants.
+func ValidGrantKind(operation, kind string) bool {
+	switch operation {
+	case "Ingest", "Resolve":
+		return kind == ""
+	case "Publish":
+		return kind == "" || kind == "ObservabilityConfig"
+	case "Subscribe":
+		return kind == "" || kind == "ObservabilityConfig" || kind == "LogRetentionPolicy"
+	default:
+		return false
+	}
+}
+
 // ValidDecision rejects alternate tenant semantics and malformed successful grants.
 func ValidDecision(r Request, d Decision) bool {
-	if d.SchemaVersion != Version || d.RequestID != r.RequestID {
+	if !ValidGrantKind(r.Operation, r.GrantKind) || d.SchemaVersion != Version || d.RequestID != r.RequestID {
 		return false
 	}
 	if !d.Allowed {

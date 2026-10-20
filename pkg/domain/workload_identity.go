@@ -150,8 +150,11 @@ type WorkloadTokenExchangeReq struct {
 	// "<tenantId>.<topicName>". The request never carries cluster, namespace,
 	// ServiceAccount or UIDs: those come only from the verified subject token.
 	CodeQTopicID string `json:"codeqTopicId,omitempty"`
-	// LogsGrant selects real installation/ObservabilityConfig authority (ADR-0023).
+	// LogsGrant selects real installation/config authority (ADR-0023).
+	// grantKind defaults to ObservabilityConfig for queue grants; only Subscribe
+	// may instead select the retained LogRetentionPolicy/default UID/generation.
 	LogsGrant            string `json:"logsGrant,omitempty"`
+	LogsGrantKind        string `json:"grantKind,omitempty"`
 	LogsConfigUID        string `json:"configUID,omitempty"`
 	LogsConfigGeneration int64  `json:"configGeneration,omitempty"`
 }

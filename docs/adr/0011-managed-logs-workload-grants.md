@@ -35,10 +35,18 @@ Four grants are supported:
 | Publish | `codeq-producer` | Only `codeq:publish`, one `<tenant>.cf-logs` topic |
 | Subscribe | `codeq-worker` | Only abandon/claim/heartbeat/nack/result for the same one topic |
 
-Queue grants use the existing ADR-0022 `codeq_binding` carrier, with the actual
-ObservabilityConfig UID/generation as the grant lifetime. The retained tenant
-must be ACTIVE. They cannot request the topic-management scope, wildcard topic,
-another audience, or an unrelated ResourceBinding. Grants are not cached.
+Queue grants use the existing ADR-0022 `codeq_binding` carrier. The optional
+top-level `grantKind` defaults to `ObservabilityConfig`, with the actual enabled
+config UID/generation as the grant lifetime. Only Subscribe may instead select
+`LogRetentionPolicy`: `configUID`/`configGeneration` then identify the real
+retained tenant policy `default`. This permits draining accepted batches after
+the last source is deleted or disabled. The authority must match that current
+native policy lifetime; missing, deleting, replaced or mismatched policies
+refuse issuance. Publish cannot use a policy grant, and Ingest/Resolve accept
+no kind selector. Unknown kinds or kind without `logsGrant` are refused.
+The retained tenant must be ACTIVE. Queue grants cannot request the
+topic-management scope, wildcard topic, another audience, or an unrelated
+ResourceBinding. Grants are not cached.
 
 Access tokens expire within 300 seconds and no later than the projected
 subject; Resolve expires within 60 seconds. A subject with less than 30 seconds

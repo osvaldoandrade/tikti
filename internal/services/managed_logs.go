@@ -43,7 +43,7 @@ func WithManagedLogs(cfg ManagedLogsExchangeConfig, authority managedlogs.Author
 }
 
 func logsExchangeShape(r domain.WorkloadTokenExchangeReq) ([]string, bool) {
-	if r.SubjectTokenType != domain.WorkloadSubjectTokenType || strings.TrimSpace(r.SubjectToken) == "" || r.CodeQTopicID != "" {
+	if r.SubjectTokenType != domain.WorkloadSubjectTokenType || strings.TrimSpace(r.SubjectToken) == "" || r.CodeQTopicID != "" || !managedlogs.ValidGrantKind(r.LogsGrant, r.LogsGrantKind) {
 		return nil, false
 	}
 	var scopes []string
@@ -129,7 +129,7 @@ func (s *workloadIdentityService) exchangeManagedLogs(ctx context.Context, r dom
 	default:
 		return refuse(503, "LogsAuthorityBusy")
 	}
-	request := managedlogs.Request{SchemaVersion: managedlogs.Version, RequestID: uuid.NewString(), Operation: r.LogsGrant, Identity: managedlogs.Identity{ClusterRef: subject.ClusterRef, Namespace: subject.Namespace, ServiceAccountName: subject.ServiceAccount, ServiceAccountUID: subject.ServiceAccountUID, PodUID: subject.PodUID}, TenantID: r.TenantID, ConfigUID: r.LogsConfigUID, ConfigGeneration: r.LogsConfigGeneration}
+	request := managedlogs.Request{SchemaVersion: managedlogs.Version, RequestID: uuid.NewString(), Operation: r.LogsGrant, GrantKind: r.LogsGrantKind, Identity: managedlogs.Identity{ClusterRef: subject.ClusterRef, Namespace: subject.Namespace, ServiceAccountName: subject.ServiceAccount, ServiceAccountUID: subject.ServiceAccountUID, PodUID: subject.PodUID}, TenantID: r.TenantID, ConfigUID: r.LogsConfigUID, ConfigGeneration: r.LogsConfigGeneration}
 	assertion, err := s.signLogsAssertion(managedlogs.AuthoritySubject)
 	if err != nil {
 		return refuse(503, "IdentityUnavailable")
