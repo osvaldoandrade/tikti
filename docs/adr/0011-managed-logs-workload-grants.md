@@ -26,7 +26,7 @@ or redirected, and grant responses must be non-cacheable and match the request.
 The authority receives a signed service assertion for audience
 `code-admin-logs-authority`, subject `tikti:logs-exchange`, lifetime 60 seconds.
 
-Four grants are supported:
+The original grants are supported unchanged:
 
 | Grant | Access audience | Authority |
 | --- | --- | --- |
@@ -34,6 +34,40 @@ Four grants are supported:
 | Resolve | `code-admin-logs-authority` | Exact service subject `runtime:logs-api`; no user scopes or tenant |
 | Publish | `codeq-producer` | Only `codeq:publish`, one `<tenant>.cf-logs` topic |
 | Subscribe | `codeq-worker` | Only abandon/claim/heartbeat/nack/result for the same one topic |
+
+### Dedicated native store grants (2026-10-20)
+
+`CefasBootstrap` and `CefasRuntime` additionally use the exact fixed audience
+`code-admin-logs-store`. Neither accepts tenant, kind, config or CodeQ selectors.
+Scopes must equal the operation's fixed set without missing, extra, duplicate or
+whitespace-normalized entries; the signer uses fresh server-defined scope sets,
+not caller-selected permissions. Bootstrap receives `cefas:table:create` and
+`cefas:table:describe`. Runtime receives describe, item read/write/delete and
+query on `logs-events`, and item read/write on `logs-state`. The API must grant
+that exact operation to the verified native principal and return installation,
+cluster and grant UID/generation only. It separates the bootstrap native
+ServiceAccount UID from all other roles. Existing grants never imply store
+rights, and the human exchange rejects this reserved audience even for ADMIN,
+custom clients, default scopes or legacy requests.
+
+Tokens use the existing RS256/JWKS signer, verified workload subject, jti, exact
+audience, fixed scope and original-subject-capped <=300-second lifetime. They
+contain no tenant, role, CodeQ, collector or human authority. The native store
+already supports JWT/JWKS validation and needs no auth code change. Since
+global describe also reads CDC, this credential is only for a dedicated
+Logs-only datastore. No general workload audience/binding, new endpoint, field,
+dependency, signing key, long-lived secret or automatic platform role is added.
+
+The runtime exchanges its rotating projected subject on demand and retains
+access tokens only in bounded memory. API/identity failure denies renewal; no
+expired token, static fallback or human credential is used. Already issued
+bearers remain valid until expiry plus configured native clock skew.
+
+Activation installs the human-audience guard before enabling the native store
+listener and grants. The guard prevents new issuance and does not invalidate a
+previously issued human JWT. This source work observed neither historical
+tokens nor an active dedicated Logs store; it does not inspect or expose token
+inventories to claim retroactive revocation.
 
 Queue grants use the existing ADR-0022 `codeq_binding` carrier. The optional
 top-level `grantKind` defaults to `ObservabilityConfig`, with the actual enabled
@@ -62,6 +96,12 @@ request fields are unchanged. No signing key, role, IdP or credential migration
 is introduced. Disable `managedLogs.enabled` to stop new grants, then allow at
 most 300 seconds for issued access tokens to expire. Retain existing signing
 keys while those tokens remain valid.
+
+New Tikti with an older API cannot obtain native store grants; an old Tikti
+refuses those new operations. The original four operations work unchanged in
+either direction. Before downgrading the API, remove the two new principal
+enums because older configuration validation refuses them. The shared version
+and fields remain unchanged; this is a fail-closed additive private enum.
 
 Human platform log reads use the new reserved
 `code-admin:logs:platform:read` permission in scope policy `2026-10-19.1`

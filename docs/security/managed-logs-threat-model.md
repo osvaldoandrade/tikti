@@ -2,6 +2,32 @@
 
 Task: CFP-115; date: 2026-10-19
 
+The 2026-10-20 native-store extension adds two explicit installation roles:
+`CefasBootstrap` and `CefasRuntime`. Both accept only the exact reserved
+`code-admin-logs-store` audience and their fixed scopes; neither accepts tenant,
+kind, config or topic selectors. Native identity comes only from the projected
+token verifier. The API pins operation, physical cluster, namespace, SA UID and
+grant UID/generation, and rejects bootstrap identity overlap even through
+aliases. No existing Logs/CodeQ grant implies native storage authority. Human
+exchange cannot issue this audience, including through ADMIN/client defaults or
+legacy paths. Responses carry no unrelated identity/tenant authority. A forged,
+unavailable, old or malformed authority cannot cause fallback issuance.
+
+The JWT grants are bearer permissions until their <=300-second original-subject
+bounded expiry plus configured native clock skew; API policy removal stops
+renewal, not immediate native use. Native global describe includes CDC reads,
+so packaging must isolate a Logs-only datastore from other Cefas data. A
+compromised runtime can access that datastore's tenant Logs and every table's
+CDC; the datastore must therefore contain only Logs data. It has no DDL,
+wildcard or cluster-admin permission. Bootstrap is separate,
+short-lived and installation-owned. No token is persisted or logged by the
+exchange. The existing runtime renewer must keep access tokens only in bounded
+memory and fail closed after expiration.
+
+Install the human-audience guard before enabling the dedicated native listener
+and grants. This guard blocks future issuance, not already signed human JWTs.
+No token inventory or historical revocation is claimed by this source change.
+
 ## Assets and trust boundaries
 
 The assets are short-lived ingest assertions, per-topic CodeQ credentials and

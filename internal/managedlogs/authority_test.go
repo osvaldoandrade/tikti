@@ -101,3 +101,35 @@ func FuzzLogsStrictDecoder(f *testing.F) {
 	f.Add([]byte(`{"identity":{"namespace":"x"},"identity":{}}`))
 	f.Fuzz(func(t *testing.T, raw []byte) { var d Decision; _ = Decode(raw, &d) })
 }
+
+func TestLogsStoreDecisionsHaveNoTenantOrQueueAuthority(t *testing.T) {
+	for _, operation := range []string{"CefasBootstrap", "CefasRuntime"} {
+		for _, kind := range []string{"valid", "kind", "tenant", "topic", "retention", "grant-uid", "grant-generation", "request-id", "version"} {
+			t.Run(operation+"/"+kind, func(t *testing.T) {
+				r := Request{SchemaVersion: Version, RequestID: "store-1", Operation: operation}
+				d := Decision{SchemaVersion: Version, RequestID: r.RequestID, Allowed: true, Reason: "Resolved", InstallationID: "code", ClusterUID: "native-cluster", GrantUID: "native-store-policy", GrantGeneration: 3}
+				switch kind {
+				case "kind":
+					r.GrantKind = "LogRetentionPolicy"
+				case "tenant":
+					d.TenantID = "tenant-a"
+				case "topic":
+					d.TopicID = "tenant-a.cf-logs"
+				case "retention":
+					d.RetentionSeconds = 300
+				case "grant-uid":
+					d.GrantUID = ""
+				case "grant-generation":
+					d.GrantGeneration = 0
+				case "request-id":
+					d.RequestID = "other"
+				case "version":
+					d.SchemaVersion = "future/v2"
+				}
+				if ValidDecision(r, d) != (kind == "valid") {
+					t.Fatal("native store decision broadened or lost strict compatibility")
+				}
+			})
+		}
+	}
+}

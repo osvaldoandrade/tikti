@@ -153,6 +153,8 @@ type WorkloadTokenExchangeReq struct {
 	// LogsGrant selects real installation/config authority (ADR-0023).
 	// grantKind defaults to ObservabilityConfig for queue grants; only Subscribe
 	// may instead select the retained LogRetentionPolicy/default UID/generation.
+	// CefasBootstrap/CefasRuntime are selectorless installation grants, available
+	// only through this projected exchange with fixed native-store permissions.
 	LogsGrant            string `json:"logsGrant,omitempty"`
 	LogsGrantKind        string `json:"grantKind,omitempty"`
 	LogsConfigUID        string `json:"configUID,omitempty"`

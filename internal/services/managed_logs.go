@@ -58,6 +58,11 @@ func logsExchangeShape(r domain.WorkloadTokenExchangeReq) ([]string, bool) {
 			return nil, false
 		}
 		scopes = []string{}
+	case "CefasBootstrap", "CefasRuntime":
+		if r.Audience != managedlogs.StoreAudience {
+			return nil, false
+		}
+		scopes = managedlogs.StoreScopes(r.LogsGrant)
 	case "Publish":
 		if r.Audience != domain.WorkloadProducerAudience {
 			return nil, false
@@ -76,7 +81,7 @@ func logsExchangeShape(r domain.WorkloadTokenExchangeReq) ([]string, bool) {
 	if len(r.Scopes) != len(scopes) || !slices.Equal(requested, scopes) {
 		return nil, false
 	}
-	if r.LogsGrant == "Ingest" || r.LogsGrant == "Resolve" {
+	if r.LogsGrant == "Ingest" || r.LogsGrant == "Resolve" || r.LogsGrant == "CefasBootstrap" || r.LogsGrant == "CefasRuntime" {
 		return scopes, r.TenantID == "" && r.LogsConfigUID == "" && r.LogsConfigGeneration == 0
 	}
 	return scopes, tenantIDPattern.MatchString(r.TenantID) && r.LogsConfigUID != "" && len(r.LogsConfigUID) <= 128 && r.LogsConfigGeneration > 0
@@ -181,9 +186,15 @@ func (s *workloadIdentityService) issueLogsToken(subject domain.WorkloadSubject,
 	if r.LogsGrant == "Resolve" {
 		claims["sub"] = managedlogs.GatewaySubject
 		claims["nbf"] = now.Add(-5 * time.Second).Unix()
-	} else {
+	} else if r.LogsGrant == "Ingest" {
 		claims["scope"] = "logs:ingest"
 		claims["logs_collector"] = map[string]any{"schemaVersion": managedlogs.CollectorVersion, "installationId": d.InstallationID, "clusterUID": d.ClusterUID, "clusterRef": subject.ClusterRef, "namespace": subject.Namespace, "serviceAccountName": subject.ServiceAccount, "serviceAccountUid": subject.ServiceAccountUID, "podUid": subject.PodUID, "grantUID": d.GrantUID, "grantGeneration": d.GrantGeneration}
+	} else if r.LogsGrant == "CefasBootstrap" || r.LogsGrant == "CefasRuntime" {
+		scopes = managedlogs.StoreScopes(r.LogsGrant)
+		claims["aud"] = managedlogs.StoreAudience
+		claims["scope"] = strings.Join(scopes, " ")
+	} else {
+		return nil, domain.ErrInvalidArgument
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = s.keyID

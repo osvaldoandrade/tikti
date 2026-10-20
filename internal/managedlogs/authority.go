@@ -23,7 +23,21 @@ const (
 	GatewaySubject    = "runtime:logs-api"
 	AuthorityPath     = "/internal/v1/logs-grants:authorize"
 	TopicName         = "cf-logs"
+	StoreAudience     = "code-admin-logs-store"
 )
+
+// StoreScopes are fixed native permissions within the dedicated Logs datastore.
+// Global describe also permits CDC reads, so this must not be a shared store.
+func StoreScopes(operation string) []string {
+	switch operation {
+	case "CefasBootstrap":
+		return []string{"cefas:table:create", "cefas:table:describe"}
+	case "CefasRuntime":
+		return []string{"cefas:item:delete:logs-events", "cefas:item:read:logs-events", "cefas:item:read:logs-state", "cefas:item:write:logs-events", "cefas:item:write:logs-state", "cefas:query:logs-events", "cefas:table:describe"}
+	default:
+		return nil
+	}
+}
 
 var ErrUnavailable = errors.New("logs authority unavailable")
 var safeID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
@@ -67,7 +81,7 @@ type Authority interface {
 // preserves the original ObservabilityConfig contract for queue grants.
 func ValidGrantKind(operation, kind string) bool {
 	switch operation {
-	case "Ingest", "Resolve":
+	case "Ingest", "Resolve", "CefasBootstrap", "CefasRuntime":
 		return kind == ""
 	case "Publish":
 		return kind == "" || kind == "ObservabilityConfig"
@@ -89,7 +103,7 @@ func ValidDecision(r Request, d Decision) bool {
 	if d.Reason != "Resolved" || !safeID.MatchString(d.InstallationID) || !safeID.MatchString(d.ClusterUID) || !safeID.MatchString(d.GrantUID) || d.GrantGeneration < 1 {
 		return false
 	}
-	if r.Operation == "Ingest" || r.Operation == "Resolve" {
+	if r.Operation == "Ingest" || r.Operation == "Resolve" || r.Operation == "CefasBootstrap" || r.Operation == "CefasRuntime" {
 		return d.TenantID == "" && d.TopicID == "" && d.RetentionSeconds == 0
 	}
 	return (r.Operation == "Publish" || r.Operation == "Subscribe") && d.GrantUID == r.ConfigUID && d.GrantGeneration == r.ConfigGeneration && d.TenantID == r.TenantID && d.TopicID == r.TenantID+"."+TopicName && d.RetentionSeconds >= 60 && d.RetentionSeconds <= 2147483647

@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/osvaldoandrade/tikti/internal/managedlogs"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/utils"
@@ -288,7 +289,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if strings.TrimSpace(req.IdToken) == "" {
 		return nil, domain.ErrInvalidToken
 	}
-	if strings.TrimSpace(req.Audience) == "" {
+	if strings.TrimSpace(req.Audience) == "" || req.Audience == managedlogs.StoreAudience {
 		return nil, domain.ErrInvalidAudience
 	}
 
