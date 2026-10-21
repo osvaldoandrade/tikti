@@ -16,6 +16,13 @@ func TestClientRepoReconcileExistingAudienceScopesCAS(t *testing.T) {
 			t.Run(owner+"/"+change, func(t *testing.T) {
 				ctx := context.Background()
 				redisClient, repo := newClientRepoForTest(t)
+				hook := &rejectEvalSHAHook{}
+				redisClient.AddHook(hook)
+				t.Cleanup(func() {
+					if hook.calls != 0 {
+						t.Errorf("audience reconciliation depended on %d EVALSHA commands", hook.calls)
+					}
+				})
 				current := &domain.Client{Id: domain.CodeAdminAudienceClientID, TenantId: domain.MasterTenantID,
 					Type: domain.ClientTypePublic, Status: domain.ClientStatusActive,
 					AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)}, DefaultScopes: []string{"code-admin:logs:read"}}

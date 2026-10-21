@@ -55,7 +55,9 @@ func (r *clientRepo) ReconcileCodeAdminAudienceScopes(
 	if managed {
 		owner = "managed"
 	}
-	result, err := existingAudienceScopesScript.Run(ctx, r.client,
+	// Kvrocks prefixes cache misses with ERR NOSCRIPT, which go-redis v8
+	// does not recognize for its EVALSHA fallback. Execute this CAS directly.
+	result, err := existingAudienceScopesScript.Eval(ctx, r.client,
 		[]string{clientsKey(tenantID), managedClientsKey(tenantID)},
 		current.Id, before, after, owner).Text()
 	if err != nil {
