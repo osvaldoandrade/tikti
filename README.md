@@ -91,6 +91,18 @@ home tenant; it creates or verifies the MASTER tenant, an exact tenant-safe
 missing administrator or conflicting object stops the job before authority is
 granted.
 
+To reconcile only existing Code Admin audience ceilings, set
+`TIKTI_BOOTSTRAP_RECONCILE_AUDIENCES_ONLY=true` and
+`TIKTI_BOOTSTRAP_ACKNOWLEDGE_IDEMPOTENT=true`, with `REDIS_ADDR`, the existing
+Redis credential file, `TIKTI_BOOTSTRAP_AUDIENCE=code-admin-api` and
+`TIKTI_BOOTSTRAP_SCOPES`. This mode needs no user email, password or hash. It
+updates only `DefaultScopes` on active Tikti-managed audiences and the exact
+credential-free PUBLIC bootstrap audience `local-tenant/code-admin-api`, using
+conditional writes that preserve client ownership. Missing or unowned clients
+are not created or adopted; users, roles, assignments and brokers are untouched.
+Deploy the supporting binary before running the mode. To revert a ceiling,
+rerun it with the previously recorded scopes before rolling back the binary.
+
 ## CLI
 
 The CLI stores connection profiles in `~/.tikti/config.yaml`. Each profile holds a base URL, API key, and preferred tenant.

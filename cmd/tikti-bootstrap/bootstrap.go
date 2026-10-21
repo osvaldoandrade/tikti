@@ -26,6 +26,7 @@ type settings struct {
 	password         string
 	passwordHash     string
 	existingUserOnly bool
+	audiencesOnly    bool
 	audience         string
 	scopes           []string
 	workloadSubject  string
@@ -318,7 +319,8 @@ func conflictOr(err error, fallback error) error {
 
 // reconcileManagedCodeAdminAudiences propagates the installation's current
 // Code Admin audience ceiling to every active tenant audience owned by Tikti.
-// Legacy PUBLIC home audiences have a different owner and remain untouched.
+// Legacy PUBLIC home audiences normally remain untouched. audiencesOnly also
+// updates the exact bootstrap MASTER audience, but never creates or adopts one.
 func reconcileManagedCodeAdminAudiences(ctx context.Context, data stores, cfg settings) error {
 	if data.tenants == nil || data.clients == nil || cfg.audience != domain.CodeAdminAudienceClientID {
 		return fmt.Errorf("managed Code Admin audience reconciliation is invalid")
@@ -336,7 +338,7 @@ func reconcileManagedCodeAdminAudiences(ctx context.Context, data stores, cfg se
 		}
 		for index := range tenants {
 			tenant := &tenants[index]
-			if tenant.Id == domain.MasterTenantID || tenant.Status != domain.TenantStatusActive {
+			if tenant.Status != domain.TenantStatusActive || tenant.Id == domain.MasterTenantID && !cfg.audiencesOnly {
 				continue
 			}
 			desired := &domain.Client{
@@ -352,6 +354,20 @@ func reconcileManagedCodeAdminAudiences(ctx context.Context, data stores, cfg se
 			legacyPublic := *desired
 			legacyPublic.Type = domain.ClientTypePublic
 			legacyPublic.ManagedBy = ""
+			if cfg.audiencesOnly {
+				bootstrapHome := tenant.Id == domain.MasterTenantID && sameLegacyHomeAudienceOwner(current, &legacyPublic)
+				if !domain.IsManagedCodeAdminAudience(tenant.Id, current) && !bootstrapHome {
+					continue
+				}
+				reconciler, ok := data.clients.(repository.ExistingAudienceScopeReconciler)
+				if !ok {
+					return fmt.Errorf("audience-only reconciliation requires conditional client updates")
+				}
+				if _, err := reconciler.ReconcileCodeAdminAudienceScopes(ctx, tenant.Id, current, desiredScopes); err != nil {
+					return fmt.Errorf("reconcile tenant %q audience ceiling: %w", tenant.Id, err)
+				}
+				continue
+			}
 			if sameLegacyHomeAudienceOwner(current, &legacyPublic) {
 				continue
 			}

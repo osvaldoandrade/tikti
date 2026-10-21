@@ -438,8 +438,19 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 		}
 		scopes = canonicalScopes
 	}
-	if slices.Contains(scopes, managedLogsPlatformReadScope) && !s.managedLogsPlatformIssuance(ctx, u, claims, req, tenantID) {
-		return nil, domain.ErrUnauthorizedScope
+	if slices.Contains(scopes, managedLogsPlatformReadScope) {
+		discoverAtPrincipal := discoveryExchangeV2 && len(req.Scopes) == 0 && tenantID == discovery.principalTenantID
+		if !s.managedLogsPlatformIssuance(ctx, u, claims, req, tenantID, discoverAtPrincipal) {
+			if !discoveryExchange || len(req.Scopes) > 0 {
+				return nil, domain.ErrUnauthorizedScope
+			}
+			// A shared audience ceiling is not a platform grant. Omit only this
+			// permission from automatic discovery, preserving ordinary tenant login.
+			scopes = slices.DeleteFunc(scopes, func(scope string) bool { return scope == managedLogsPlatformReadScope })
+			if len(scopes) == 0 {
+				return nil, domain.ErrUnauthorizedScope
+			}
+		}
 	}
 
 	eventTypes := normalizeList(req.EventTypes)
@@ -550,7 +561,7 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	if discoveryExchange {
 		response.PrincipalTenantID = discovery.principalTenantID
 		response.AuthorizedTenants = append([]string(nil), discovery.authorizedTenants...)
-		response.Scopes = append([]string(nil), discovery.scopes...)
+		response.Scopes = append([]string(nil), scopes...)
 	}
 	return response, nil
 }

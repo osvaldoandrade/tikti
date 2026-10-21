@@ -22,6 +22,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "refusing bootstrap without TIKTI_BOOTSTRAP_ACKNOWLEDGE_IDEMPOTENT=true")
 		os.Exit(1)
 	}
+	if booleanEnvironment("TIKTI_BOOTSTRAP_RECONCILE_AUDIENCES_ONLY") {
+		if err := reconcileAudiencesOnlyFromEnvironment(); err != nil {
+			fmt.Fprintln(os.Stderr, "Tikti audience-only reconciliation failed:", err)
+			os.Exit(1)
+		}
+		fmt.Println("Tikti managed audience ceilings are reconciled")
+		return
+	}
 	redisAddress := required("REDIS_ADDR")
 	password, err := optionalSecretFile("TIKTI_BOOTSTRAP_PASSWORD_FILE", "TIKTI_BOOTSTRAP_PASSWORD")
 	if err != nil {
@@ -89,6 +97,34 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("Tikti bootstrap is ready for tenant", cfg.tenantID)
+}
+
+// This entry point deliberately reads no bootstrap user credentials or broker
+// configuration, and constructs no stores capable of changing identities.
+func reconcileAudiencesOnlyFromEnvironment() error {
+	address := strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	cfg := settings{
+		audiencesOnly: true,
+		audience:      strings.TrimSpace(os.Getenv("TIKTI_BOOTSTRAP_AUDIENCE")),
+		scopes:        splitScopes(os.Getenv("TIKTI_BOOTSTRAP_SCOPES")),
+	}
+	if address == "" || cfg.audience != domain.CodeAdminAudienceClientID || len(cfg.scopes) == 0 {
+		return fmt.Errorf("Redis address, Code Admin audience and scopes are required")
+	}
+	password, err := optionalSecretFile("REDIS_PASSWORD_FILE", "REDIS_PASSWORD")
+	if err != nil {
+		return fmt.Errorf("Redis credential file is invalid: %w", err)
+	}
+	client := redis.NewClient(&redis.Options{Addr: address, Password: password})
+	defer func() { _ = client.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("Tikti audience reconciliation could not reach Redis")
+	}
+	return reconcileManagedCodeAdminAudiences(ctx, stores{
+		tenants: repository.NewTenantRepo(client), clients: repository.NewClientRepo(client),
+	}, cfg)
 }
 
 func parseAccountBrokerSettings(raw string) ([]accountBrokerSettings, error) {

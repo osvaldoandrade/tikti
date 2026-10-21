@@ -28,8 +28,13 @@ func (s *userService) managedLogsPlatformAuthority(ctx context.Context, user *do
 	return err == nil && assignment != nil && assignment.TenantID == domain.MasterTenantID && assignment.PrincipalType == domain.AccessPrincipalUser && assignment.PrincipalID == user.Id && slices.Equal(assignment.Roles, []string{string(domain.RoleAdmin)})
 }
 
-func (s *userService) managedLogsPlatformIssuance(ctx context.Context, user *domain.User, claims jwt.MapClaims, request domain.TokenExchangeReq, tenant string) bool {
-	if request.Audience != domain.CodeAdminAudienceClientID || !slices.Contains(request.Scopes, managedLogsPlatformReadScope) || s.clientSvc == nil || !s.managedLogsPlatformAuthority(ctx, user, claims) {
+func (s *userService) managedLogsPlatformIssuance(ctx context.Context, user *domain.User, claims jwt.MapClaims, request domain.TokenExchangeReq, tenant string, discoverAtPrincipal bool) bool {
+	requested := slices.Contains(request.Scopes, managedLogsPlatformReadScope)
+	// The caller establishes the V2 discovery principal through current tenant
+	// authority. Discovery still requires an explicit audience scope ceiling;
+	// ordinary exchanges cannot acquire this permission from client defaults.
+	discovered := discoverAtPrincipal && slices.Contains(request.ScopeCeilingV1, managedLogsPlatformReadScope)
+	if request.Audience != domain.CodeAdminAudienceClientID || !requested && !discovered || s.clientSvc == nil || !s.managedLogsPlatformAuthority(ctx, user, claims) {
 		return false
 	}
 	client, err := s.clientSvc.GetClient(ctx, tenant, request.Audience)
