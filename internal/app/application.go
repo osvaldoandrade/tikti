@@ -15,6 +15,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/osvaldoandrade/tikti/internal/aigateway"
 	"github.com/osvaldoandrade/tikti/internal/codeqbinding"
 	"github.com/osvaldoandrade/tikti/internal/providers"
 	"github.com/osvaldoandrade/tikti/internal/repository"
@@ -59,6 +60,9 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		return nil, err
 	}
 	if err := cfg.ValidateManagedLogs(); err != nil {
+		return nil, err
+	}
+	if err := cfg.ValidateAIGateway(); err != nil {
 		return nil, err
 	}
 	if err := cfg.ValidateTenantRuntimeAuthority(); err != nil {
@@ -114,6 +118,19 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		services.WithIdentityDirectoryRateLimits(cfg.HTTP.RateLimits),
 	)
 
+	retainedTenants, retainedOK := tenantRepo.(repository.RetainedTenantRepository)
+	if !retainedOK {
+		_ = redisClient.Close()
+		return nil, fmt.Errorf("tenant runtime authority repository is unavailable")
+	}
+	var aiAuthority aigateway.Authority
+	if cfg.AIGateway.Enabled {
+		aiAuthority, err = aigateway.NewClient(cfg.AIGateway.AuthorityURL, time.Duration(cfg.AIGateway.DependencyTimeoutSeconds)*time.Second)
+		if err != nil {
+			_ = redisClient.Close()
+			return nil, err
+		}
+	}
 	userService := services.NewUserService(
 		userRepo,
 		membershipRepo,
@@ -141,18 +158,15 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		services.WithAuthenticationRateLimits(cfg.HTTP.RateLimits),
 		services.WithPasswordAttemptLimiter(directoryRepo),
 		services.WithCurrentPlatformAdministrators(cfg.SAML.PlatformAdministrators),
+		services.WithAIGateway(cfg.AIGateway, aiAuthority, retainedTenants),
 	)
 	workloadVerifier, err := newWorkloadTokenVerifier(cfg.WorkloadIdentity)
 	if err != nil {
 		return nil, err
 	}
-	retainedTenants, retainedOK := tenantRepo.(repository.RetainedTenantRepository)
-	if !retainedOK {
-		_ = redisClient.Close()
-		return nil, fmt.Errorf("tenant runtime authority repository is unavailable")
-	}
 	topicPolicy := cfg.WorkloadIdentity.CodeQTopicController
 	workloadOptions := []services.WorkloadIdentityServiceOption{
+		services.WithWorkloadAIGateway(cfg.AIGateway, aiAuthority, retainedTenants, userService.(services.AIUserTokenValidator)),
 		services.WithCodeQTopicController(services.CodeQTopicControllerIdentity{Enabled: topicPolicy.Enabled, Issuer: topicPolicy.Issuer, ClusterRef: topicPolicy.ClusterRef, Namespace: topicPolicy.Namespace, ServiceAccount: topicPolicy.ServiceAccount, ServiceAccountUID: topicPolicy.ServiceAccountUID}, retainedTenants),
 		services.WithTrustedClusterRefs(cfg.WorkloadIdentity.TrustedClusterRefs()),
 		services.WithScopedWorkloadBindings(cfg.WorkloadIdentity.ScopedWorkloadBindings),

@@ -10,6 +10,13 @@ GOVULNCHECK_VERSION ?= v1.1.4
 test:
 	go test ./...
 
+.PHONY: test-ai-gateway fuzz-ai-gateway
+test-ai-gateway:
+	go test -race -count=1 ./internal/aigateway ./internal/services ./internal/controllers ./pkg/config ./internal/scopepolicy -run 'Test(AI|IdentityAuthority|Compiled)'
+
+fuzz-ai-gateway:
+	go test ./internal/aigateway -run '^$$' -fuzz '^FuzzAIIdentityJSON$$' -fuzztime=10s -parallel=2
+
 helm-test:
 	bash hack/test-codeq-topic-chart.sh
 	bash hack/test-codeq-binding-chart.sh

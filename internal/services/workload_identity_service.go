@@ -76,6 +76,7 @@ type workloadIdentityService struct {
 	metrics                *WorkloadIdentityMetrics
 	codeqBindings          *codeqBindingExchange
 	managedLogs            *managedLogsExchange
+	aiGateway              *aiGatewayExchange
 
 	keyOnce sync.Once
 	key     *rsa.PrivateKey
@@ -108,6 +109,9 @@ func NewWorkloadIdentityService(
 }
 
 func (s *workloadIdentityService) Exchange(ctx context.Context, req domain.WorkloadTokenExchangeReq) (*domain.WorkloadTokenExchangeResp, error) {
+	if req.AIGrant != "" || req.UserToken != "" || reservedAIAudience(s.aiGateway, req.Audience) || slices.Contains(req.Scopes, "code-admin:ai:runtime") {
+		return s.exchangeAIWorkload(ctx, req)
+	}
 	if req.LogsGrant != "" {
 		return s.exchangeManagedLogs(ctx, req)
 	}

@@ -44,6 +44,7 @@ type UserService interface {
 // userService is the concrete UserService backed by the repository and JWT utilities.
 type userService struct {
 	trinoAuthority                    TrinoIdentityAuthority
+	aiGateway                         *aiGatewayExchange
 	repo                              repository.UserRepository
 	membershipRepo                    repository.MembershipRepository
 	exactMembershipRepo               repository.ExactMembershipRepository
@@ -307,6 +308,9 @@ func (s *userService) TokenExchange(ctx context.Context, req domain.TokenExchang
 	}
 	if reservedTrinoAudience(req.Audience) {
 		return s.exchangeTrinoUser(ctx, req, u, claims)
+	}
+	if reservedAIAudience(s.aiGateway, req.Audience) {
+		return s.exchangeAIUser(ctx, req, u, claims)
 	}
 	strictTarget, protectedTarget := s.tenantScopedTokenTarget(req.TenantID)
 	discoveryRequested := req.DiscoverTenantTargetsV1 || req.DiscoverTenantTargetsV2

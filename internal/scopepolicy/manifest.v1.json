@@ -1,7 +1,27 @@
 {
   "schemaVersion": 1,
-  "policyVersion": "2026-10-19.1",
+  "policyVersion": "2026-10-23.1",
   "scopes": [
+    {
+      "scope": "code-admin:ai:platform",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:ai:read",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
+    {
+      "scope": "code-admin:ai:runtime",
+      "boundary": "global",
+      "tenantAssignable": false
+    },
+    {
+      "scope": "code-admin:ai:write",
+      "boundary": "tenant",
+      "tenantAssignable": true
+    },
     {
       "scope": "code-admin:audit:read",
       "boundary": "tenant",

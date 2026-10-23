@@ -33,6 +33,7 @@ type Config struct {
 	JwksPrivateKey                          string                     `yaml:"jwksPrivateKey"`
 	JwksKeyID                               string                     `yaml:"jwksKeyId"`
 	WorkloadIdentity                        WorkloadIdentityConfig     `yaml:"workloadIdentity"`
+	AIGateway                               AIGatewayConfig            `yaml:"aiGateway"`
 	WorkloadAccountBFF                      WorkloadAccountBFFConfig   `yaml:"workloadAccountBFF"`
 	StorageSTS                              StorageSTSConfig           `yaml:"storageSTS"`
 	ObjectStorageBrowser                    ObjectStorageBrowserConfig `yaml:"objectStorageBrowser"`
@@ -763,6 +764,10 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	c.WorkloadIdentity.CodeQBindings.applyDefaults()
 	c.WorkloadIdentity.ManagedLogs.applyDefaults()
+	c.AIGateway.applyDefaults()
+	if err := c.ValidateAIGateway(); err != nil {
+		return nil, err
+	}
 	if err := c.ValidateManagedLogs(); err != nil {
 		return nil, err
 	}

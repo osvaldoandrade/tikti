@@ -68,6 +68,22 @@ config:
   tenantTargetDiscoveryV2: false
   tenantTargetDiscoveryV2PrincipalTenants: []
   identityGroupsV1: false
+  aiGateway:
+    enabled: false
+    authorityUrl: ""
+    accessTokenTtlSeconds: 300
+    dependencyTimeoutSeconds: 2
+    maximumConcurrent: 8
+    perIdentityPerMinute: 12
+    installationUID: ""
+    runtimeTenantId: ""
+    runtime:
+      enabled: false
+    storeAudience: ""
+    storeRuntime:
+      enabled: false
+    storeBootstrap:
+      enabled: false
   tenantRuntimeAuthorityV1: false
   http:
     allowedOrigins: []

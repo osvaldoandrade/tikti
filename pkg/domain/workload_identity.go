@@ -159,6 +159,10 @@ type WorkloadTokenExchangeReq struct {
 	LogsGrantKind        string `json:"grantKind,omitempty"`
 	LogsConfigUID        string `json:"configUID,omitempty"`
 	LogsConfigGeneration int64  `json:"configGeneration,omitempty"`
+	// AIGrant selects installation-only AI machine authority; UserToken delegates
+	// an independently verified AI User token to the current projected workload.
+	AIGrant   string `json:"aiGrant,omitempty"`
+	UserToken string `json:"userToken,omitempty"`
 }
 
 // WorkloadExchangeError is a client-safe refusal with a stable code and the

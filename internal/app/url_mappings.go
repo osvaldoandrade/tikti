@@ -82,6 +82,10 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 		protected.POST("/accounts/revoke", currentAdminToken, adminUser.Revoke)
 		protected.POST("/accounts/validate", currentAdminToken, controllers.NewValidateController(userService, cfg).Handle)
 		protected.POST("/internal/access-tokens:validate", controllers.NewCurrentAccessTokenController(userService, cfg).Validate)
+		if cfg.AIGateway.Enabled {
+			validator, _ := userService.(services.AIUserTokenValidator)
+			protected.POST("/internal/ai/access-tokens:validate", controllers.NewAICurrentAccessTokenController(validator).Validate)
+		}
 		protected.POST("/accounts/update", controllers.NewUpdateController(userService, cfg).Handle)
 		protected.POST("/accounts/delete", controllers.NewDeleteController(userService, cfg).Handle)
 	}
