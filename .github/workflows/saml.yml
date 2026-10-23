@@ -1,4 +1,6 @@
 name: saml
+env:
+  GOTOOLCHAIN: local
 on:
   pull_request:
     paths:

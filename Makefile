@@ -1,6 +1,8 @@
 IMAGE_NAME ?= tikti
 IMAGE_TAG ?= dev
 IMAGE_URI ?= $(IMAGE_NAME):$(IMAGE_TAG)
+GO_TOOLCHAIN ?= go1.26.10
+export GOTOOLCHAIN := $(GO_TOOLCHAIN)
 
 .PHONY: build docker-build docker-push lint security test helm-test fuzz-object-storage test-sql-contract
 

@@ -1,4 +1,6 @@
 name: saml-fuzz
+env:
+  GOTOOLCHAIN: local
 on:
   schedule: [{ cron: '0 3 * * *' }]
 permissions:

@@ -1,5 +1,8 @@
 name: workload-identity
 
+env:
+  GOTOOLCHAIN: local
+
 on:
   pull_request:
     paths:
