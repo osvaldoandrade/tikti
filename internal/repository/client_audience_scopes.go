@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"slices"
+	"strings"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
@@ -34,11 +36,7 @@ func (r *clientRepo) ReconcileCodeAdminAudienceScopes(
 	ctx context.Context, tenantID string, current *domain.Client, scopes []string,
 ) (*domain.Client, error) {
 	managed := domain.IsManagedCodeAdminAudience(tenantID, current)
-	bootstrapHome := current != nil && tenantID == domain.MasterTenantID &&
-		current.TenantId == tenantID && current.Id == domain.CodeAdminAudienceClientID &&
-		current.Type == domain.ClientTypePublic && current.Status == domain.ClientStatusActive &&
-		current.ManagedBy == "" && current.SecretHash == "" &&
-		slices.Equal(current.AllowedGrantTypes, []string{string(domain.GrantTypeTokenExchange)})
+	bootstrapHome := tenantID == domain.MasterTenantID && domain.IsBootstrapLegacyCodeAdminAudience(tenantID, current)
 	if r == nil || r.client == nil || !managed && !bootstrapHome || !scopepolicy.ValidCanonicalAudienceScopes(scopes) {
 		return nil, domain.ErrManagedClientConflict
 	}
@@ -71,17 +69,29 @@ func (r *clientRepo) ReconcileCodeAdminAudienceScopes(
 }
 
 // CodeAdminAudienceScopeRaiser additively raises the ceiling of a tenant's
-// existing managed code-admin-api client. It never creates, adopts, removes a
-// scope from, or otherwise edits the client.
+// existing managed code-admin-api client, or of the bootstrap's legacy PUBLIC
+// home audience. It never creates, adopts, converts, removes a scope from, or
+// otherwise edits the client.
 type CodeAdminAudienceScopeRaiser interface {
 	RaiseManagedCodeAdminAudienceScopes(ctx context.Context, tenantID string, scopes []string) (*domain.Client, bool, error)
 }
 
-// RaiseManagedCodeAdminAudienceScopes adds scopes to the managed
-// code-admin-api client of tenantID with a compare-and-swap on the exact
-// stored record and its managed marker. A missing client, an unmanaged
-// look-alike, another owner or an inactive record conflicts. A ceiling that
-// already contains every scope is an exact replay that writes nothing.
+// RaiseManagedCodeAdminAudienceScopes adds scopes to the code-admin-api client
+// of tenantID with a compare-and-swap on the exact stored record and its
+// managed marker. A missing client, an unmanaged look-alike, another owner or
+// an inactive record conflicts. A ceiling that already contains every scope is
+// an exact replay that writes nothing.
+//
+// Besides the managed SERVICE record, exactly the bootstrap's legacy PUBLIC
+// home audience (domain.IsBootstrapLegacyCodeAdminAudience: same tenant,
+// code-admin-api, PUBLIC, token_exchange only, no secret, no owner, ACTIVE)
+// with canonical scopes is raised. It is the MASTER/home Console audience the
+// bootstrap creates and production never re-runs (the installation upgrades
+// with --no-hooks). Only the bootstrap can have written it: generic client
+// creation (ClientService.Create) always stores a secret, and every other
+// writer stores a managed record. Any secret-bearing PUBLIC or unowned SERVICE
+// look-alike therefore still conflicts. The legacy shape is preserved (no
+// type/owner conversion, no marker) so a later bootstrap run still adopts it.
 func (r *clientRepo) RaiseManagedCodeAdminAudienceScopes(ctx context.Context, tenantID string, scopes []string) (*domain.Client, bool, error) {
 	additions, ok := scopepolicy.CanonicalAudienceScopes(scopes)
 	if r == nil || r.client == nil || !activeTenantIdentity(tenantID) || !ok || !slices.Equal(additions, scopes) {
@@ -96,19 +106,28 @@ func (r *clientRepo) RaiseManagedCodeAdminAudienceScopes(ctx context.Context, te
 		if err != nil || len(values) != 2 {
 			return nil, false, errStoredManagedClientContract
 		}
+		var current *domain.Client
+		legacy := false
 		switch values[0] {
-		case "missing", "legacy":
+		case "missing":
 			return nil, false, domain.ErrManagedClientConflict
+		case "legacy":
+			candidate, decoded := decodeBootstrapLegacyCodeAdminAudience(tenantID, values[1])
+			if !decoded {
+				return nil, false, domain.ErrManagedClientConflict
+			}
+			current, legacy = candidate, true
 		case "managed":
+			candidate, decoded := decodeManagedAudienceClient(tenantID, values[1])
+			if !decoded {
+				return nil, false, errStoredManagedClientContract
+			}
+			if !domain.IsManagedCodeAdminAudience(tenantID, candidate) {
+				return nil, false, domain.ErrManagedClientConflict
+			}
+			current = candidate
 		default:
 			return nil, false, errStoredManagedClientContract
-		}
-		current, decoded := decodeManagedAudienceClient(tenantID, values[1])
-		if !decoded {
-			return nil, false, errStoredManagedClientContract
-		}
-		if !domain.IsManagedCodeAdminAudience(tenantID, current) {
-			return nil, false, domain.ErrManagedClientConflict
 		}
 		missing := false
 		for _, scope := range additions {
@@ -126,6 +145,16 @@ func (r *clientRepo) RaiseManagedCodeAdminAudienceScopes(ctx context.Context, te
 		}
 		next := *current
 		next.DefaultScopes = raised
+		if legacy {
+			stored, retry, legacyErr := r.raiseBootstrapLegacyCodeAdminAudience(ctx, tenantID, keys, values[1], &next)
+			if retry {
+				continue
+			}
+			if legacyErr != nil {
+				return nil, false, legacyErr
+			}
+			return stored, true, nil
+		}
 		if !validManagedAudienceClient(tenantID, &next) {
 			return nil, false, domain.ErrManagedClientConflict
 		}
@@ -153,4 +182,53 @@ func (r *clientRepo) RaiseManagedCodeAdminAudienceScopes(ctx context.Context, te
 		return stored, true, nil
 	}
 	return nil, false, domain.ErrManagedClientConflict
+}
+
+// raiseBootstrapLegacyCodeAdminAudience swaps the exact stored legacy record
+// for next only while it is still unmarked and byte-identical. It reports
+// retry when a concurrent writer changed the record or added a marker.
+func (r *clientRepo) raiseBootstrapLegacyCodeAdminAudience(
+	ctx context.Context, tenantID string, keys []string, before string, next *domain.Client,
+) (*domain.Client, bool, error) {
+	if !domain.IsBootstrapLegacyCodeAdminAudience(tenantID, next) || !scopepolicy.ValidCanonicalAudienceScopes(next.DefaultScopes) {
+		return nil, false, domain.ErrManagedClientConflict
+	}
+	payload, err := json.Marshal(next)
+	if err != nil {
+		return nil, false, err
+	}
+	result, err := existingAudienceScopesScript.Eval(ctx, r.client, keys,
+		domain.CodeAdminAudienceClientID, before, payload, "bootstrap-home").Text()
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, false, err
+	}
+	if err != nil {
+		return nil, false, errStoredManagedClientContract
+	}
+	switch result {
+	case "changed":
+		return nil, true, nil
+	case "updated":
+	default:
+		return nil, false, errStoredManagedClientContract
+	}
+	stored, ok := decodeBootstrapLegacyCodeAdminAudience(tenantID, string(payload))
+	if !ok || !slices.Equal(stored.DefaultScopes, next.DefaultScopes) {
+		return nil, false, errStoredManagedClientContract
+	}
+	return stored, false, nil
+}
+
+// decodeBootstrapLegacyCodeAdminAudience strictly decodes an unmarked record
+// and accepts only the bootstrap's legacy home audience with canonical scopes.
+func decodeBootstrapLegacyCodeAdminAudience(tenantID, value string) (*domain.Client, bool) {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.DisallowUnknownFields()
+	var client domain.Client
+	if decoder.Decode(&client) != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		!domain.IsBootstrapLegacyCodeAdminAudience(tenantID, &client) ||
+		!scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes) {
+		return nil, false
+	}
+	return &client, true
 }

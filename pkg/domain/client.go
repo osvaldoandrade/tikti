@@ -75,6 +75,23 @@ func IsManagedCodeAdminAudience(tenantID string, client *Client) bool {
 		slices.Equal(client.AllowedGrantTypes, []string{string(GrantTypeTokenExchange)})
 }
 
+// IsBootstrapLegacyAudience reports whether client is exactly the
+// credential-free, unmanaged PUBLIC token-exchange audience that the
+// installation bootstrap writes for clientID in tenantID. Generic client
+// creation always stores a secret, so only the bootstrap produces this shape.
+// It deliberately ignores DefaultScopes; callers validate the ceiling.
+func IsBootstrapLegacyAudience(tenantID, clientID string, client *Client) bool {
+	return client != nil && client.Id == clientID && client.TenantId == tenantID &&
+		client.SecretHash == "" && client.Type == ClientTypePublic && client.Status == ClientStatusActive &&
+		client.ManagedBy == "" && slices.Equal(client.AllowedGrantTypes, []string{string(GrantTypeTokenExchange)})
+}
+
+// IsBootstrapLegacyCodeAdminAudience reports whether client is the bootstrap's
+// legacy PUBLIC code-admin-api home audience of tenantID.
+func IsBootstrapLegacyCodeAdminAudience(tenantID string, client *Client) bool {
+	return IsBootstrapLegacyAudience(tenantID, CodeAdminAudienceClientID, client)
+}
+
 // IsManagedWorkloadAccountAudience reports whether the credential-free client
 // is owned by the workload account BFF bootstrap contract.
 func IsManagedWorkloadAccountAudience(tenantID string, client *Client) bool {

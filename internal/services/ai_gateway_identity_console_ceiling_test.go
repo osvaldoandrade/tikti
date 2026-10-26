@@ -118,9 +118,27 @@ func TestAIGatewayIdentityEnsureConflictsOnMissingOrUnmanagedConsoleClient(t *te
 			Id: domain.CodeAdminAudienceClientID, TenantId: "workload-x", Type: domain.ClientTypeService,
 			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: []string{"code-admin:audit:read"}, Status: domain.ClientStatusActive,
 		},
-		"legacy public home audience": {
+		// Generic client creation always stores a secret, so a secret-bearing
+		// PUBLIC code-admin-api is never the bootstrap's legacy home audience.
+		"secret-bearing public look-alike": {
+			Id: domain.CodeAdminAudienceClientID, TenantId: "workload-x", SecretHash: "x", Type: domain.ClientTypePublic,
+			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: []string{"code-admin:audit:read"}, Status: domain.ClientStatusActive,
+		},
+		"credential-free public with extra grant": {
 			Id: domain.CodeAdminAudienceClientID, TenantId: "workload-x", Type: domain.ClientTypePublic,
-			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: []string{"code-admin:ai:read", "code-admin:ai:write"}, Status: domain.ClientStatusActive,
+			AllowedGrantTypes: []string{"token_exchange", "client_credentials"}, DefaultScopes: []string{"code-admin:audit:read"}, Status: domain.ClientStatusActive,
+		},
+		"inactive credential-free public": {
+			Id: domain.CodeAdminAudienceClientID, TenantId: "workload-x", Type: domain.ClientTypePublic,
+			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: []string{"code-admin:audit:read"}, Status: domain.ClientStatusInactive,
+		},
+		"credential-free public with non-canonical scopes": {
+			Id: domain.CodeAdminAudienceClientID, TenantId: "workload-x", Type: domain.ClientTypePublic,
+			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: []string{"code-admin:identity:write", "code-admin:audit:read", "code-admin:audit:read"}, Status: domain.ClientStatusActive,
+		},
+		"credential-free public in another tenant record": {
+			Id: domain.CodeAdminAudienceClientID, TenantId: "workload-other", Type: domain.ClientTypePublic,
+			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: []string{"code-admin:audit:read"}, Status: domain.ClientStatusActive,
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -201,5 +219,100 @@ func TestRaiseManagedCodeAdminAudienceScopesRejectsNonCanonicalInput(t *testing.
 	}
 	if _, _, err := raiser.RaiseManagedCodeAdminAudienceScopes(ctx, "Workload-1", []string{"code-admin:ai:read"}); err == nil {
 		t.Fatal("non-canonical tenant accepted")
+	}
+}
+
+func bootstrapLegacyHomeAudience(tenantID string, scopes []string) *domain.Client {
+	return &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: tenantID, Type: domain.ClientTypePublic,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     append([]string(nil), scopes...), Status: domain.ClientStatusActive,
+	}
+}
+
+// The MASTER home tenant holds the bootstrap's secret-free legacy PUBLIC
+// code-admin-api audience, which is never adopted as managed. Activation
+// raises it additively in place and keeps its legacy shape.
+func TestAIGatewayIdentityEnsureRaisesBootstrapLegacyHomeAudience(t *testing.T) {
+	ctx := context.Background()
+	s := newAIIdentityStores(t, "workload-2")
+	if _, _, err := s.tenants.CreateIfAbsent(ctx, &domain.Tenant{Id: domain.MasterTenantID, Slug: domain.MasterTenantID, Name: domain.MasterTenantName, Status: domain.TenantStatusActive, CreatedAt: time.Now().Add(-time.Hour).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.clients.UpsertBootstrap(ctx, domain.MasterTenantID, bootstrapLegacyHomeAudience(domain.MasterTenantID, consoleBaselineScopes)); err != nil {
+		t.Fatal(err)
+	}
+	got, created, err := s.service.Ensure(ctx, domain.MasterTenantID, s.admin)
+	if err != nil || !created || got == nil {
+		t.Fatalf("ensure=%#v created=%v err=%v", got, created, err)
+	}
+	ceiling := s.consoleCeiling(t, domain.MasterTenantID)
+	want := []string{"code-admin:ai:read", "code-admin:ai:write", "code-admin:audit:read", "code-admin:identity:write"}
+	if !domain.IsBootstrapLegacyCodeAdminAudience(domain.MasterTenantID, ceiling) ||
+		domain.IsManagedCodeAdminAudience(domain.MasterTenantID, ceiling) || !slices.Equal(ceiling.DefaultScopes, want) {
+		t.Fatalf("legacy home audience was not raised in place: %#v", ceiling)
+	}
+	for _, scope := range []string{"code-admin:ai:platform", aigateway.RuntimeScope} {
+		if slices.Contains(ceiling.DefaultScopes, scope) {
+			t.Fatalf("global scope %s entered the home ceiling", scope)
+		}
+	}
+	// No managed marker was written: the bootstrap can still upsert it.
+	if err := s.clients.UpsertBootstrap(ctx, domain.MasterTenantID, bootstrapLegacyHomeAudience(domain.MasterTenantID, want)); err != nil {
+		t.Fatalf("bootstrap can no longer maintain the legacy home audience: %v", err)
+	}
+	if other := s.consoleCeiling(t, "workload-2"); !domain.IsManagedCodeAdminAudience("workload-2", other) || !slices.Equal(other.DefaultScopes, consoleBaselineScopes) {
+		t.Fatalf("another tenant's ceiling changed: %#v", other)
+	}
+	again, created, err := s.service.Ensure(ctx, domain.MasterTenantID, s.admin)
+	if err != nil || created || again == nil {
+		t.Fatalf("replay=%#v created=%v err=%v", again, created, err)
+	}
+	if replayed := s.consoleCeiling(t, domain.MasterTenantID); !reflect.DeepEqual(replayed, ceiling) {
+		t.Fatalf("replay rewrote the legacy ceiling: %#v != %#v", replayed, ceiling)
+	}
+	if again.Client.ClientId != aigateway.Audience || !slices.Equal(again.Client.DefaultScopes, AIGatewayClientScopes()) {
+		t.Fatalf("response projection changed: %#v", again.Client)
+	}
+	if _, changed, err := s.service.Deactivate(ctx, domain.MasterTenantID); err != nil || !changed {
+		t.Fatalf("deactivate changed=%v err=%v", changed, err)
+	}
+	if after := s.consoleCeiling(t, domain.MasterTenantID); !reflect.DeepEqual(after, ceiling) {
+		t.Fatalf("deactivation changed the legacy ceiling: %#v -> %#v", ceiling, after)
+	}
+}
+
+// Secret-bearing or unowned look-alikes in the MASTER tenant still conflict.
+func TestAIGatewayIdentityEnsureConflictsOnMasterLookAlikes(t *testing.T) {
+	ctx := context.Background()
+	for name, lookAlike := range map[string]*domain.Client{
+		"secret-bearing public": {
+			Id: domain.CodeAdminAudienceClientID, TenantId: domain.MasterTenantID, SecretHash: "stored-hash", Type: domain.ClientTypePublic,
+			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: consoleBaselineScopes, Status: domain.ClientStatusActive,
+		},
+		"secret-bearing service": {
+			Id: domain.CodeAdminAudienceClientID, TenantId: domain.MasterTenantID, SecretHash: "stored-hash", Type: domain.ClientTypeService,
+			AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: consoleBaselineScopes, Status: domain.ClientStatusActive,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newAIIdentityStores(t, domain.MasterTenantID+"-peer")
+			if _, _, err := s.tenants.CreateIfAbsent(ctx, &domain.Tenant{Id: domain.MasterTenantID, Slug: domain.MasterTenantID, Name: domain.MasterTenantName, Status: domain.TenantStatusActive, CreatedAt: time.Now().Add(-time.Hour).UTC()}); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.clients.Create(ctx, domain.MasterTenantID, lookAlike); err != nil {
+				t.Fatal(err)
+			}
+			before := s.consoleCeiling(t, domain.MasterTenantID)
+			if _, _, err := s.service.Ensure(ctx, domain.MasterTenantID, s.admin); !errors.Is(err, domain.ErrManagedClientConflict) {
+				t.Fatalf("err=%v", err)
+			}
+			if after := s.consoleCeiling(t, domain.MasterTenantID); !reflect.DeepEqual(after, before) {
+				t.Fatalf("look-alike was modified: %#v -> %#v", before, after)
+			}
+			if audience, err := s.clients.Get(ctx, domain.MasterTenantID, aigateway.Audience); err != nil || audience != nil {
+				t.Fatalf("AI audience was activated after the conflict: %#v %v", audience, err)
+			}
+		})
 	}
 }

@@ -158,8 +158,9 @@ func (s *aiGatewayIdentityService) Ensure(ctx context.Context, tenantID, adminis
 }
 
 // raiseConsoleCeiling additively ensures the tenant's managed code-admin-api
-// client ceiling contains the tenant-assignable AI scopes (ADR-0024 Amendment
-// 2). It runs before any other write so a missing or unmanaged Console client
+// client ceiling (or the bootstrap's secret-free legacy PUBLIC home audience,
+// kept in its legacy shape) contains the tenant-assignable AI scopes (ADR-0024
+// Amendment 2). It runs before any other write so a missing or unmanaged Console client
 // fails closed without creating roles, assignments or the AI audience. The
 // ceiling is never shrunk here or on deactivation: a ceiling scope grants
 // nothing on its own; it only lets a tenant role that already carries the
@@ -180,7 +181,9 @@ func (s *aiGatewayIdentityService) raiseConsoleCeiling(ctx context.Context, tena
 		}
 		return false, err
 	}
-	if !domain.IsManagedCodeAdminAudience(tenantID, stored) {
+	// The repository accepts only the managed record or the bootstrap's
+	// secret-free legacy PUBLIC home audience; re-check both here.
+	if !domain.IsManagedCodeAdminAudience(tenantID, stored) && !domain.IsBootstrapLegacyCodeAdminAudience(tenantID, stored) {
 		return false, domain.ErrManagedClientConflict
 	}
 	for _, scope := range scopes {

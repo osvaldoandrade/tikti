@@ -301,13 +301,10 @@ func sameLegacyHomeAudience(current, desired *domain.Client) bool {
 		slices.Equal(current.DefaultScopes, desired.DefaultScopes)
 }
 
+// sameLegacyHomeAudienceOwner shares domain.IsBootstrapLegacyAudience with the
+// runtime AI activation raise, so both accept exactly the same legacy shape.
 func sameLegacyHomeAudienceOwner(current, desired *domain.Client) bool {
-	return current != nil && desired != nil && current.Id == desired.Id &&
-		current.TenantId == desired.TenantId && current.SecretHash == "" &&
-		current.Type == domain.ClientTypePublic && current.Status == domain.ClientStatusActive &&
-		current.ManagedBy == "" && slices.Equal(
-		current.AllowedGrantTypes, []string{string(domain.GrantTypeTokenExchange)},
-	)
+	return desired != nil && domain.IsBootstrapLegacyAudience(desired.TenantId, desired.Id, current)
 }
 
 func conflictOr(err error, fallback error) error {
