@@ -58,9 +58,27 @@ func newAIIdentityStores(t *testing.T, tenantIDs ...string) aiIdentityStores {
 	if !ok {
 		t.Fatal("client repository lacks managed status updates")
 	}
+	// Every active tenant owns the managed Console client the AI activation
+	// raises; its baseline ceiling deliberately lacks the AI scopes.
+	for _, id := range tenantIDs {
+		if _, _, err := clients.EnsureManagedAudience(context.Background(), id, managedConsoleClient(id, consoleBaselineScopes)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	s.statusStore = store
 	s.service = NewAIGatewayIdentityService(s.tenants, NewRoleService(s.roles), store, s.directory)
 	return s
+}
+
+var consoleBaselineScopes = []string{"code-admin:audit:read", "code-admin:identity:write"}
+
+func managedConsoleClient(tenantID string, scopes []string) *domain.Client {
+	return &domain.Client{
+		Id: domain.CodeAdminAudienceClientID, TenantId: tenantID, Type: domain.ClientTypeService,
+		AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)},
+		DefaultScopes:     append([]string(nil), scopes...), Status: domain.ClientStatusActive,
+		ManagedBy: domain.CodeAdminAudienceClientManager,
+	}
 }
 
 func (s aiIdentityStores) directRoles(t *testing.T, tenantID, userID string) []string {

@@ -14,8 +14,9 @@ import (
 )
 
 // AIGatewayIdentityService owns the closed, tenant-scoped identity records
-// that AI user exchange requires. Activation ensures the two dedicated roles,
-// assigns only <tenant>-ai-admin to the enabling administrator's own user and
+// that AI user exchange requires. Activation first additively raises the
+// tenant's managed code-admin-api ceiling with the tenant AI scopes, then
+// ensures the two dedicated roles, assigns only <tenant>-ai-admin to the enabling administrator's own user and
 // then (re)activates the managed audience. Deactivation marks the managed
 // audience INACTIVE and retains roles, assignments and the record itself. It
 // never edits an existing role and never accepts caller-selected scopes.
@@ -28,6 +29,7 @@ type AIGatewayIdentityService interface {
 type AIGatewayClientStore interface {
 	repository.ClientRepository
 	repository.ManagedAudienceStatusRepository
+	repository.CodeAdminAudienceScopeRaiser
 }
 
 // AIGatewayAssignmentStore is the directory assignment authority used for the
@@ -67,6 +69,14 @@ func AIGatewayRoleDefinitions(tenantID string) []domain.RoleResp {
 	}
 }
 
+// AIGatewayConsoleCeilingScopes are the only scopes activation adds to the
+// tenant's managed code-admin-api ceiling, so the dynamic Console session can
+// carry the tenant AI roles. They are exactly the tenant-assignable AI scopes;
+// the global code-admin:ai:platform/runtime scopes are never added.
+func AIGatewayConsoleCeilingScopes() []string {
+	return []string{"code-admin:ai:read", "code-admin:ai:write"}
+}
+
 // AIGatewayAdminRole is the only role activation assigns.
 func AIGatewayAdminRole(tenantID string) string { return tenantID + "-ai-admin" }
 
@@ -87,7 +97,10 @@ func (s *aiGatewayIdentityService) Ensure(ctx context.Context, tenantID, adminis
 	if !activeTenant(tenant, tenantID, s.now().UTC()) {
 		return nil, false, domain.ErrInvalidTenant
 	}
-	created := false
+	created, err := s.raiseConsoleCeiling(ctx, tenantID)
+	if err != nil {
+		return nil, false, err
+	}
 	roles := AIGatewayRoleDefinitions(tenantID)
 	out := &domain.AIGatewayIdentityResp{TenantId: tenantID, Roles: make([]domain.RoleResp, 0, len(roles))}
 	for _, role := range roles {
@@ -142,6 +155,40 @@ func (s *aiGatewayIdentityService) Ensure(ctx context.Context, tenantID, adminis
 		DefaultScopes:     append([]string(nil), stored.DefaultScopes...), Status: stored.Status,
 	}
 	return out, created || clientCreated, nil
+}
+
+// raiseConsoleCeiling additively ensures the tenant's managed code-admin-api
+// client ceiling contains the tenant-assignable AI scopes (ADR-0024 Amendment
+// 2). It runs before any other write so a missing or unmanaged Console client
+// fails closed without creating roles, assignments or the AI audience. The
+// ceiling is never shrunk here or on deactivation: a ceiling scope grants
+// nothing on its own; it only lets a tenant role that already carries the
+// tenant-assignable AI scope reach the Console token, and AI exchange still
+// requires the ACTIVE AI audience.
+func (s *aiGatewayIdentityService) raiseConsoleCeiling(ctx context.Context, tenantID string) (bool, error) {
+	scopes := AIGatewayConsoleCeilingScopes()
+	// Policy self-check: only tenant-assignable reserved scopes may be added.
+	for _, scope := range scopes {
+		if !scopepolicy.TenantRoleAssignable(scope) || scope == "code-admin:ai:platform" || scope == aigateway.RuntimeScope {
+			return false, domain.ErrInvalidArgument
+		}
+	}
+	stored, changed, err := s.clients.RaiseManagedCodeAdminAudienceScopes(ctx, tenantID, scopes)
+	if err != nil {
+		if errors.Is(err, domain.ErrManagedClientConflict) {
+			return false, domain.ErrManagedClientConflict
+		}
+		return false, err
+	}
+	if !domain.IsManagedCodeAdminAudience(tenantID, stored) {
+		return false, domain.ErrManagedClientConflict
+	}
+	for _, scope := range scopes {
+		if !slices.Contains(stored.DefaultScopes, scope) {
+			return false, domain.ErrManagedClientConflict
+		}
+	}
+	return changed, nil
 }
 
 // assignAdministrator adds role to the user's direct assignment in tenantID,

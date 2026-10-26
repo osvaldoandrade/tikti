@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 
 	"github.com/go-redis/redis/v8"
@@ -67,4 +68,89 @@ func (r *clientRepo) ReconcileCodeAdminAudienceScopes(
 		return nil, domain.ErrManagedClientConflict
 	}
 	return &desired, nil
+}
+
+// CodeAdminAudienceScopeRaiser additively raises the ceiling of a tenant's
+// existing managed code-admin-api client. It never creates, adopts, removes a
+// scope from, or otherwise edits the client.
+type CodeAdminAudienceScopeRaiser interface {
+	RaiseManagedCodeAdminAudienceScopes(ctx context.Context, tenantID string, scopes []string) (*domain.Client, bool, error)
+}
+
+// RaiseManagedCodeAdminAudienceScopes adds scopes to the managed
+// code-admin-api client of tenantID with a compare-and-swap on the exact
+// stored record and its managed marker. A missing client, an unmanaged
+// look-alike, another owner or an inactive record conflicts. A ceiling that
+// already contains every scope is an exact replay that writes nothing.
+func (r *clientRepo) RaiseManagedCodeAdminAudienceScopes(ctx context.Context, tenantID string, scopes []string) (*domain.Client, bool, error) {
+	additions, ok := scopepolicy.CanonicalAudienceScopes(scopes)
+	if r == nil || r.client == nil || !activeTenantIdentity(tenantID) || !ok || !slices.Equal(additions, scopes) {
+		return nil, false, domain.ErrInvalidArgument
+	}
+	keys := []string{clientsKey(tenantID), managedClientsKey(tenantID)}
+	for range 4 {
+		values, err := managedClientGetScript.Eval(ctx, r.client, keys, domain.CodeAdminAudienceClientID).StringSlice()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, err
+		}
+		if err != nil || len(values) != 2 {
+			return nil, false, errStoredManagedClientContract
+		}
+		switch values[0] {
+		case "missing", "legacy":
+			return nil, false, domain.ErrManagedClientConflict
+		case "managed":
+		default:
+			return nil, false, errStoredManagedClientContract
+		}
+		current, decoded := decodeManagedAudienceClient(tenantID, values[1])
+		if !decoded {
+			return nil, false, errStoredManagedClientContract
+		}
+		if !domain.IsManagedCodeAdminAudience(tenantID, current) {
+			return nil, false, domain.ErrManagedClientConflict
+		}
+		missing := false
+		for _, scope := range additions {
+			if !slices.Contains(current.DefaultScopes, scope) {
+				missing = true
+				break
+			}
+		}
+		if !missing {
+			return current, false, nil
+		}
+		raised, valid := scopepolicy.CanonicalAudienceScopes(append(slices.Clone(current.DefaultScopes), additions...))
+		if !valid {
+			return nil, false, domain.ErrManagedClientConflict
+		}
+		next := *current
+		next.DefaultScopes = raised
+		if !validManagedAudienceClient(tenantID, &next) {
+			return nil, false, domain.ErrManagedClientConflict
+		}
+		payload, marshalErr := json.Marshal(&next)
+		if marshalErr != nil {
+			return nil, false, marshalErr
+		}
+		updated, updateErr := managedClientReconcileScript.Eval(ctx, r.client, keys, domain.CodeAdminAudienceClientID, values[1], payload).StringSlice()
+		if errors.Is(updateErr, context.Canceled) || errors.Is(updateErr, context.DeadlineExceeded) {
+			return nil, false, updateErr
+		}
+		if updateErr != nil || len(updated) != 2 {
+			return nil, false, errStoredManagedClientContract
+		}
+		if updated[0] == "changed" {
+			continue
+		}
+		if updated[0] != "updated" || updated[1] != string(payload) {
+			return nil, false, errStoredManagedClientContract
+		}
+		stored, ok := decodeManagedAudienceClient(tenantID, updated[1])
+		if !ok || !domain.IsManagedCodeAdminAudience(tenantID, stored) || !slices.Equal(stored.DefaultScopes, raised) {
+			return nil, false, errStoredManagedClientContract
+		}
+		return stored, true, nil
+	}
+	return nil, false, domain.ErrManagedClientConflict
 }

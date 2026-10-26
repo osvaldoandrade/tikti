@@ -165,7 +165,13 @@ func TestAIGatewayIdentityDeactivateRetainsRecordsAndReactivates(t *testing.T) {
 		t.Fatalf("inactive record not retained exactly: %#v %v", stored, err)
 	}
 	listed, err := s.clients.List(ctx, "tenant-1")
-	if err != nil || len(listed) != 1 || listed[0].Status != domain.ClientStatusInactive {
+	inactiveListed := 0
+	for _, client := range listed {
+		if client.Id == aigateway.Audience && client.Status == domain.ClientStatusInactive {
+			inactiveListed++
+		}
+	}
+	if err != nil || len(listed) != 2 || inactiveListed != 1 {
 		t.Fatalf("inactive managed record breaks listing: %#v %v", listed, err)
 	}
 	for _, role := range AIGatewayRoleDefinitions("tenant-1") {
