@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,9 +16,14 @@ import (
 
 type routeAIIdentityService struct{ calls int }
 
-func (s *routeAIIdentityService) Ensure(context.Context, string) (*domain.AIGatewayIdentityResp, bool, error) {
+func (s *routeAIIdentityService) Ensure(context.Context, string, string) (*domain.AIGatewayIdentityResp, bool, error) {
 	s.calls++
 	return &domain.AIGatewayIdentityResp{}, false, nil
+}
+
+func (s *routeAIIdentityService) Deactivate(context.Context, string) (*domain.AIGatewayDeactivationResp, bool, error) {
+	s.calls++
+	return &domain.AIGatewayDeactivationResp{}, false, nil
 }
 
 func TestAIGatewayIdentityRouteRequiresEnabledAIAndServiceKey(t *testing.T) {
@@ -32,15 +38,24 @@ func TestAIGatewayIdentityRouteRequiresEnabledAIAndServiceKey(t *testing.T) {
 	cfg := &config.Config{ApiKey: "key"}
 	cfg.AIGateway.Enabled = true
 	setupAIGatewayIdentityMappings(enabled, cfg, service, nil)
-	routes := enabled.Routes()
-	if len(routes) != 1 || routes[0].Method != http.MethodPut || routes[0].Path != "/v1/admin/tenants/:tenantId/ai-gateway/identity" {
-		t.Fatalf("unexpected routes: %v", routes)
+	paths := []string{}
+	for _, route := range enabled.Routes() {
+		if route.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %v", route)
+		}
+		paths = append(paths, route.Path)
 	}
-	request := httptest.NewRequest(http.MethodPut, "/v1/admin/tenants/bereia/ai-gateway/identity", strings.NewReader(`{}`))
-	request.Header.Set("Content-Type", "application/json")
-	recorder := httptest.NewRecorder()
-	enabled.ServeHTTP(recorder, request)
-	if recorder.Code == http.StatusOK || service.calls != 0 {
-		t.Fatalf("missing service key reached the service: %d", recorder.Code)
+	slices.Sort(paths)
+	if !slices.Equal(paths, []string{"/v1/admin/tenants/:tenantId/ai-gateway/identity", "/v1/admin/tenants/:tenantId/ai-gateway/identity/deactivation"}) {
+		t.Fatalf("unexpected routes: %v", paths)
+	}
+	for _, path := range []string{"/v1/admin/tenants/bereia/ai-gateway/identity", "/v1/admin/tenants/bereia/ai-gateway/identity/deactivation"} {
+		request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		enabled.ServeHTTP(recorder, request)
+		if recorder.Code == http.StatusOK || service.calls != 0 {
+			t.Fatalf("missing service key reached the service at %s: %d", path, recorder.Code)
+		}
 	}
 }

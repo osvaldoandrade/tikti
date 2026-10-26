@@ -22,6 +22,12 @@ type ClientRepository interface {
 	List(ctx context.Context, tenantID string) ([]*domain.Client, error)
 }
 
+// ManagedAudienceStatusRepository changes only the lifecycle status of an
+// existing managed client. It never creates, adopts or deletes a record.
+type ManagedAudienceStatusRepository interface {
+	SetManagedAudienceStatus(ctx context.Context, tenantID, clientID, managedBy, status string) (*domain.Client, bool, error)
+}
+
 type clientRepo struct {
 	client *redis.Client
 }
@@ -241,6 +247,74 @@ func (r *clientRepo) EnsureManagedAudience(
 	return nil, false, domain.ErrManagedClientConflict
 }
 
+// SetManagedAudienceStatus compare-and-swaps the status of one existing
+// managed client owned by managedBy. A missing client returns (nil, false,
+// nil) and is never created; an unmanaged look-alike or another owner
+// conflicts. Every other field, including the absent credential, is retained.
+func (r *clientRepo) SetManagedAudienceStatus(ctx context.Context, tenantID, clientID, managedBy, status string) (*domain.Client, bool, error) {
+	if r == nil || r.client == nil || !activeTenantIdentity(tenantID) || clientID == "" || managedBy == "" ||
+		status != domain.ClientStatusActive && status != domain.ClientStatusInactive {
+		return nil, false, domain.ErrInvalidArgument
+	}
+	keys := []string{clientsKey(tenantID), managedClientsKey(tenantID)}
+	for range 4 {
+		values, err := managedClientGetScript.Eval(ctx, r.client, keys, clientID).StringSlice()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, false, err
+		}
+		if err != nil || len(values) != 2 {
+			return nil, false, errStoredManagedClientContract
+		}
+		switch values[0] {
+		case "missing":
+			return nil, false, nil
+		case "legacy":
+			return nil, false, domain.ErrManagedClientConflict
+		case "managed":
+		default:
+			return nil, false, errStoredManagedClientContract
+		}
+		current, ok := decodeManagedAudienceClient(tenantID, values[1])
+		if !ok {
+			return nil, false, errStoredManagedClientContract
+		}
+		if current.Id != clientID || current.ManagedBy != managedBy {
+			return nil, false, domain.ErrManagedClientConflict
+		}
+		if current.Status == status {
+			return current, false, nil
+		}
+		next := *current
+		next.Status = status
+		if !validManagedAudienceClient(tenantID, &next) {
+			return nil, false, domain.ErrInvalidArgument
+		}
+		payload, marshalErr := json.Marshal(&next)
+		if marshalErr != nil {
+			return nil, false, marshalErr
+		}
+		updated, updateErr := managedClientReconcileScript.Eval(ctx, r.client, keys, clientID, values[1], payload).StringSlice()
+		if errors.Is(updateErr, context.Canceled) || errors.Is(updateErr, context.DeadlineExceeded) {
+			return nil, false, updateErr
+		}
+		if updateErr != nil || len(updated) != 2 {
+			return nil, false, errStoredManagedClientContract
+		}
+		if updated[0] == "changed" {
+			continue
+		}
+		if updated[0] != "updated" || updated[1] != string(payload) {
+			return nil, false, errStoredManagedClientContract
+		}
+		stored, decoded := decodeManagedAudienceClient(tenantID, updated[1])
+		if !decoded || stored.Status != status {
+			return nil, false, errStoredManagedClientContract
+		}
+		return stored, true, nil
+	}
+	return nil, false, domain.ErrManagedClientConflict
+}
+
 func (r *clientRepo) Get(ctx context.Context, tenantID string, clientID string) (*domain.Client, error) {
 	if !activeTenantIdentity(strings.TrimSpace(tenantID)) {
 		return nil, domain.ErrInvalidTenant
@@ -372,12 +446,12 @@ func adoptableLegacyManagedAudienceClient(legacy, desired *domain.Client) bool {
 func validManagedAudienceClient(tenantID string, client *domain.Client) bool {
 	return activeTenantIdentity(tenantID) &&
 		(domain.IsManagedCodeAdminAudience(tenantID, client) || domain.IsManagedWorkloadAccountAudience(tenantID, client) ||
-			domain.IsManagedAIGatewayAudience(tenantID, client)) &&
+			domain.IsManagedAIGatewayAudienceRecord(tenantID, client)) &&
 		scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes)
 }
 
 func sameManagedAudienceClient(left, right *domain.Client) bool {
-	return sameManagedAudienceOwner(left, right) &&
+	return sameManagedAudienceOwner(left, right) && left.Status == right.Status &&
 		slices.Equal(left.DefaultScopes, right.DefaultScopes)
 }
 

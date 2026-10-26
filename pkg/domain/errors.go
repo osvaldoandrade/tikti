@@ -58,6 +58,9 @@ var (
 	ErrMembershipPageStale = errors.New("membership page changed; restart pagination")
 	// ErrManagedClientConflict preserves an existing reserved client definition.
 	ErrManagedClientConflict = errors.New("managed client already exists with a different definition")
+	// ErrAIGatewayAdministrator rejects AI activation when the caller is not a
+	// directory user of the tenant that can receive the tenant AI admin role.
+	ErrAIGatewayAdministrator = errors.New("AI gateway activation requires the administrator's own user in the tenant")
 	// ErrClientConflict preserves an existing application and its credential.
 	ErrClientConflict = errors.New("client already exists")
 	// ErrNotFound is returned when a user cannot be located in storage.

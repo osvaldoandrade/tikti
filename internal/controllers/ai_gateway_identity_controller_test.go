@@ -15,13 +15,24 @@ import (
 )
 
 type fakeAIGatewayIdentityService struct {
-	calls   []string
-	created bool
-	err     error
+	calls          []string
+	administrators []string
+	deactivations  []string
+	created        bool
+	err            error
 }
 
-func (f *fakeAIGatewayIdentityService) Ensure(_ context.Context, tenantID string) (*domain.AIGatewayIdentityResp, bool, error) {
+func (f *fakeAIGatewayIdentityService) Deactivate(_ context.Context, tenantID string) (*domain.AIGatewayDeactivationResp, bool, error) {
+	f.deactivations = append(f.deactivations, tenantID)
+	if f.err != nil {
+		return nil, false, f.err
+	}
+	return &domain.AIGatewayDeactivationResp{TenantId: tenantID, ClientId: domain.AIGatewayAudienceClientID, Status: domain.ClientStatusInactive}, f.created, nil
+}
+
+func (f *fakeAIGatewayIdentityService) Ensure(_ context.Context, tenantID, administratorID string) (*domain.AIGatewayIdentityResp, bool, error) {
 	f.calls = append(f.calls, tenantID)
+	f.administrators = append(f.administrators, administratorID)
 	if f.err != nil {
 		return nil, false, f.err
 	}
@@ -82,13 +93,24 @@ func TestAIGatewayIdentityControllerAuthorityAndContract(t *testing.T) {
 	if len(service.calls) != before {
 		t.Fatalf("rejected requests reached the service: %v", service.calls[before:])
 	}
+	if service.administrators[0] != "admin-1" {
+		t.Fatalf("activation did not target the caller's own user: %v", service.administrators)
+	}
+	// A platform administrator acting on another tenant has no own user there
+	// to receive the tenant AI admin role, so activation fails closed.
 	platform := token(jwt.MapClaims{"sub": "operator", "tid": "local-tenant", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin})
-	if r := call("wecare", platform, `{}`, "application/json"); r.Code != http.StatusOK || service.calls[len(service.calls)-1] != "wecare" {
-		t.Fatalf("platform=%d %s", r.Code, r.Body.String())
+	if r := call("wecare", platform, `{}`, "application/json"); r.Code != http.StatusForbidden || len(service.calls) != before {
+		t.Fatalf("cross-tenant platform=%d %s", r.Code, r.Body.String())
+	}
+	platformInTenant := token(jwt.MapClaims{"sub": "operator", "tid": "wecare", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin})
+	if r := call("wecare", platformInTenant, `{}`, "application/json"); r.Code != http.StatusOK || service.calls[len(service.calls)-1] != "wecare" || service.administrators[len(service.administrators)-1] != "operator" {
+		t.Fatalf("platform in tenant=%d %s", r.Code, r.Body.String())
 	}
 	for err, status := range map[error]int{
 		domain.ErrRoleConflict:                         http.StatusConflict,
 		domain.ErrManagedClientConflict:                http.StatusConflict,
+		domain.ErrVersionConflict:                      http.StatusConflict,
+		domain.ErrAIGatewayAdministrator:               http.StatusForbidden,
 		domain.ErrInvalidTenant:                        http.StatusBadRequest,
 		errors.New("redis password must stay private"): http.StatusInternalServerError,
 	} {
@@ -112,5 +134,53 @@ func TestAIGatewayIdentityControllerIsAbsentWhileAIIsDisabled(t *testing.T) {
 	router.ServeHTTP(recorder, req)
 	if recorder.Code != http.StatusNotFound || len(service.calls) != 0 {
 		t.Fatalf("disabled AI ensured identity: %d %v", recorder.Code, service.calls)
+	}
+}
+
+func TestAIGatewayIdentityDeactivationControllerAuthorityAndContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	config, key := roleAccessConfig(t)
+	config.AIGateway.Enabled = true
+	service := &fakeAIGatewayIdentityService{created: true}
+	router := gin.New()
+	router.PUT("/v1/admin/tenants/:tenantId/ai-gateway/identity/deactivation", NewAIGatewayIdentityController(service, config).Deactivate)
+	token := func(claims jwt.MapClaims) string { return "Bearer " + signRoleAccessToken(t, key, claims) }
+	local := token(jwt.MapClaims{"sub": "admin-1", "tid": "bereia", "scope": "code-admin:identity:write"})
+	call := func(tenant, auth, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/v1/admin/tenants/"+tenant+"/ai-gateway/identity/deactivation", strings.NewReader(body))
+		req.Header.Set("Authorization", auth)
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	if r := call("bereia", local, `{}`); r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"status":"INACTIVE"`) {
+		t.Fatalf("deactivate=%d %s", r.Code, r.Body.String())
+	}
+	for name, test := range map[string]struct {
+		tenant, auth, body string
+		status             int
+	}{
+		"cross-tenant local admin": {"wecare", local, `{}`, http.StatusForbidden},
+		"non-admin":                {"bereia", token(jwt.MapClaims{"sub": "a", "tid": "bereia", "scope": "code-admin:features:write code-admin:identity:read"}), `{}`, http.StatusForbidden},
+		"no bearer":                {"bereia", "", `{}`, http.StatusUnauthorized},
+		"caller-selected status":   {"bereia", local, `{"status":"ACTIVE"}`, http.StatusBadRequest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if r := call(test.tenant, test.auth, test.body); r.Code != test.status {
+				t.Fatalf("status=%d want=%d body=%s", r.Code, test.status, r.Body.String())
+			}
+		})
+	}
+	if len(service.deactivations) != 1 || len(service.calls) != 0 {
+		t.Fatalf("rejected requests reached the service: %v %v", service.deactivations, service.calls)
+	}
+	platform := token(jwt.MapClaims{"sub": "operator", "tid": "local-tenant", "scope": domain.PlatformTenantAdminScope, "role": string(domain.RoleAdmin), domain.PlatformPrivilegeClaim: domain.PlatformPrivilegeAdmin})
+	if r := call("wecare", platform, `{}`); r.Code != http.StatusOK || service.deactivations[len(service.deactivations)-1] != "wecare" {
+		t.Fatalf("platform deactivation=%d %s", r.Code, r.Body.String())
+	}
+	service.err = domain.ErrManagedClientConflict
+	if r := call("bereia", local, `{}`); r.Code != http.StatusConflict {
+		t.Fatalf("look-alike=%d %s", r.Code, r.Body.String())
 	}
 }

@@ -238,7 +238,12 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	setupStorageSTSMappings(engine, cfg, storageSTSController)
 	setupObjectStorageBrowserMappings(engine, cfg, storageAdminController)
 	setupIdentityDirectoryMappings(engine, cfg, directoryService, userService)
-	setupAIGatewayIdentityMappings(engine, cfg, services.NewAIGatewayIdentityService(tenantRepo, roleService, clientRepo), userService)
+	aiClients, aiClientsOK := clientRepo.(services.AIGatewayClientStore)
+	if !aiClientsOK {
+		_ = redisClient.Close()
+		return nil, fmt.Errorf("AI gateway client authority is unavailable")
+	}
+	setupAIGatewayIdentityMappings(engine, cfg, services.NewAIGatewayIdentityService(tenantRepo, roleService, aiClients, directoryService), userService)
 
 	return &Application{
 		Config:                cfg,

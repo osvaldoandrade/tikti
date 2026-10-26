@@ -17,10 +17,14 @@ import (
 )
 
 type aiIdentityStores struct {
-	tenants repository.TenantRepository
-	roles   repository.RoleRepository
-	clients repository.ClientRepository
-	service AIGatewayIdentityService
+	tenants     repository.TenantRepository
+	roles       repository.RoleRepository
+	clients     repository.ClientRepository
+	directory   IdentityDirectoryService
+	service     AIGatewayIdentityService
+	admin       string
+	otherUser   string
+	statusStore repository.ManagedAudienceStatusRepository
 }
 
 func newAIIdentityStores(t *testing.T, tenantIDs ...string) aiIdentityStores {
@@ -28,19 +32,52 @@ func newAIIdentityStores(t *testing.T, tenantIDs ...string) aiIdentityStores {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	s := aiIdentityStores{tenants: repository.NewTenantRepo(client), roles: repository.NewRoleRepo(client), clients: repository.NewClientRepo(client)}
+	clients := repository.NewClientRepo(client)
+	s := aiIdentityStores{tenants: repository.NewTenantRepo(client), roles: repository.NewRoleRepo(client), clients: clients}
 	for _, id := range tenantIDs {
 		if _, _, err := s.tenants.CreateIfAbsent(context.Background(), &domain.Tenant{Id: id, Slug: id, Name: id, Status: domain.TenantStatusActive, CreatedAt: time.Now().Add(-time.Hour).UTC()}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	s.service = NewAIGatewayIdentityService(s.tenants, NewRoleService(s.roles), s.clients)
+	s.directory = NewIdentityDirectoryService(
+		repository.NewIdentityDirectoryRepository(client), repository.NewRedisRepo(client),
+		s.tenants.(repository.ExactTenantRepository), s.roles.(repository.ExactRoleBatchRepository), false,
+	)
+	for index, email := range []string{"ai-enabler@example.com", "other-admin@example.com"} {
+		created, err := s.directory.CreateUser(context.Background(), domain.DirectoryUserCreateReq{Email: email, TemporaryPassword: "temporary-1234"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			s.admin = created.ID
+		} else {
+			s.otherUser = created.ID
+		}
+	}
+	store, ok := clients.(AIGatewayClientStore)
+	if !ok {
+		t.Fatal("client repository lacks managed status updates")
+	}
+	s.statusStore = store
+	s.service = NewAIGatewayIdentityService(s.tenants, NewRoleService(s.roles), store, s.directory)
 	return s
+}
+
+func (s aiIdentityStores) directRoles(t *testing.T, tenantID, userID string) []string {
+	t.Helper()
+	assignment, err := s.directory.GetAssignment(context.Background(), tenantID, domain.AccessPrincipalUser, userID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return assignment.Roles
 }
 
 func TestAIGatewayIdentityEnsureCreatesClosedTenantRecordsAndReplays(t *testing.T) {
 	s := newAIIdentityStores(t, "tenant-1", "tenant-2")
-	got, created, err := s.service.Ensure(context.Background(), "tenant-1")
+	got, created, err := s.service.Ensure(context.Background(), "tenant-1", s.admin)
 	if err != nil || !created || got == nil {
 		t.Fatalf("ensure=%#v created=%v err=%v", got, created, err)
 	}
@@ -56,7 +93,7 @@ func TestAIGatewayIdentityEnsureCreatesClosedTenantRecordsAndReplays(t *testing.
 	if err != nil || !domain.IsManagedAIGatewayAudience("tenant-1", stored) || stored.SecretHash != "" {
 		t.Fatalf("stored client is not the managed credential-free audience: %#v %v", stored, err)
 	}
-	again, created, err := s.service.Ensure(context.Background(), "tenant-1")
+	again, created, err := s.service.Ensure(context.Background(), "tenant-1", s.admin)
 	if err != nil || created || again.Client.ClientId != got.Client.ClientId || len(again.Roles) != 2 {
 		t.Fatalf("replay=%#v created=%v err=%v", again, created, err)
 	}
@@ -92,7 +129,7 @@ func TestAIGatewayIdentityFailsClosedOnConflictsAndInvalidTenants(t *testing.T) 
 		if _, _, err := NewRoleService(s.roles).CreateWithName(ctx, "tenant-1", "tenant-1-ai-user", domain.RolePutReq{Permissions: []string{aigateway.InvokeScope}}); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := s.service.Ensure(ctx, "tenant-1"); !errors.Is(err, domain.ErrRoleConflict) {
+		if _, _, err := s.service.Ensure(ctx, "tenant-1", s.admin); !errors.Is(err, domain.ErrRoleConflict) {
 			t.Fatalf("err=%v", err)
 		}
 		role, _ := s.roles.Get(ctx, "tenant-1", "tenant-1-ai-user")
@@ -108,7 +145,7 @@ func TestAIGatewayIdentityFailsClosedOnConflictsAndInvalidTenants(t *testing.T) 
 		if err := s.clients.Create(ctx, "tenant-1", &domain.Client{Id: aigateway.Audience, TenantId: "tenant-1", SecretHash: "x", Type: domain.ClientTypeService, AllowedGrantTypes: []string{"token_exchange"}, DefaultScopes: []string{aigateway.InvokeScope}, Status: domain.ClientStatusActive}); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := s.service.Ensure(ctx, "tenant-1"); !errors.Is(err, domain.ErrManagedClientConflict) {
+		if _, _, err := s.service.Ensure(ctx, "tenant-1", s.admin); !errors.Is(err, domain.ErrManagedClientConflict) {
 			t.Fatalf("err=%v", err)
 		}
 	})
@@ -119,14 +156,14 @@ func TestAIGatewayIdentityFailsClosedOnConflictsAndInvalidTenants(t *testing.T) 
 			t.Fatal(err)
 		}
 		for _, id := range []string{"", "missing", "tenant-off", domain.RetiredDefaultTenantID, "Tenant-1", "tenant_1"} {
-			if _, _, err := s.service.Ensure(ctx, id); !errors.Is(err, domain.ErrInvalidTenant) {
+			if _, _, err := s.service.Ensure(ctx, id, s.admin); !errors.Is(err, domain.ErrInvalidTenant) {
 				t.Fatalf("tenant %q: err=%v", id, err)
 			}
 		}
 	})
 	t.Run("unconfigured", func(t *testing.T) {
 		var nilService *aiGatewayIdentityService
-		if _, _, err := nilService.Ensure(ctx, "tenant-1"); err == nil {
+		if _, _, err := nilService.Ensure(ctx, "tenant-1", "admin"); err == nil {
 			t.Fatal("nil service succeeded")
 		}
 	})
@@ -156,7 +193,7 @@ func TestAIGatewayIdentityEnablesExchangeOnlyThroughAssignedDedicatedRole(t *tes
 	if _, err := s.TokenExchange(context.Background(), request); err == nil {
 		t.Fatal("exchange succeeded before the AI identity existed")
 	}
-	if _, _, err := stores.service.Ensure(context.Background(), tenant.Id); err != nil {
+	if _, _, err := stores.service.Ensure(context.Background(), tenant.Id, stores.admin); err != nil {
 		t.Fatal(err)
 	}
 	assigned = []string{"unrelated"}

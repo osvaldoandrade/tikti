@@ -13,7 +13,10 @@ const (
 
 	GrantTypeTokenExchange GrantType = "token_exchange"
 
-	ClientStatusActive              = "ACTIVE"
+	ClientStatusActive = "ACTIVE"
+	// ClientStatusInactive is used only by the managed AI audience: a disabled
+	// tenant AI feature keeps its credential-free record but cannot exchange.
+	ClientStatusInactive            = "INACTIVE"
 	CodeAdminAudienceClientID       = "code-admin-api"
 	CodeAdminAudienceClientManager  = "tikti:code-admin-audience:v1"
 	WorkloadAccountBFFClientManager = "tikti:workload-account-bff:v1"
@@ -83,10 +86,19 @@ func IsManagedWorkloadAccountAudience(tenantID string, client *Client) bool {
 }
 
 // IsManagedAIGatewayAudience reports whether the credential-free AI audience
-// is owned by Tikti's tenant AI identity contract. Unmanaged look-alikes fail.
+// is owned by Tikti's tenant AI identity contract and currently ACTIVE. Only an
+// active managed record opens AI user exchange; unmanaged look-alikes fail.
 func IsManagedAIGatewayAudience(tenantID string, client *Client) bool {
+	return IsManagedAIGatewayAudienceRecord(tenantID, client) && client.Status == ClientStatusActive
+}
+
+// IsManagedAIGatewayAudienceRecord accepts the managed AI audience in either
+// lifecycle state. INACTIVE records are retained while the tenant feature is
+// disabled and are reactivated, never recreated, when it is enabled again.
+func IsManagedAIGatewayAudienceRecord(tenantID string, client *Client) bool {
 	return client != nil && client.Id == AIGatewayAudienceClientID && client.TenantId == tenantID &&
-		client.SecretHash == "" && client.Type == ClientTypeService && client.Status == ClientStatusActive &&
+		client.SecretHash == "" && client.Type == ClientTypeService &&
+		(client.Status == ClientStatusActive || client.Status == ClientStatusInactive) &&
 		client.ManagedBy == AIGatewayAudienceClientManager &&
 		slices.Equal(client.AllowedGrantTypes, []string{string(GrantTypeTokenExchange)})
 }
@@ -97,4 +109,25 @@ type AIGatewayIdentityResp struct {
 	TenantId string                    `json:"tenantId"`
 	Client   ManagedAudienceClientResp `json:"client"`
 	Roles    []RoleResp                `json:"roles"`
+	// AdminAssignment is the only assignment activation performs: the
+	// tenant AI admin role for the enabling administrator's own user.
+	AdminAssignment AIGatewayAdminAssignmentResp `json:"adminAssignment"`
 }
+
+// AIGatewayAdminAssignmentResp names the enabling administrator and the one
+// role activation guarantees for that user in the tenant.
+type AIGatewayAdminAssignmentResp struct {
+	PrincipalId string `json:"principalId"`
+	Role        string `json:"role"`
+}
+
+// AIGatewayDeactivationResp reports the managed AI audience after disabling.
+// Status is INACTIVE, or ABSENT when the tenant never had the audience.
+type AIGatewayDeactivationResp struct {
+	TenantId string `json:"tenantId"`
+	ClientId string `json:"clientId"`
+	Status   string `json:"status"`
+}
+
+// AIGatewayClientAbsent reports that no managed AI audience exists.
+const AIGatewayClientAbsent = "ABSENT"
