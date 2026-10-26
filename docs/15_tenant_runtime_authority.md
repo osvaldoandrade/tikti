@@ -23,6 +23,21 @@ constant-time digest comparison. Browser `Origin`, `Cookie` and `Authorization`,
 queries, bodies, transfer encoding, duplicate/comma-joined headers, noncanonical
 paths and every method except GET are rejected before a storage read.
 
+`X-API-Key` on this one route accepts either the master `apiKey` or a
+purpose-bound derived credential: lowercase hex (64 characters) of
+HMAC-SHA256 with key = the exact loaded `apiKey` bytes (after the
+`API_KEY_FILE` surrounding-whitespace trim; startup refuses any other
+surrounding whitespace) and message = ASCII
+`code-foundry/tikti/tenant-runtime-state/v1`. Tikti computes it once at startup
+and holds it only inside the runtime-state handler; the shared API-key
+middleware never sees it, so every other route (workload bindings, admin,
+lookup, token exchange, account, AI and storage routes) rejects it as a wrong
+key. An empty `apiKey` derives nothing. Workload clusters that only read tenant
+runtime state (for example the iTransform AI credential relay) must hold the
+derived value, never the master. Rotating `tikti-api-key` rotates the derived
+value; the holder's Secret must then be re-created through a reviewed
+installation transition.
+
 The private namespace and rejected aliases are registered in `NewApplication`
 before the browser CORS middleware. Success and errors have `Cache-Control:
 no-store`, no browser CORS grant, and bounded JSON. Error codes are

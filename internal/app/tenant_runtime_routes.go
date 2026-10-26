@@ -42,6 +42,10 @@ func setupTenantRuntimeMappings(engine *gin.Engine, cfg *config.Config, reader r
 		return
 	}
 	configuredKey := sha256.Sum256([]byte(cfg.ApiKey))
+	// The purpose-bound derived credential lives only in this closure; no
+	// other route can observe or accept it. Empty masters derive nothing.
+	derived, derivedEnabled := deriveTenantRuntimeStateCredential(cfg.ApiKey)
+	derivedKey := sha256.Sum256([]byte(derived))
 	handler := func(c *gin.Context) {
 		c.Header("Cache-Control", "no-store")
 		c.Header("Pragma", "no-cache")
@@ -63,9 +67,19 @@ func setupTenantRuntimeMappings(engine *gin.Engine, cfg *config.Config, reader r
 			tenantRuntimeError(c, http.StatusBadRequest, "TenantRuntimeInvalidRequest")
 			return
 		}
+		// Accept the master key (existing callers) or the derived
+		// tenant-runtime-state credential, only after the canonical GET path and
+		// request shape passed above. No other route accepts the derived value.
 		key, keyOK := singletonRuntimeHeader(request.Header, "X-API-Key")
 		providedKey := sha256.Sum256([]byte(key))
-		if !keyOK || subtle.ConstantTimeCompare(configuredKey[:], providedKey[:]) != 1 {
+		// Both digests are always compared so timing does not reveal which
+		// credential class matched.
+		masterMatch := subtle.ConstantTimeCompare(configuredKey[:], providedKey[:])
+		derivedMatch := subtle.ConstantTimeCompare(derivedKey[:], providedKey[:])
+		if !derivedEnabled {
+			derivedMatch = 0
+		}
+		if !keyOK || masterMatch|derivedMatch != 1 {
 			tenantRuntimeError(c, http.StatusUnauthorized, "TenantRuntimeUnauthorized")
 			return
 		}
