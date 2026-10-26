@@ -243,7 +243,12 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		_ = redisClient.Close()
 		return nil, fmt.Errorf("AI gateway client authority is unavailable")
 	}
-	setupAIGatewayIdentityMappings(engine, cfg, services.NewAIGatewayIdentityService(tenantRepo, roleService, aiClients, directoryService), userService)
+	aiAssignments, aiAssignmentsOK := directoryService.(services.AIGatewayAssignmentStore)
+	if !aiAssignmentsOK {
+		_ = redisClient.Close()
+		return nil, fmt.Errorf("AI gateway assignment authority is unavailable")
+	}
+	setupAIGatewayIdentityMappings(engine, cfg, services.NewAIGatewayIdentityService(tenantRepo, roleService, aiClients, aiAssignments), userService)
 
 	return &Application{
 		Config:                cfg,

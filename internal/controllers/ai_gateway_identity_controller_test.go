@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/osvaldoandrade/tikti/internal/services"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -182,5 +185,70 @@ func TestAIGatewayIdentityDeactivationControllerAuthorityAndContract(t *testing.
 	service.err = domain.ErrManagedClientConflict
 	if r := call("bereia", local, `{}`); r.Code != http.StatusConflict {
 		t.Fatalf("look-alike=%d %s", r.Code, r.Body.String())
+	}
+}
+
+// Directory and dependency states an operator can repair are stable 409s with
+// a code; the audit line names the closed stage and error class and never
+// carries error text, tokens or values.
+func TestAIGatewayIdentityControllerStableCodesAndAuditStage(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	config, key := roleAccessConfig(t)
+	config.AIGateway.Enabled = true
+	service := &fakeAIGatewayIdentityService{}
+	router := gin.New()
+	router.PUT("/v1/admin/tenants/:tenantId/ai-gateway/identity", NewAIGatewayIdentityController(service, config).Ensure)
+	bearer := "Bearer " + signRoleAccessToken(t, key, jwt.MapClaims{"sub": "admin-1", "tid": "bereia", "scope": "code-admin:identity:write"})
+	var audit bytes.Buffer
+	previous, flags := log.Writer(), log.Flags()
+	log.SetOutput(&audit)
+	log.SetFlags(0)
+	t.Cleanup(func() { log.SetOutput(previous); log.SetFlags(flags) })
+	call := func() *httptest.ResponseRecorder {
+		audit.Reset()
+		req := httptest.NewRequest(http.MethodPut, "/v1/admin/tenants/bereia/ai-gateway/identity", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", bearer)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Request-Id", "req-1")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	staged := func(stage string, err error) error { return &services.AIGatewayIdentityError{Stage: stage, Err: err} }
+	secret := errors.New("redis password must stay private")
+	for name, test := range map[string]struct {
+		err          error
+		status       int
+		code, stage  string
+		class, about string
+	}{
+		"administrator":         {staged(services.AIGatewayStageAssignment, domain.ErrAIGatewayAdministrator), http.StatusForbidden, "AIIdentityAdministratorRequired", "assignment", "administrator", "denied"},
+		"invalid tenant":        {staged(services.AIGatewayStageTenant, domain.ErrInvalidTenant), http.StatusBadRequest, "AIIdentityInvalidRequest", "tenant", "invalid", "invalid"},
+		"role conflict":         {staged(services.AIGatewayStageRoles, domain.ErrRoleConflict), http.StatusConflict, "AIIdentityRoleConflict", "roles", "role_conflict", "conflict"},
+		"client conflict":       {staged(services.AIGatewayStageCeiling, domain.ErrManagedClientConflict), http.StatusConflict, "AIIdentityClientConflict", "ceiling", "client_conflict", "conflict"},
+		"version conflict":      {staged(services.AIGatewayStageAssignment, domain.ErrVersionConflict), http.StatusConflict, "AIIdentityVersionConflict", "assignment", "version_conflict", "conflict"},
+		"directory invariant":   {staged(services.AIGatewayStageAssignment, domain.ErrDirectoryInvariant), http.StatusConflict, "AIIdentityDirectoryInvariant", "assignment", "directory_invariant", "conflict"},
+		"dependency missing":    {staged(services.AIGatewayStageAssignment, domain.ErrMembershipDependencyNotFound), http.StatusConflict, "AIIdentityDependencyMissingOrInactive", "assignment", "dependency", "conflict"},
+		"dependency inactive":   {staged(services.AIGatewayStageAssignment, domain.ErrMembershipDependencyInactive), http.StatusConflict, "AIIdentityDependencyMissingOrInactive", "assignment", "dependency", "conflict"},
+		"audience internal":     {staged(services.AIGatewayStageAudience, secret), http.StatusInternalServerError, "AIIdentityInternal", "audience", "internal", "failure"},
+		"unstaged internal":     {secret, http.StatusInternalServerError, "AIIdentityInternal", "unknown", "internal", "failure"},
+		"unconfigured internal": {staged(services.AIGatewayStageRequest, domain.ErrAuthenticationUnavailable), http.StatusInternalServerError, "AIIdentityInternal", "request", "unavailable", "failure"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service.err = test.err
+			r := call()
+			if r.Code != test.status || !strings.Contains(r.Body.String(), `"code":"`+test.code+`"`) || strings.Contains(r.Body.String(), "redis") {
+				t.Fatalf("status=%d body=%s", r.Code, r.Body.String())
+			}
+			line := audit.String()
+			if !strings.Contains(line, "result="+test.about+" stage="+test.stage+" error_class="+test.class+"\n") ||
+				!strings.Contains(line, `request_id="req-1"`) || strings.Contains(line, "redis") || strings.Contains(line, "Bearer") {
+				t.Fatalf("audit=%q", line)
+			}
+		})
+	}
+	service.err = nil
+	if r := call(); r.Code != http.StatusOK || !strings.Contains(audit.String(), "result=replay stage=none error_class=none") {
+		t.Fatalf("success audit=%q status=%d", audit.String(), r.Code)
 	}
 }

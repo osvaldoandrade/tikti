@@ -40,6 +40,11 @@ type ExactRoleBatchRepository interface {
 
 var errStoredRoleContract = errors.New("stored role contract mismatch")
 
+// IsStoredRoleContractMismatch reports whether err means a stored role is not
+// an exact tenant role definition. Callers use it only to classify a failure;
+// the stored record is never exposed.
+func IsStoredRoleContractMismatch(err error) bool { return errors.Is(err, errStoredRoleContract) }
+
 var replaceExactRoleScript = redis.NewScript(`
 local current = redis.call("HGET", KEYS[1], ARGV[1])
 if not current or current ~= ARGV[2] then return "changed" end

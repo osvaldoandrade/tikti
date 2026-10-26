@@ -35,7 +35,7 @@ func TestAIGatewayActivationMakesTenantAIAdminEffectiveInConsoleToken(t *testing
 		t.Fatal(err)
 	}
 	directory := NewIdentityDirectoryService(directoryRepo, users, tenants.(repository.ExactTenantRepository), roles.(repository.ExactRoleBatchRepository), false)
-	ai := NewAIGatewayIdentityService(tenants, NewRoleService(roles), clients.(AIGatewayClientStore), directory)
+	ai := NewAIGatewayIdentityService(tenants, NewRoleService(roles), clients.(AIGatewayClientStore), aiAssignmentStore(t, directory))
 	// A directory administrator of exactly this tenant (no legacy home).
 	created, err := directory.CreateUser(ctx, domain.DirectoryUserCreateReq{Email: "tenant-admin@example.com", TemporaryPassword: "temporary-1234"})
 	if err != nil {
@@ -136,7 +136,7 @@ func TestAIGatewayActivationRaisesMasterHomeConsoleTokenThroughLegacyAudience(t 
 		t.Fatal(err)
 	}
 	directory := NewIdentityDirectoryService(directoryRepo, users, tenants.(repository.ExactTenantRepository), roles.(repository.ExactRoleBatchRepository), false)
-	ai := NewAIGatewayIdentityService(tenants, NewRoleService(roles), clients.(AIGatewayClientStore), directory)
+	ai := NewAIGatewayIdentityService(tenants, NewRoleService(roles), clients.(AIGatewayClientStore), aiAssignmentStore(t, directory))
 	console := NewUserService(users, repository.NewMembershipRepo(client), NewRoleService(roles), NewClientService(clients),
 		"jwt-secret", "https://issuer", "tikti", makePEMKey(t), "kid",
 		WithIdentityDirectoryAccess(directoryRepo),

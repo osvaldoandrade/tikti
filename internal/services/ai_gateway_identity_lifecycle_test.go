@@ -101,27 +101,27 @@ type conflictingAssignments struct {
 	puts      int
 }
 
-func (c *conflictingAssignments) PutAssignment(ctx context.Context, tenantID string, kind domain.AccessPrincipalType, principalID string, roles []string, ifMatch string) (*domain.AccessAssignment, bool, error) {
+func (c *conflictingAssignments) AddExactUserRole(ctx context.Context, tenantID, userID, role string, permissions []string) (*domain.AccessAssignment, bool, error) {
 	c.puts++
 	if c.conflicts > 0 {
 		c.conflicts--
 		return nil, false, domain.ErrVersionConflict
 	}
-	return c.AIGatewayAssignmentStore.PutAssignment(ctx, tenantID, kind, principalID, roles, ifMatch)
+	return c.AIGatewayAssignmentStore.AddExactUserRole(ctx, tenantID, userID, role, permissions)
 }
 
 func TestAIGatewayIdentityAssignmentRetriesConcurrencyThenFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	s := newAIIdentityStores(t, "tenant-1")
 	store := s.statusStore.(AIGatewayClientStore)
-	flaky := &conflictingAssignments{AIGatewayAssignmentStore: s.directory, conflicts: 1}
+	flaky := &conflictingAssignments{AIGatewayAssignmentStore: aiAssignmentStore(t, s.directory), conflicts: 1}
 	service := NewAIGatewayIdentityService(s.tenants, NewRoleService(s.roles), store, flaky)
 	if _, _, err := service.Ensure(ctx, "tenant-1", s.admin); err != nil || flaky.puts != 2 {
 		t.Fatalf("single conflict was not retried: puts=%d err=%v", flaky.puts, err)
 	}
 	s = newAIIdentityStores(t, "tenant-1")
 	store = s.statusStore.(AIGatewayClientStore)
-	stuck := &conflictingAssignments{AIGatewayAssignmentStore: s.directory, conflicts: 1 << 10}
+	stuck := &conflictingAssignments{AIGatewayAssignmentStore: aiAssignmentStore(t, s.directory), conflicts: 1 << 10}
 	service = NewAIGatewayIdentityService(s.tenants, NewRoleService(s.roles), store, stuck)
 	if _, _, err := service.Ensure(ctx, "tenant-1", s.admin); !errors.Is(err, domain.ErrVersionConflict) || stuck.puts != aiGatewayAssignmentAttempts {
 		t.Fatalf("persistent conflict: puts=%d err=%v", stuck.puts, err)

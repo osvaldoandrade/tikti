@@ -33,11 +33,52 @@ type AIGatewayClientStore interface {
 }
 
 // AIGatewayAssignmentStore is the directory assignment authority used for the
-// single administrator assignment. IdentityDirectoryService satisfies it and
-// verifies the tenant, the user and the role definitions on every write.
+// single administrator assignment. The identity directory service satisfies
+// it: AddExactUserRole validates the tenant and only the exact role being
+// added, preserves every existing role of the user's direct assignment
+// verbatim and writes with the observed version as If-Match. It is not part of
+// the administrative IdentityDirectoryService surface.
 type AIGatewayAssignmentStore interface {
-	GetAssignment(ctx context.Context, tenantID string, kind domain.AccessPrincipalType, principalID string) (*domain.AccessAssignment, error)
-	PutAssignment(ctx context.Context, tenantID string, kind domain.AccessPrincipalType, principalID string, roles []string, ifMatch string) (*domain.AccessAssignment, bool, error)
+	AddExactUserRole(ctx context.Context, tenantID, userID, roleName string, permissions []string) (*domain.AccessAssignment, bool, error)
+}
+
+// Closed Ensure stages attributed to a failure (audit and operator triage).
+const (
+	AIGatewayStageRequest    = "request"
+	AIGatewayStageTenant     = "tenant"
+	AIGatewayStageCeiling    = "ceiling"
+	AIGatewayStageRoles      = "roles"
+	AIGatewayStageAssignment = "assignment"
+	AIGatewayStageAudience   = "audience"
+)
+
+// AIGatewayIdentityError attributes an Ensure failure to one closed stage.
+// Error returns the wrapped error's text unchanged; errors.Is/As see through it.
+type AIGatewayIdentityError struct {
+	Stage string
+	Err   error
+}
+
+func (e *AIGatewayIdentityError) Error() string { return e.Err.Error() }
+func (e *AIGatewayIdentityError) Unwrap() error { return e.Err }
+
+// AIGatewayIdentityFailureStage returns the closed stage of an Ensure failure,
+// or "" when err carries none.
+func AIGatewayIdentityFailureStage(err error) string {
+	var staged *AIGatewayIdentityError
+	if errors.As(err, &staged) && staged != nil {
+		return staged.Stage
+	}
+	return ""
+}
+
+func aiGatewayStageError(stage string, err error) error {
+	if repository.IsStoredRoleContractMismatch(err) {
+		// A stored role under a server-owned name is not the exact tenant
+		// definition: an actionable conflict, never an internal error.
+		err = domain.ErrRoleConflict
+	}
+	return &AIGatewayIdentityError{Stage: stage, Err: err}
 }
 
 type aiGatewayIdentityService struct {
@@ -82,24 +123,24 @@ func AIGatewayAdminRole(tenantID string) string { return tenantID + "-ai-admin" 
 
 func (s *aiGatewayIdentityService) Ensure(ctx context.Context, tenantID, administratorID string) (*domain.AIGatewayIdentityResp, bool, error) {
 	if s == nil || s.tenants == nil || s.roles == nil || s.clients == nil || s.assignments == nil {
-		return nil, false, domain.ErrAuthenticationUnavailable
+		return nil, false, aiGatewayStageError(AIGatewayStageRequest, domain.ErrAuthenticationUnavailable)
 	}
 	if strings.TrimSpace(administratorID) != administratorID || administratorID == "" {
-		return nil, false, domain.ErrAIGatewayAdministrator
+		return nil, false, aiGatewayStageError(AIGatewayStageRequest, domain.ErrAIGatewayAdministrator)
 	}
 	if !validRoleTenantID(tenantID) || tenantID == domain.RetiredDefaultTenantID {
-		return nil, false, domain.ErrInvalidTenant
+		return nil, false, aiGatewayStageError(AIGatewayStageRequest, domain.ErrInvalidTenant)
 	}
 	tenant, err := s.tenants.Get(ctx, tenantID)
 	if err != nil {
-		return nil, false, err
+		return nil, false, aiGatewayStageError(AIGatewayStageTenant, err)
 	}
 	if !activeTenant(tenant, tenantID, s.now().UTC()) {
-		return nil, false, domain.ErrInvalidTenant
+		return nil, false, aiGatewayStageError(AIGatewayStageTenant, domain.ErrInvalidTenant)
 	}
 	created, err := s.raiseConsoleCeiling(ctx, tenantID)
 	if err != nil {
-		return nil, false, err
+		return nil, false, aiGatewayStageError(AIGatewayStageCeiling, err)
 	}
 	roles := AIGatewayRoleDefinitions(tenantID)
 	out := &domain.AIGatewayIdentityResp{TenantId: tenantID, Roles: make([]domain.RoleResp, 0, len(roles))}
@@ -108,14 +149,14 @@ func (s *aiGatewayIdentityService) Ensure(ctx context.Context, tenantID, adminis
 		// Code Admin scopes. This rejects any future edit adding platform scopes.
 		permissions, valid := scopepolicy.CanonicalPermissions(role.Permissions)
 		if !valid || !slices.Equal(permissions, role.Permissions) || slices.Contains(permissions, "code-admin:ai:platform") || slices.Contains(permissions, aigateway.RuntimeScope) {
-			return nil, false, domain.ErrInvalidArgument
+			return nil, false, aiGatewayStageError(AIGatewayStageRoles, domain.ErrInvalidArgument)
 		}
 		stored, roleCreated, roleErr := s.roles.CreateWithName(ctx, tenantID, role.Name, domain.RolePutReq{Permissions: permissions})
 		if roleErr != nil {
-			return nil, false, roleErr
+			return nil, false, aiGatewayStageError(AIGatewayStageRoles, roleErr)
 		}
 		if stored == nil || stored.Name != role.Name || !slices.Equal(stored.Permissions, permissions) {
-			return nil, false, domain.ErrRoleConflict
+			return nil, false, aiGatewayStageError(AIGatewayStageRoles, domain.ErrRoleConflict)
 		}
 		created = created || roleCreated
 		out.Roles = append(out.Roles, domain.RoleResp{Name: stored.Name, Permissions: append([]string(nil), stored.Permissions...)})
@@ -124,9 +165,13 @@ func (s *aiGatewayIdentityService) Ensure(ctx context.Context, tenantID, adminis
 	// that user, receives the tenant AI admin role. A failure stops before the
 	// audience is (re)activated so the API does not store the feature.
 	adminRole := AIGatewayAdminRole(tenantID)
-	assigned, err := s.assignAdministrator(ctx, tenantID, administratorID, adminRole)
+	adminIndex := slices.IndexFunc(out.Roles, func(role domain.RoleResp) bool { return role.Name == adminRole })
+	if adminIndex < 0 {
+		return nil, false, aiGatewayStageError(AIGatewayStageRoles, domain.ErrRoleConflict)
+	}
+	assigned, err := s.assignAdministrator(ctx, tenantID, administratorID, out.Roles[adminIndex])
 	if err != nil {
-		return nil, false, err
+		return nil, false, aiGatewayStageError(AIGatewayStageAssignment, err)
 	}
 	created = created || assigned
 	out.AdminAssignment = domain.AIGatewayAdminAssignmentResp{PrincipalId: administratorID, Role: adminRole}
@@ -142,12 +187,12 @@ func (s *aiGatewayIdentityService) Ensure(ctx context.Context, tenantID, adminis
 	stored, clientCreated, err := s.clients.EnsureManagedAudience(ctx, tenantID, desired)
 	if err != nil {
 		if errors.Is(err, domain.ErrManagedClientConflict) {
-			return nil, false, domain.ErrManagedClientConflict
+			return nil, false, aiGatewayStageError(AIGatewayStageAudience, domain.ErrManagedClientConflict)
 		}
-		return nil, false, err
+		return nil, false, aiGatewayStageError(AIGatewayStageAudience, err)
 	}
 	if !domain.IsManagedAIGatewayAudience(tenantID, stored) || !slices.Equal(stored.DefaultScopes, desired.DefaultScopes) {
-		return nil, false, domain.ErrManagedClientConflict
+		return nil, false, aiGatewayStageError(AIGatewayStageAudience, domain.ErrManagedClientConflict)
 	}
 	out.Client = domain.ManagedAudienceClientResp{
 		ClientId: stored.Id, TenantId: stored.TenantId, Type: stored.Type,
@@ -194,42 +239,31 @@ func (s *aiGatewayIdentityService) raiseConsoleCeiling(ctx context.Context, tena
 	return changed, nil
 }
 
-// assignAdministrator adds role to the user's direct assignment in tenantID,
-// preserving every existing role, with optimistic concurrency. It reports
-// whether the assignment changed.
-func (s *aiGatewayIdentityService) assignAdministrator(ctx context.Context, tenantID, userID, role string) (bool, error) {
+// assignAdministrator adds only the exact tenant AI admin role to the user's
+// direct assignment in tenantID through the narrow directory operation, which
+// validates only that role and preserves every existing role verbatim. Each
+// attempt writes with the observed version as If-Match; a version conflict is
+// retried. It reports whether the assignment changed.
+func (s *aiGatewayIdentityService) assignAdministrator(ctx context.Context, tenantID, userID string, role domain.RoleResp) (bool, error) {
+	if role.Name != AIGatewayAdminRole(tenantID) {
+		return false, domain.ErrInvalidArgument
+	}
 	for range aiGatewayAssignmentAttempts {
-		roles, ifMatch := []string{role}, ""
-		current, err := s.assignments.GetAssignment(ctx, tenantID, domain.AccessPrincipalUser, userID)
-		switch {
-		case errors.Is(err, domain.ErrNotFound):
-		case errors.Is(err, domain.ErrInvalidArgument):
-			return false, domain.ErrAIGatewayAdministrator
-		case err != nil:
-			return false, err
-		default:
-			if current == nil || current.TenantID != tenantID || current.PrincipalType != domain.AccessPrincipalUser || current.PrincipalID != userID {
-				return false, domain.ErrDirectoryInvariant
-			}
-			if slices.Contains(current.Roles, role) {
-				return false, nil
-			}
-			roles = append(slices.Clone(current.Roles), role)
-			ifMatch = repository.IdentityETag(current.Version)
-		}
-		stored, _, err := s.assignments.PutAssignment(ctx, tenantID, domain.AccessPrincipalUser, userID, roles, ifMatch)
+		stored, changed, err := s.assignments.AddExactUserRole(ctx, tenantID, userID, role.Name, slices.Clone(role.Permissions))
 		switch {
 		case errors.Is(err, domain.ErrVersionConflict):
 			continue
 		case errors.Is(err, domain.ErrNotFound), errors.Is(err, domain.ErrInvalidTenant), errors.Is(err, domain.ErrInvalidArgument):
+			// Unknown or non-canonical user, or a SAML user bound to another tenant.
 			return false, domain.ErrAIGatewayAdministrator
 		case err != nil:
 			return false, err
 		}
-		if stored == nil || stored.TenantID != tenantID || stored.PrincipalID != userID || len(stored.Roles) != len(roles) || !slices.Contains(stored.Roles, role) {
+		if stored == nil || stored.TenantID != tenantID || stored.PrincipalType != domain.AccessPrincipalUser ||
+			stored.PrincipalID != userID || !slices.Contains(stored.Roles, role.Name) {
 			return false, domain.ErrDirectoryInvariant
 		}
-		return true, nil
+		return changed, nil
 	}
 	return false, domain.ErrVersionConflict
 }

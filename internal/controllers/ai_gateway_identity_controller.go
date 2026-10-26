@@ -34,23 +34,32 @@ func NewAIGatewayIdentityController(service services.AIGatewayIdentityService, c
 // administrator acting on another tenant has no identity to assign and fails.
 func (c *aiGatewayIdentityController) Ensure(ctx *gin.Context) {
 	tenantID, outcome, actor := ctx.Param("tenantId"), "failure", ""
+	stage, class := aiIdentityStageNone, aiIdentityClassNone
 	defer func() {
-		log.Printf("audit event=ai_gateway_identity_ensure actor=%.128q tenant=%.128q client=%q assigned_role=%.160q request_id=%.128q result=%s",
-			actor, tenantID, domain.AIGatewayAudienceClientID, services.AIGatewayAdminRole(tenantID), ctx.GetHeader("X-Request-Id"), outcome)
+		// stage and error_class are closed vocabularies: no value, token or
+		// upstream error text is ever logged.
+		log.Printf("audit event=ai_gateway_identity_ensure actor=%.128q tenant=%.128q client=%q assigned_role=%.160q request_id=%.128q result=%s stage=%s error_class=%s",
+			actor, tenantID, domain.AIGatewayAudienceClientID, services.AIGatewayAdminRole(tenantID), ctx.GetHeader("X-Request-Id"), outcome, stage, class)
 	}()
 	claims, ok := c.authorize(ctx, tenantID, &outcome)
 	if !ok {
+		stage, class = services.AIGatewayStageRequest, aiIdentityGateClass(outcome)
 		return
 	}
 	actor = claimString(claims, "sub")
 	if claimString(claims, "tid") != tenantID {
 		outcome = "denied"
-		ctx.JSON(http.StatusForbidden, gin.H{"error": domain.ErrAIGatewayAdministrator.Error()})
+		stage, class = services.AIGatewayStageRequest, aiIdentityClassAdministrator
+		ctx.JSON(http.StatusForbidden, gin.H{"error": domain.ErrAIGatewayAdministrator.Error(), "code": aiIdentityCodeAdministrator})
 		return
 	}
 	response, created, err := c.service.Ensure(ctx.Request.Context(), tenantID, actor)
 	if err != nil {
-		outcome = c.writeError(ctx, err, "could not ensure AI identity")
+		stage = services.AIGatewayIdentityFailureStage(err)
+		if stage == "" {
+			stage = aiIdentityStageUnknown
+		}
+		outcome, class = c.writeError(ctx, err, "could not ensure AI identity")
 		return
 	}
 	status := http.StatusOK
@@ -77,7 +86,7 @@ func (c *aiGatewayIdentityController) Deactivate(ctx *gin.Context) {
 	actor = claimString(claims, "sub")
 	response, changed, err := c.service.Deactivate(ctx.Request.Context(), tenantID)
 	if err != nil {
-		outcome = c.writeError(ctx, err, "could not deactivate AI identity")
+		outcome, _ = c.writeError(ctx, err, "could not deactivate AI identity")
 		return
 	}
 	outcome = "replay"
@@ -123,20 +132,85 @@ func (c *aiGatewayIdentityController) authorize(ctx *gin.Context, tenantID strin
 	return claims, true
 }
 
-func (c *aiGatewayIdentityController) writeError(ctx *gin.Context, err error, fallback string) string {
+// Closed audit vocabularies and stable response codes of the AI identity
+// routes. Codes are additive to the legacy {"error": ...} text.
+const (
+	aiIdentityStageNone    = "none"
+	aiIdentityStageUnknown = "unknown"
+
+	aiIdentityClassNone               = "none"
+	aiIdentityClassAdministrator      = "administrator"
+	aiIdentityClassDenied             = "denied"
+	aiIdentityClassInvalid            = "invalid"
+	aiIdentityClassRoleConflict       = "role_conflict"
+	aiIdentityClassClientConflict     = "client_conflict"
+	aiIdentityClassVersionConflict    = "version_conflict"
+	aiIdentityClassDirectoryInvariant = "directory_invariant"
+	aiIdentityClassDependency         = "dependency"
+	aiIdentityClassUnavailable        = "unavailable"
+	aiIdentityClassInternal           = "internal"
+
+	aiIdentityCodeAdministrator      = "AIIdentityAdministratorRequired"
+	aiIdentityCodeInvalid            = "AIIdentityInvalidRequest"
+	aiIdentityCodeRoleConflict       = "AIIdentityRoleConflict"
+	aiIdentityCodeClientConflict     = "AIIdentityClientConflict"
+	aiIdentityCodeVersionConflict    = "AIIdentityVersionConflict"
+	aiIdentityCodeDirectoryInvariant = "AIIdentityDirectoryInvariant"
+	aiIdentityCodeDependency         = "AIIdentityDependencyMissingOrInactive"
+	aiIdentityCodeInternal           = "AIIdentityInternal"
+)
+
+// aiIdentityGateClass maps a route-gate outcome to the closed error class.
+func aiIdentityGateClass(outcome string) string {
+	switch outcome {
+	case "denied":
+		return aiIdentityClassDenied
+	case "unavailable":
+		return aiIdentityClassUnavailable
+	default:
+		// Non-canonical tenant path, media type or body.
+		return aiIdentityClassInvalid
+	}
+}
+
+const aiIdentityConflictMessage = "AI identity conflicts with an existing tenant role, assignment or client"
+
+// writeError maps a service failure to a stable status and code and returns
+// the audit outcome and closed error class. Directory and dependency states
+// an operator can repair are 409, never 500; only unclassified failures are
+// internal. No error detail beyond the fixed messages is returned.
+func (c *aiGatewayIdentityController) writeError(ctx *gin.Context, err error, fallback string) (string, string) {
 	switch {
 	case errors.Is(err, domain.ErrAIGatewayAdministrator):
-		ctx.JSON(http.StatusForbidden, gin.H{"error": domain.ErrAIGatewayAdministrator.Error()})
-		return "denied"
-	case errors.Is(err, domain.ErrInvalidTenant), errors.Is(err, domain.ErrInvalidArgument):
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return "invalid"
-	case errors.Is(err, domain.ErrRoleConflict), errors.Is(err, domain.ErrManagedClientConflict), errors.Is(err, domain.ErrVersionConflict):
-		ctx.JSON(http.StatusConflict, gin.H{"error": "AI identity conflicts with an existing tenant role, assignment or client"})
-		return "conflict"
+		ctx.JSON(http.StatusForbidden, gin.H{"error": domain.ErrAIGatewayAdministrator.Error(), "code": aiIdentityCodeAdministrator})
+		return "denied", aiIdentityClassAdministrator
+	case errors.Is(err, domain.ErrInvalidTenant):
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidTenant.Error(), "code": aiIdentityCodeInvalid})
+		return "invalid", aiIdentityClassInvalid
+	case errors.Is(err, domain.ErrInvalidArgument):
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": domain.ErrInvalidArgument.Error(), "code": aiIdentityCodeInvalid})
+		return "invalid", aiIdentityClassInvalid
+	case errors.Is(err, domain.ErrRoleConflict):
+		ctx.JSON(http.StatusConflict, gin.H{"error": aiIdentityConflictMessage, "code": aiIdentityCodeRoleConflict})
+		return "conflict", aiIdentityClassRoleConflict
+	case errors.Is(err, domain.ErrManagedClientConflict):
+		ctx.JSON(http.StatusConflict, gin.H{"error": aiIdentityConflictMessage, "code": aiIdentityCodeClientConflict})
+		return "conflict", aiIdentityClassClientConflict
+	case errors.Is(err, domain.ErrVersionConflict):
+		ctx.JSON(http.StatusConflict, gin.H{"error": aiIdentityConflictMessage, "code": aiIdentityCodeVersionConflict})
+		return "conflict", aiIdentityClassVersionConflict
+	case errors.Is(err, domain.ErrDirectoryInvariant):
+		ctx.JSON(http.StatusConflict, gin.H{"error": "AI identity conflicts with the tenant identity directory state", "code": aiIdentityCodeDirectoryInvariant})
+		return "conflict", aiIdentityClassDirectoryInvariant
+	case errors.Is(err, domain.ErrMembershipDependencyNotFound), errors.Is(err, domain.ErrMembershipDependencyInactive):
+		ctx.JSON(http.StatusConflict, gin.H{"error": "AI identity dependency is missing or inactive", "code": aiIdentityCodeDependency})
+		return "conflict", aiIdentityClassDependency
+	case errors.Is(err, domain.ErrAuthenticationUnavailable):
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": fallback, "code": aiIdentityCodeInternal})
+		return "failure", aiIdentityClassUnavailable
 	default:
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": fallback})
-		return "failure"
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": fallback, "code": aiIdentityCodeInternal})
+		return "failure", aiIdentityClassInternal
 	}
 }
 

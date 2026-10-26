@@ -25,6 +25,10 @@ type aiIdentityStores struct {
 	admin       string
 	otherUser   string
 	statusStore repository.ManagedAudienceStatusRepository
+	// Raw stores, used to reproduce records written outside the directory
+	// service (for example by tikti-bootstrap).
+	directoryRepo repository.IdentityDirectoryRepository
+	users         repository.UserRepository
 }
 
 func newAIIdentityStores(t *testing.T, tenantIDs ...string) aiIdentityStores {
@@ -39,8 +43,9 @@ func newAIIdentityStores(t *testing.T, tenantIDs ...string) aiIdentityStores {
 			t.Fatal(err)
 		}
 	}
+	s.directoryRepo, s.users = repository.NewIdentityDirectoryRepository(client), repository.NewRedisRepo(client)
 	s.directory = NewIdentityDirectoryService(
-		repository.NewIdentityDirectoryRepository(client), repository.NewRedisRepo(client),
+		s.directoryRepo, s.users,
 		s.tenants.(repository.ExactTenantRepository), s.roles.(repository.ExactRoleBatchRepository), false,
 	)
 	for index, email := range []string{"ai-enabler@example.com", "other-admin@example.com"} {
@@ -66,8 +71,19 @@ func newAIIdentityStores(t *testing.T, tenantIDs ...string) aiIdentityStores {
 		}
 	}
 	s.statusStore = store
-	s.service = NewAIGatewayIdentityService(s.tenants, NewRoleService(s.roles), store, s.directory)
+	s.service = NewAIGatewayIdentityService(s.tenants, NewRoleService(s.roles), store, aiAssignmentStore(t, s.directory))
 	return s
+}
+
+// aiAssignmentStore narrows the directory service to the AI assignment
+// authority exactly as the application wiring does.
+func aiAssignmentStore(t *testing.T, directory IdentityDirectoryService) AIGatewayAssignmentStore {
+	t.Helper()
+	store, ok := directory.(AIGatewayAssignmentStore)
+	if !ok {
+		t.Fatal("directory service lacks the exact single-role assignment operation")
+	}
+	return store
 }
 
 var consoleBaselineScopes = []string{"code-admin:audit:read", "code-admin:identity:write"}
