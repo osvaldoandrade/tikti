@@ -17,6 +17,10 @@ const (
 	CodeAdminAudienceClientID       = "code-admin-api"
 	CodeAdminAudienceClientManager  = "tikti:code-admin-audience:v1"
 	WorkloadAccountBFFClientManager = "tikti:workload-account-bff:v1"
+	// AIGatewayAudienceClientID is the AI token audience protocol identifier
+	// (JWT aud). It names no repository or image and must not be renamed.
+	AIGatewayAudienceClientID      = "code-llm-service"
+	AIGatewayAudienceClientManager = "tikti:ai-gateway-audience:v1"
 )
 
 type Client struct {
@@ -71,8 +75,26 @@ func IsManagedCodeAdminAudience(tenantID string, client *Client) bool {
 // IsManagedWorkloadAccountAudience reports whether the credential-free client
 // is owned by the workload account BFF bootstrap contract.
 func IsManagedWorkloadAccountAudience(tenantID string, client *Client) bool {
-	return client != nil && client.Id != "" && client.Id != CodeAdminAudienceClientID && client.TenantId == tenantID &&
+	return client != nil && client.Id != "" && client.Id != CodeAdminAudienceClientID &&
+		client.Id != AIGatewayAudienceClientID && client.TenantId == tenantID &&
 		client.SecretHash == "" && client.Type == ClientTypeService && client.Status == ClientStatusActive &&
 		client.ManagedBy == WorkloadAccountBFFClientManager &&
 		slices.Equal(client.AllowedGrantTypes, []string{string(GrantTypeTokenExchange)})
+}
+
+// IsManagedAIGatewayAudience reports whether the credential-free AI audience
+// is owned by Tikti's tenant AI identity contract. Unmanaged look-alikes fail.
+func IsManagedAIGatewayAudience(tenantID string, client *Client) bool {
+	return client != nil && client.Id == AIGatewayAudienceClientID && client.TenantId == tenantID &&
+		client.SecretHash == "" && client.Type == ClientTypeService && client.Status == ClientStatusActive &&
+		client.ManagedBy == AIGatewayAudienceClientManager &&
+		slices.Equal(client.AllowedGrantTypes, []string{string(GrantTypeTokenExchange)})
+}
+
+// AIGatewayIdentityResp is the credential-free projection of a tenant's
+// managed AI audience and its dedicated roles.
+type AIGatewayIdentityResp struct {
+	TenantId string                    `json:"tenantId"`
+	Client   ManagedAudienceClientResp `json:"client"`
+	Roles    []RoleResp                `json:"roles"`
 }

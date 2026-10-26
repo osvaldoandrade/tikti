@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/osvaldoandrade/tikti/internal/aigateway"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
@@ -70,6 +71,11 @@ func (s *clientService) Create(ctx context.Context, tenantID string, req domain.
 		return nil, domain.ErrInvalidTenant
 	}
 	if strings.TrimSpace(req.ClientId) == "" {
+		return nil, domain.ErrInvalidArgument
+	}
+	// The AI audience is Tikti-managed and credential-free. A secret-bearing
+	// look-alike would otherwise satisfy or block the managed contract.
+	if aigateway.ReservedAudience(req.ClientId) {
 		return nil, domain.ErrInvalidArgument
 	}
 	var defaultScopes []string

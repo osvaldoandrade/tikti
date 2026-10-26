@@ -154,7 +154,9 @@ func (s *userService) aiUserEffectiveScopes(ctx context.Context, user *domain.Us
 		return nil, domain.ErrInvalidAudience
 	}
 	c, err := s.clientSvc.GetClient(ctx, tenant, aigateway.Audience)
-	if err != nil || c == nil || c.Id != aigateway.Audience || c.TenantId != tenant || c.Status != domain.ClientStatusActive || !slices.Contains(c.AllowedGrantTypes, string(domain.GrantTypeTokenExchange)) {
+	// Only the Tikti-managed, credential-free AI audience is an activation
+	// marker; unmanaged look-alikes fail closed.
+	if err != nil || c == nil || c.Id != aigateway.Audience || !domain.IsManagedAIGatewayAudience(tenant, c) {
 		return nil, domain.ErrInvalidAudience
 	}
 	ceiling, valid := aigateway.Scopes(c.DefaultScopes)

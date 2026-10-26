@@ -91,7 +91,7 @@ func aiUserFixture(t *testing.T) (*userService, domain.TokenExchangeReq, *aiAuth
 		return &domain.RoleResp{Name: "ai-user", Permissions: []string{aigateway.InvokeScope, aigateway.ModelsScope}}, nil
 	}}
 	clients := &mockClientService{getClientFn: func(context.Context, string, string) (*domain.Client, error) {
-		return &domain.Client{Id: aigateway.Audience, TenantId: tenant.Id, Status: domain.ClientStatusActive, AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)}, DefaultScopes: []string{aigateway.InvokeScope, aigateway.ModelsScope, aigateway.UsageScope}}, nil
+		return &domain.Client{Id: aigateway.Audience, Type: domain.ClientTypeService, ManagedBy: domain.AIGatewayAudienceClientManager, TenantId: tenant.Id, Status: domain.ClientStatusActive, AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)}, DefaultScopes: []string{aigateway.InvokeScope, aigateway.ModelsScope, aigateway.UsageScope}}, nil
 	}}
 	key, pem := workloadTestKey(t)
 	a := &aiAuthorityStub{key: key}

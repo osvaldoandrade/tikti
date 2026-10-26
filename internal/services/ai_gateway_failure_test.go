@@ -40,7 +40,7 @@ func TestAIUserUnavailableDependenciesFailClosed(t *testing.T) {
 		{"client service absent", func(s *userService) { s.clientSvc = nil }},
 		{"invalid client ceiling", func(s *userService) {
 			s.clientSvc = &mockClientService{getClientFn: func(context.Context, string, string) (*domain.Client, error) {
-				return &domain.Client{Id: aigateway.Audience, TenantId: "tenant-1", Status: domain.ClientStatusActive, AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)}, DefaultScopes: []string{"code-llm:*"}}, nil
+				return &domain.Client{Id: aigateway.Audience, Type: domain.ClientTypeService, ManagedBy: domain.AIGatewayAudienceClientManager, TenantId: "tenant-1", Status: domain.ClientStatusActive, AllowedGrantTypes: []string{string(domain.GrantTypeTokenExchange)}, DefaultScopes: []string{"code-llm:*"}}, nil
 			}}
 		}},
 		{"client unavailable", func(s *userService) {

@@ -371,7 +371,8 @@ func adoptableLegacyManagedAudienceClient(legacy, desired *domain.Client) bool {
 
 func validManagedAudienceClient(tenantID string, client *domain.Client) bool {
 	return activeTenantIdentity(tenantID) &&
-		(domain.IsManagedCodeAdminAudience(tenantID, client) || domain.IsManagedWorkloadAccountAudience(tenantID, client)) &&
+		(domain.IsManagedCodeAdminAudience(tenantID, client) || domain.IsManagedWorkloadAccountAudience(tenantID, client) ||
+			domain.IsManagedAIGatewayAudience(tenantID, client)) &&
 		scopepolicy.ValidCanonicalAudienceScopes(client.DefaultScopes)
 }
 

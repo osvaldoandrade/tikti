@@ -105,6 +105,21 @@ func SetupMappings(engine *gin.Engine, cfg *config.Config, userService services.
 	}
 }
 
+// setupAIGatewayIdentityMappings registers the tenant AI identity ensure route
+// only while the AI exchange is enabled. Disabled installations expose no route.
+func setupAIGatewayIdentityMappings(engine *gin.Engine, cfg *config.Config, service services.AIGatewayIdentityService, tokenService services.UserService) {
+	if engine == nil || cfg == nil || !cfg.AIGateway.Enabled || service == nil {
+		return
+	}
+	controller := controllers.NewAIGatewayIdentityController(service, cfg)
+	engine.PUT(
+		"/v1/admin/tenants/:tenantId/ai-gateway/identity",
+		utils.RequiredApiKeyHeader(cfg.ApiKey),
+		controllers.RequireCurrentAdminToken(tokenService, cfg),
+		controller.Ensure,
+	)
+}
+
 func setupIdentityDirectoryMappings(engine *gin.Engine, cfg *config.Config, service services.IdentityDirectoryService, tokenService services.UserService) {
 	if engine == nil || cfg == nil || service == nil {
 		return
