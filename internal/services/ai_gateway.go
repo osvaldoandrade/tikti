@@ -146,7 +146,7 @@ func aiPrincipalClaims(p aigateway.Principal, issuer string, scopes []string, no
 }
 
 func (s *userService) aiUserEffectiveScopes(ctx context.Context, user *domain.User, tenant string, requested []string) ([]string, error) {
-	a, err := s.resolveTenantScopedTokenAuthorization(ctx, user, tenant)
+	a, err := s.resolveTenantScopedAIAuthorization(ctx, user, tenant)
 	if err != nil {
 		return nil, err
 	}

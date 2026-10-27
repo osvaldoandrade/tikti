@@ -83,6 +83,22 @@ func (s *userService) tenantScopedTokenTarget(requested string) (string, bool) {
 }
 
 func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context, user *domain.User, target string) (tenantScopedTokenAuthorization, error) {
+	return s.resolveTenantScopedAuthorization(ctx, user, target, false)
+}
+
+// resolveTenantScopedAIAuthorization resolves the same membership, tenant
+// state and role lookups as resolveTenantScopedTokenAuthorization, but a role
+// that is not an exact tenant role definition (the MASTER bootstrap ADMIN role
+// carries platform scopes: its lookup reports a stored role contract mismatch)
+// or whose permissions are not canonical contributes nothing instead of
+// refusing every AI token of its holder. Skipping only removes permissions; AI
+// authority comes from the exact tenant AI roles. Any other lookup failure,
+// membership or tenant state still fails closed.
+func (s *userService) resolveTenantScopedAIAuthorization(ctx context.Context, user *domain.User, target string) (tenantScopedTokenAuthorization, error) {
+	return s.resolveTenantScopedAuthorization(ctx, user, target, true)
+}
+
+func (s *userService) resolveTenantScopedAuthorization(ctx context.Context, user *domain.User, target string, skipNonCanonicalRoles bool) (tenantScopedTokenAuthorization, error) {
 	if user == nil || user.Status != domain.UserStatusActive || !validRoleTenantID(target) || s.tenantRepo == nil || s.directoryAccess == nil && s.exactMembershipRepo == nil {
 		return tenantScopedTokenAuthorization{}, domain.ErrInvalidTenant
 	}
@@ -111,7 +127,18 @@ func (s *userService) resolveTenantScopedTokenAuthorization(ctx context.Context,
 	legacyCreatorAdministrator := false
 	for _, roleName := range selectedRoles {
 		role, roleErr := s.roleSvc.GetByName(ctx, target, roleName)
-		if roleErr != nil || role == nil || role.Name != roleName || !scopepolicy.ValidCanonicalPermissions(role.Permissions) {
+		if skipNonCanonicalRoles && repository.IsStoredRoleContractMismatch(roleErr) {
+			// A stored role that is not an exact tenant role definition (the
+			// bootstrap ADMIN with platform scopes) cannot grant AI authority.
+			continue
+		}
+		if roleErr != nil || role == nil || role.Name != roleName {
+			return tenantScopedTokenAuthorization{}, domain.ErrUnauthorizedScope
+		}
+		if !scopepolicy.ValidCanonicalPermissions(role.Permissions) {
+			if skipNonCanonicalRoles {
+				continue
+			}
 			return tenantScopedTokenAuthorization{}, domain.ErrUnauthorizedScope
 		}
 		for _, permission := range role.Permissions {
