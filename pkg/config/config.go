@@ -38,6 +38,7 @@ type Config struct {
 	StorageSTS                              StorageSTSConfig           `yaml:"storageSTS"`
 	ObjectStorageBrowser                    ObjectStorageBrowserConfig `yaml:"objectStorageBrowser"`
 	SAML                                    SAMLConfig                 `yaml:"saml"`
+	NativeSAML                              NativeSAMLConfig           `yaml:"nativeSaml"`
 	HTTP                                    HTTPConfig                 `yaml:"http"`
 	ForwardAuth                             ForwardAuthConfig          `yaml:"forwardAuth"`
 	TenantScopedTokenClaimsV1               bool                       `yaml:"tenantScopedTokenClaimsV1"`
@@ -801,6 +802,9 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 	if len(c.SAML.SP.AllowedSigAlgs) == 0 {
 		c.SAML.SP.AllowedSigAlgs = []string{"rsa-sha256"}
+	}
+	if err := c.ValidateNativeSAML(); err != nil {
+		return nil, err
 	}
 	return &c, nil
 }

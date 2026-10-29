@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/osvaldoandrade/tikti/internal/managedlogs"
+	"github.com/osvaldoandrade/tikti/internal/nativepolicy"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
 	"github.com/osvaldoandrade/tikti/internal/utils"
@@ -45,6 +46,7 @@ type UserService interface {
 type userService struct {
 	trinoAuthority                    TrinoIdentityAuthority
 	aiGateway                         *aiGatewayExchange
+	nativeClients                     *nativepolicy.Registry
 	repo                              repository.UserRepository
 	membershipRepo                    repository.MembershipRepository
 	exactMembershipRepo               repository.ExactMembershipRepository
@@ -723,6 +725,14 @@ func (s *userService) ValidateAccessToken(ctx context.Context, tokenString strin
 	}
 	if err := s.validateCurrentAccessTokenTarget(ctx, claims); err != nil {
 		return nil, domain.ErrInvalidToken
+	}
+	_, nativeClient := claims["native_client_id"]
+	_, nativePolicy := claims["native_policy"]
+	if nativeClient || nativePolicy {
+		if err := s.validateNativeAccessToken(ctx, u, claims); err != nil {
+			return nil, domain.ErrInvalidToken
+		}
+		return claims, nil
 	}
 	if err := s.validateCurrentAccessTokenAuthority(ctx, u, claims); err != nil {
 		return nil, domain.ErrInvalidToken

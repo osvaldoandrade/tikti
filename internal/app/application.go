@@ -17,6 +17,9 @@ import (
 
 	"github.com/osvaldoandrade/tikti/internal/aigateway"
 	"github.com/osvaldoandrade/tikti/internal/codeqbinding"
+	"github.com/osvaldoandrade/tikti/internal/httpidentity"
+	"github.com/osvaldoandrade/tikti/internal/nativeauth"
+	"github.com/osvaldoandrade/tikti/internal/nativepolicy"
 	"github.com/osvaldoandrade/tikti/internal/providers"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/scopepolicy"
@@ -43,10 +46,22 @@ type Application struct {
 	WorkloadAccountSvc    services.WorkloadAccountBFFService
 	DirectorySvc          services.IdentityDirectoryService
 	AuthenticationLimiter repository.AuthenticationAttemptLimiter
+	NativeSAMLHandler     http.Handler
 }
 
 // NewApplication assembles dependencies (Redis, repository, services) using the provided config.
 func NewApplication(cfg *config.Config) (*Application, error) {
+	if err := cfg.ValidateNativeSAML(); err != nil {
+		return nil, err
+	}
+	var nativeClients *nativepolicy.Registry
+	if cfg.NativeSAML.Enabled {
+		var err error
+		nativeClients, err = nativepolicy.NewRegistry(cfg.NativeSAML.Clients)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if err := validateWorkloadIdentityRuntimeConfig(cfg); err != nil {
 		return nil, err
 	}
@@ -92,7 +107,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	roleRepo := repository.NewRoleRepo(redisClient)
 	clientRepo := repository.NewClientRepo(redisClient)
 	workloadRepo := repository.NewWorkloadBindingRepo(redisClient)
-	directoryRepo := repository.NewIdentityDirectoryRepository(redisClient)
+	directoryRepo := repository.NewIdentityDirectoryRepository(redisClient, repository.WithNativeFederationPolicy(nativeClients))
 	if _, err := directoryRepo.Backfill(context.Background()); err != nil {
 		_ = redisClient.Close()
 		return nil, fmt.Errorf("backfill identity directory: %w", err)
@@ -116,6 +131,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 	directoryService := services.NewIdentityDirectoryService(
 		directoryRepo, userRepo, exactTenants, exactRoles, cfg.IdentityGroupsV1,
 		services.WithIdentityDirectoryRateLimits(cfg.HTTP.RateLimits),
+		services.WithDirectoryNativeClients(nativeClients),
 	)
 
 	retainedTenants, retainedOK := tenantRepo.(repository.RetainedTenantRepository)
@@ -158,6 +174,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		services.WithAuthenticationRateLimits(cfg.HTTP.RateLimits),
 		services.WithPasswordAttemptLimiter(directoryRepo),
 		services.WithCurrentPlatformAdministrators(cfg.SAML.PlatformAdministrators),
+		services.WithNativeSAMLClients(nativeClients),
 		services.WithAIGateway(cfg.AIGateway, aiAuthority, retainedTenants),
 	)
 	workloadVerifier, err := newWorkloadTokenVerifier(cfg.WorkloadIdentity)
@@ -231,6 +248,28 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		)
 	}
 
+	var nativeHandler http.Handler
+	if cfg.NativeSAML.Enabled {
+		resolver, err := httpidentity.NewClientIPResolver(cfg.HTTP.TrustedProxyCIDRs)
+		if err != nil {
+			_ = redisClient.Close()
+			return nil, err
+		}
+		limits := cfg.HTTP.RateLimits.TokenExchange
+		if limits.Requests < 1 || limits.WindowSeconds < 1 {
+			limits = config.DefaultAuthenticationRateLimits().TokenExchange
+		}
+		nativeHandler, err = nativeauth.NewHandler(nativeauth.HTTPOptions{
+			Issuer: cfg.IssuerBaseURL, CookieName: cfg.SAML.ACS.CookieName, CSRFKey: []byte(cfg.JwtSecret),
+			Clients: nativeClients, Store: nativeauth.NewStore(redisClient, nil), Authority: userService.(nativeauth.Authority),
+			Audit: nativeauth.RedisAuditor{Client: redisClient}, Limiter: directoryRepo, ResolveIP: resolver.Resolve,
+			RateRequests: limits.Requests, RateWindow: time.Duration(limits.WindowSeconds) * time.Second,
+		})
+		if err != nil {
+			_ = redisClient.Close()
+			return nil, err
+		}
+	}
 	engine := newSafeEngine()
 	setupTenantRuntimeMappings(engine, cfg, retainedTenants)
 	setupCodeQTopicAuthority(engine, workloadService)
@@ -262,6 +301,7 @@ func NewApplication(cfg *config.Config) (*Application, error) {
 		WorkloadAccountSvc:    workloadAccountService,
 		DirectorySvc:          directoryService,
 		AuthenticationLimiter: directoryRepo,
+		NativeSAMLHandler:     nativeHandler,
 	}, nil
 }
 

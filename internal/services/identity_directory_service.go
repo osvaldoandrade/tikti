@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/osvaldoandrade/tikti/internal/nativepolicy"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/utils"
 	"github.com/osvaldoandrade/tikti/pkg/config"
@@ -59,9 +60,14 @@ type identityDirectoryService struct {
 	groupsWrite    bool
 	verifyPassword func(string, string) bool
 	rateLimits     config.AuthenticationRateLimitsConfig
+	nativeClients  *nativepolicy.Registry
 }
 
 type IdentityDirectoryServiceOption func(*identityDirectoryService)
+
+func WithDirectoryNativeClients(clients *nativepolicy.Registry) IdentityDirectoryServiceOption {
+	return func(service *identityDirectoryService) { service.nativeClients = clients }
+}
 
 func WithIdentityDirectoryRateLimits(limits config.AuthenticationRateLimitsConfig) IdentityDirectoryServiceOption {
 	return func(service *identityDirectoryService) {
@@ -288,6 +294,9 @@ func (s *identityDirectoryService) PutAssignment(ctx context.Context, tenantID s
 			return nil, false, domain.ErrMembershipDependencyNotFound
 		}
 		if definition.Name != canonicalRoles[index] || definition.TenantId != tenantID {
+			return nil, false, domain.ErrDirectoryInvariant
+		}
+		if expected, registered := s.nativeClients.ExpectedRoleScopes(tenantID, definition.Name); registered && !nativeScopesEqual(definition.Permissions, expected) {
 			return nil, false, domain.ErrDirectoryInvariant
 		}
 	}

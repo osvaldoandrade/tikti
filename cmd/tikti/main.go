@@ -21,6 +21,7 @@ import (
 
 	"github.com/osvaldoandrade/tikti/internal/app"
 	"github.com/osvaldoandrade/tikti/internal/httpidentity"
+	"github.com/osvaldoandrade/tikti/internal/nativeauth"
 	"github.com/osvaldoandrade/tikti/internal/repository"
 	"github.com/osvaldoandrade/tikti/internal/saml"
 	"github.com/osvaldoandrade/tikti/pkg/config"
@@ -199,6 +200,7 @@ func main() {
 			ginHandler.ServeHTTP(w, r)
 		})
 	}
+	handler = nativeauth.Mount(application.NativeSAMLHandler, handler)
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,

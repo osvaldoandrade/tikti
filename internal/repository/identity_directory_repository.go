@@ -17,6 +17,7 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 
+	"github.com/osvaldoandrade/tikti/internal/nativepolicy"
 	"github.com/osvaldoandrade/tikti/pkg/domain"
 )
 
@@ -147,10 +148,25 @@ func validAuthenticationBucket(value string) bool {
 	return true
 }
 
-type identityDirectoryRepo struct{ client *redis.Client }
+type identityDirectoryRepo struct {
+	client        *redis.Client
+	nativeClients *nativepolicy.Registry
+}
 
-func NewIdentityDirectoryRepository(client *redis.Client) IdentityDirectoryRepository {
-	return &identityDirectoryRepo{client: client}
+type IdentityDirectoryOption func(*identityDirectoryRepo)
+
+func WithNativeFederationPolicy(clients *nativepolicy.Registry) IdentityDirectoryOption {
+	return func(repository *identityDirectoryRepo) { repository.nativeClients = clients }
+}
+
+func NewIdentityDirectoryRepository(client *redis.Client, options ...IdentityDirectoryOption) IdentityDirectoryRepository {
+	repository := &identityDirectoryRepo{client: client}
+	for _, option := range options {
+		if option != nil {
+			option(repository)
+		}
+	}
+	return repository
 }
 
 var createDirectoryUserScript = redis.NewScript(`
@@ -1003,7 +1019,9 @@ func (r *identityDirectoryRepo) PutAccessAssignment(ctx context.Context, tenantI
 					return domain.ErrDirectoryInvariant
 				}
 				if canonical.AuthSource == domain.AuthSourceSAML && (canonical.CompanyId == nil || *canonical.CompanyId != tenantID) {
-					return domain.ErrInvalidTenant
+					if canonical.CompanyId == nil || !r.nativeClients.AllowsForeignAssignment(*canonical.CompanyId, tenantID, roles) {
+						return domain.ErrInvalidTenant
+					}
 				}
 			} else {
 				groupRaw, groupErr := tx.HGet(ctx, directoryGroupsHash, principalID).Result()
@@ -1237,7 +1255,16 @@ func (r *identityDirectoryRepo) ListEffectiveTenantIDs(ctx context.Context, user
 	result := make([]string, 0, len(set))
 	for tenantID := range set {
 		if user.AuthSource == domain.AuthSourceSAML && user.HomeTenantID != tenantID {
-			continue
+			if !r.nativeClients.HasForeignTrust(user.HomeTenantID, tenantID) {
+				continue
+			}
+			roles, _, err := r.GetEffectiveTenantRoles(ctx, userID, tenantID)
+			if err != nil {
+				return nil, false, err
+			}
+			if len(roles) == 0 {
+				continue
+			}
 		}
 		result = append(result, tenantID)
 	}
@@ -1256,18 +1283,34 @@ func (r *identityDirectoryRepo) GetEffectiveTenantRoles(ctx context.Context, use
 		}
 		return nil, nil, err
 	}
-	if user.AuthSource == domain.AuthSourceSAML && user.HomeTenantID != tenantID {
+	foreignSAML := user.AuthSource == domain.AuthSourceSAML && user.HomeTenantID != tenantID
+	if foreignSAML && !r.nativeClients.HasForeignTrust(user.HomeTenantID, tenantID) {
 		return []string{}, []domain.AccessProvenance{}, nil
+	}
+	eligibleRoles := func(roles []string) []string {
+		if !foreignSAML {
+			return append([]string(nil), roles...)
+		}
+		accepted := make([]string, 0, len(roles))
+		for _, role := range roles {
+			if r.nativeClients.AllowsForeignRole(user.HomeTenantID, tenantID, role) {
+				accepted = append(accepted, role)
+			}
+		}
+		return accepted
 	}
 	roleSet := map[string]struct{}{}
 	provenance := []domain.AccessProvenance{}
 	if direct, err := r.readAssignment(ctx, tenantID, domain.AccessPrincipalUser, userID); err != nil {
 		return nil, nil, err
 	} else if direct != nil {
-		for _, role := range direct.Roles {
+		roles := eligibleRoles(direct.Roles)
+		for _, role := range roles {
 			roleSet[role] = struct{}{}
 		}
-		provenance = append(provenance, domain.AccessProvenance{Type: "DIRECT", Roles: append([]string(nil), direct.Roles...), AssignmentVersion: direct.Version})
+		if len(roles) > 0 {
+			provenance = append(provenance, domain.AccessProvenance{Type: "DIRECT", Roles: roles, AssignmentVersion: direct.Version})
+		}
 	}
 	groups, err := r.client.SMembers(ctx, userGroupsKey(userID)).Result()
 	if err != nil || len(groups) > directoryMaximumRelationships {
@@ -1289,10 +1332,13 @@ func (r *identityDirectoryRepo) GetEffectiveTenantRoles(ctx context.Context, use
 		if assignment == nil {
 			continue
 		}
-		for _, role := range assignment.Roles {
+		roles := eligibleRoles(assignment.Roles)
+		for _, role := range roles {
 			roleSet[role] = struct{}{}
 		}
-		provenance = append(provenance, domain.AccessProvenance{Type: "GROUP", Roles: append([]string(nil), assignment.Roles...), AssignmentVersion: assignment.Version, GroupID: group.ID, GroupName: group.Name})
+		if len(roles) > 0 {
+			provenance = append(provenance, domain.AccessProvenance{Type: "GROUP", Roles: roles, AssignmentVersion: assignment.Version, GroupID: group.ID, GroupName: group.Name})
+		}
 	}
 	roles := make([]string, 0, len(roleSet))
 	for role := range roleSet {
